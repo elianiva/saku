@@ -13,10 +13,12 @@ import { Context, Effect } from "effect";
 import { createCliRenderer, type CliRenderer } from "@opentui/core";
 import { clearHtmlRuntime, htmlBuilder, setHtmlRuntime } from "foldkit/html";
 import type { Document, HtmlBuilder } from "foldkit/html";
+import type { TuiVNode } from "./vnode.ts";
 import * as Command from "foldkit/command";
 import { Dispatch } from "foldkit/runtime";
 
-import { TuiPatcher } from "./patcher.js";
+import { TuiPatcher } from "./patcher.ts";
+import { wireKeyboard } from "./events.ts";
 
 export interface TuiApplication<Model, Message> {
   /** Accepted for foldkit shape parity; not yet used by the terminal runtime. */
@@ -27,6 +29,12 @@ export interface TuiApplication<Model, Message> {
     message: Message,
   ) => readonly [Model, ReadonlyArray<Command.Command<Message>>];
   view: (model: Model, h: HtmlBuilder<Message>) => Document;
+  /**
+   * Host-side subscription (the terminal equivalent of foldkit ports): the
+   * app registers a callback that pushes messages into the loop, e.g. wire
+   * events from a socket. Returns an unsubscribe function.
+   */
+  subscribe?: (dispatch: (message: Message) => void) => () => void;
 }
 
 export interface TuiHandle {
@@ -56,6 +64,11 @@ export const runWithRenderer = <Model, Message>(
   let model: Model;
   let pumping = false;
 
+  const dispatchToLoop = (message: Message): void => {
+    queue.push(message);
+    pump();
+  };
+
   const dispatchService = Dispatch.of({
     dispatchAsync: () => Effect.void,
     dispatchSync: (message: unknown) => {
@@ -76,7 +89,7 @@ export const runWithRenderer = <Model, Message>(
       clearHtmlRuntime();
     }
     if (document.body !== null) {
-      patcher.patch(document.body);
+      patcher.patch(document.body as unknown as TuiVNode);
     }
   };
 
@@ -131,9 +144,14 @@ export const runWithRenderer = <Model, Message>(
     runCommand(command);
   }
 
+  const stopKeyboard = wireKeyboard(renderer);
+  const unsubscribe = app.subscribe === undefined ? undefined : app.subscribe(dispatchToLoop);
+
   return {
     renderer,
     destroy: async () => {
+      unsubscribe?.();
+      stopKeyboard();
       await renderer.destroy();
     },
   };

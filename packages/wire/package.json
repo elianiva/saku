@@ -18,7 +18,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "^0.84.1"
+    "@earendil-works/pi-agent-core": "^0.84.1",
+    "effect": "4.0.0-beta.106"
   },
   "devDependencies": {
     "tsdown": "^0.22.12",

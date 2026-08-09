@@ -10,5 +10,5 @@
  * ```
  */
 
-export { makeApplication, run, runWithRenderer } from "./runtime.js";
-export type { TuiApplication, TuiHandle } from "./runtime.js";
+export { makeApplication, run, runWithRenderer } from "./runtime.ts";
+export type { TuiApplication, TuiHandle } from "./runtime.ts";

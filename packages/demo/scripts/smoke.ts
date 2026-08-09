@@ -14,7 +14,7 @@ import { Readable, Writable } from "node:stream";
 import { createCliRenderer } from "@opentui/core";
 import { runWithRenderer } from "foldtui";
 
-import { init, update, view } from "../src/main.js";
+import { init, update, view } from "../src/main.ts";
 
 const WIDTH = 80;
 const HEIGHT = 24;

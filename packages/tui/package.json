@@ -10,6 +10,10 @@
     ".": {
       "types": "./src/index.ts",
       "import": "./src/index.ts"
+    },
+    "./entry": {
+      "types": "./src/entry.ts",
+      "import": "./src/entry.ts"
     }
   },
   "scripts": {
@@ -19,7 +23,10 @@
   },
   "dependencies": {
     "@saku/wire": "workspace:*",
-    "foldtui": "workspace:*"
+    "effect": "4.0.0-beta.106",
+    "foldtui": "workspace:*",
+    "@saku/worker": "workspace:*",
+    "foldkit": "0.140.1"
   },
   "devDependencies": {
     "@types/bun": "^1.2.0",

@@ -6,13 +6,13 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "demo": "bun run src/entry.ts",
-    "smoke": "bun run scripts/smoke.ts"
+    "demo": "node --experimental-ffi src/entry.ts",
+    "smoke": "node --experimental-ffi scripts/smoke.ts"
   },
   "dependencies": {
     "@effect/platform-browser": "4.0.0-beta.105",
     "@opentui/core": "0.5.1",
-    "effect": "4.0.0-beta.105",
+    "effect": "4.0.0-beta.106",
     "foldkit": "0.140.1",
     "foldtui": "workspace:*"
   },

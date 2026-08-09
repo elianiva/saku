@@ -12,9 +12,9 @@
 
 import { BoxRenderable, TextRenderable, type CliRenderer, type Renderable } from "@opentui/core";
 
-import { applyStyle } from "./styles.js";
-import { wireEvents } from "./events.js";
-import { allTextChildren, childList, textContent, type Child, type TuiVNode } from "./vnode.js";
+import { applyStyle } from "./styles.ts";
+import { clearKeyboard, wireEvents } from "./events.ts";
+import { allTextChildren, childList, textContent, type Child, type TuiVNode } from "./vnode.ts";
 
 /** Tags that render as text when their children are all text. */
 const TEXT_TAGS = new Set([
@@ -156,8 +156,7 @@ export class TuiPatcher {
   ): void {
     const newRenderable = this.create(newV);
     container.insertBefore(newRenderable, oldRenderable);
-    container.remove(oldRenderable);
-    oldRenderable.destroy();
+    this.destroyRenderable(oldRenderable);
   }
 
   private reconcileChildren(
@@ -175,15 +174,18 @@ export class TuiPatcher {
         continue;
       }
       if (newChild === undefined) {
-        const removed = this.renderableAt(parent, index);
-        if (removed !== undefined) {
-          if (removed.parent !== undefined) parent.remove(removed);
-          removed.destroy();
-        }
+        this.destroyRenderable(this.renderableAt(parent, index));
         continue;
       }
       this.reconcile(parent, index, vnodeOf(oldChild), vnodeOf(newChild));
     }
+  }
+
+  private destroyRenderable(renderable: Renderable | undefined): void {
+    if (renderable === undefined) return;
+    if (renderable.parent !== null) renderable.parent.remove(renderable);
+    clearKeyboard(renderable);
+    renderable.destroy();
   }
 
   /** Renderable at a child position, resolved positionally. */
