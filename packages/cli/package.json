@@ -1,0 +1,33 @@
+{
+  "name": "@saku/cli",
+  "version": "0.1.0",
+  "private": true,
+  "bin": {
+    "saku": "./src/entry.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@saku/wire": "workspace:*",
+    "@saku/worker": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.0",
+    "tsdown": "^0.22.12",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.9"
+  }
+}

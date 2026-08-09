@@ -1,0 +1,28 @@
+{
+  "name": "foldtui",
+  "version": "0.0.1",
+  "description": "Render foldkit (Elm-architected, Effect-based) applications in the terminal via @opentui/core",
+  "files": [
+    "src"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@effect/platform-browser": "4.0.0-beta.105",
+    "@opentui/core": "0.5.1",
+    "effect": "4.0.0-beta.105",
+    "foldkit": "0.140.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0"
+  }
+}

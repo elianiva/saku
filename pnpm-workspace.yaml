@@ -1,0 +1,14 @@
+packages:
+  - packages/*
+
+# Auto-migrated by pnpm 11 from the lockfile's patchedDependencies section.
+patchedDependencies:
+  foldkit@0.140.1: patches/foldkit@0.140.1.patch
+
+# msgpackr-extract is an optional native accelerator for effect's msgpackr;
+# it has a JS fallback, so skip the postinstall build.
+allowBuilds:
+  "@google/genai": true
+  esbuild: true
+  msgpackr-extract: false
+  protobufjs: true
