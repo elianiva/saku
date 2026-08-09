@@ -36,11 +36,19 @@ import type { SessionWireEvent, ThreadState, WireModelInfo } from "@saku/wire";
 import { LocalEnv } from "./local-env.ts";
 import { ModelCatalog } from "./model-catalog.ts";
 import { buildTools } from "./tools.ts";
-import { ThreadRegistry, threadSessionsRoot } from "./registry.ts";
+import { ThreadRegistry, type ThreadRecord, threadSessionsRoot } from "./registry.ts";
 
 const LANE = "main";
 
 export type HostEventSink = (event: SessionWireEvent) => void;
+
+/** Auto-title: the pinned lightweight model that names quick-started threads (CONTEXT.md: Auto-title). */
+const AUTO_TITLE_PROVIDER = "opencode-go";
+const AUTO_TITLE_MODEL = "deepseek-v4-flash";
+
+/** The extension's title prompt, copied verbatim (auto-session-title.ts). */
+const AUTO_TITLE_PROMPT = (text: string): string =>
+  `Generate a short but descriptive session title (5-12 words) for this conversation. Be specific enough to distinguish it from similar topics. Include key terms, file names, or project context when present. Reply ONLY with the title, no quotes, no punctuation, no extra text.\n\n${text.slice(0, 2000)}`;
 
 export class SessionHostError extends Error {}
 
@@ -54,6 +62,7 @@ export class SessionHost {
   readonly registry: ThreadRegistry;
 
   private readonly sink: HostEventSink;
+  private readonly onRecordChanged: ((record: ThreadRecord) => void) | undefined;
   private state: ThreadState;
   private currentModel: Model<Api> | null;
   private thinkingLevel: ThinkingLevel;
@@ -71,6 +80,8 @@ export class SessionHost {
     catalog: ModelCatalog;
     registry: ThreadRegistry;
     sink: HostEventSink;
+    /** Fired after the host renames its own registry record (auto-title). */
+    onRecordChanged?: (record: ThreadRecord) => void;
     state: ThreadState;
     model: Model<Api> | null;
     thinkingLevel: ThinkingLevel;
@@ -83,6 +94,7 @@ export class SessionHost {
     this.catalog = options.catalog;
     this.registry = options.registry;
     this.sink = options.sink;
+    this.onRecordChanged = options.onRecordChanged;
     this.state = options.state;
     this.currentModel = options.model;
     this.thinkingLevel = options.thinkingLevel;
@@ -97,6 +109,7 @@ export class SessionHost {
     catalog: ModelCatalog;
     registry: ThreadRegistry;
     sink: HostEventSink;
+    onRecordChanged?: (record: ThreadRecord) => void;
   }): Promise<SessionHost> {
     const env = new LocalEnv(options.threadCwd);
     const repo = new JsonlSessionRepo({ fs: env, sessionsRoot: threadSessionsRoot(options.threadId) });
@@ -167,6 +180,7 @@ export class SessionHost {
       catalog: options.catalog,
       registry: options.registry,
       sink: options.sink,
+      ...(options.onRecordChanged === undefined ? {} : { onRecordChanged: options.onRecordChanged }),
       state: initialState,
       model,
       thinkingLevel,
@@ -386,6 +400,22 @@ export class SessionHost {
     await this.session.setName(name);
   }
 
+  /**
+   * Move the session's leaf to a past entry; the next prompt parents onto it,
+   * forking the thread (pi's own vocabulary: `moveLane`). Idle threads only.
+   */
+  async branch(entryId: string): Promise<string | null> {
+    if (this.running !== null) {
+      throw new SessionHostError("cannot branch while the agent is working");
+    }
+    const entry = await this.session.getEntry(entryId);
+    if (entry === undefined) {
+      throw new SessionHostError(`unknown entry: ${entryId}`);
+    }
+    await this.session.moveLane(LANE, entryId);
+    return entryId;
+  }
+
   // -------------------------------------------------------------------------
   // Internals
   // -------------------------------------------------------------------------
@@ -417,6 +447,8 @@ export class SessionHost {
           await this.maybeAutoCompact();
         }
         this.sink({ type: "settled" });
+        // Best-effort, never delays the run or the prompt response.
+        void this.maybeAutoTitle().catch(() => undefined);
       } catch (error) {
         this.setState("crashed");
         throw error;
@@ -434,6 +466,47 @@ export class SessionHost {
   private setState(state: ThreadState): void {
     this.state = state;
     this.registry.setState(this.threadId, state);
+  }
+
+  /**
+   * Auto-title (CONTEXT.md: Auto-title): after a quick-started thread's first
+   * settled run, generate a title with the pinned model and upgrade the
+   * registry name to `title — snippet`. Cleared on success or user rename
+   * (`rename_thread`), so a failed attempt retries on the next run and user
+   * names are never rewritten.
+   */
+  private async maybeAutoTitle(): Promise<void> {
+    const record = this.registry.get(this.threadId);
+    if (record === undefined || record.nameAuto !== true) return;
+    const model = this.catalog.getModel(AUTO_TITLE_PROVIDER, AUTO_TITLE_MODEL);
+    if (model === undefined) return;
+    if (!(await this.catalog.hasAuth(AUTO_TITLE_PROVIDER))) return;
+
+    const response = await this.catalog.models.completeSimple(model, {
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "text", text: AUTO_TITLE_PROMPT(record.name) }],
+          timestamp: Date.now(),
+        },
+      ],
+    });
+    const title = response.content
+      .filter((c): c is { type: "text"; text: string } => c.type === "text")
+      .map((c) => c.text)
+      .join("")
+      .trim()
+      .replace(/^["']|["']$/g, "")
+      .slice(0, 80);
+    if (title.length === 0) return;
+
+    const updated = this.registry.update(this.threadId, {
+      name: `${title} — ${record.name}`,
+      nameAuto: false,
+    });
+    if (updated !== undefined) {
+      this.onRecordChanged?.(updated);
+    }
   }
 
   private async maybeAutoCompact(): Promise<void> {

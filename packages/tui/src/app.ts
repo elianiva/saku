@@ -1,10 +1,12 @@
 /**
  * The saku TUI: a foldkit TEA application rendered by foldtui.
  *
- * Two screens — the thread list and the thread view — plus modal dialogs
- * (confirm / input) and a status bar. All keyboard input arrives through a
- * single root-level `OnKeyDown`; the wire lives behind `WireHub`, whose
- * events enter the loop as ordinary messages.
+ * Three screens — home (the default: a prompt box over an empty canvas,
+ * pi's no-session shape), the thread list, and the thread view — plus the
+ * tree overlay (jump between messages in a session), slash commands, modal
+ * dialogs (confirm / input / help), and a status bar. All keyboard input
+ * arrives through a single root-level `OnKeyDown`; the wire lives behind
+ * `WireHub`, whose events enter the loop as ordinary messages.
  */
 
 import { Effect } from "effect";
@@ -13,6 +15,7 @@ import type { HtmlBuilder, KeyboardModifiers } from "foldkit/html";
 
 import {
   shortThreadId,
+  type CompactResult,
   type Entry,
   type SessionWireEvent,
   type ThreadInfo,
@@ -21,6 +24,7 @@ import {
   type WireModelInfo,
 } from "@saku/wire";
 
+import { parseSlash, slashCommands, slashFill, slashMatches, slashMenuOpen } from "./slash.ts";
 import { WireHub } from "./wire.ts";
 
 // ---------------------------------------------------------------------------
@@ -58,6 +62,8 @@ export type Msg =
       readonly tailSeq: number;
       readonly leafId: string | null;
       readonly state: ThreadSessionState;
+      /** True when the open was immediately followed by a prompt (quick start). */
+      readonly started: boolean;
     }
   | {
       readonly _tag: "Entries";
@@ -74,11 +80,20 @@ export type Msg =
   | { readonly _tag: "ThinkingChanged"; readonly level: ThinkingLevel }
   | { readonly _tag: "PromptAccepted" }
   | { readonly _tag: "Aborted" }
-  | { readonly _tag: "Created"; readonly thread: ThreadInfo }
   | { readonly _tag: "Deleted"; readonly id: string }
   | { readonly _tag: "DialogClose" }
   | { readonly _tag: "DialogSubmit" }
   | { readonly _tag: "BackToList" }
+  | { readonly _tag: "GoHome" }
+  | { readonly _tag: "NewThreadDialog" }
+  | { readonly _tag: "Help" }
+  | { readonly _tag: "TreeOpen" }
+  | { readonly _tag: "TreeClose" }
+  | { readonly _tag: "TreeJump" }
+  | { readonly _tag: "BranchDone"; readonly threadId: string; readonly leafId: string | null }
+  | { readonly _tag: "CompactResult"; readonly result: CompactResult }
+  | { readonly _tag: "Renamed" }
+  | { readonly _tag: "EscArm"; readonly id: number }
   | { readonly _tag: "Quit" };
 
 // ---------------------------------------------------------------------------
@@ -98,15 +113,22 @@ export type Dialog =
       readonly placeholder: string;
       readonly action: "create-thread";
       readonly text: string;
-    };
+    }
+  | { readonly kind: "help"; readonly title: string; readonly lines: ReadonlyArray<string> };
+
+export interface HomeScreen {
+  readonly kind: "home";
+}
 
 export interface ListScreen {
   readonly kind: "list";
   readonly threads: ReadonlyArray<ThreadInfo>;
   readonly selected: number;
   readonly loading: boolean;
-  /** Thread to auto-open once the list loads (`saku open <id>`). */
-  readonly pendingOpen: string | null;
+}
+
+export interface TreeOverlay {
+  readonly selected: number;
 }
 
 export interface ThreadScreen {
@@ -120,11 +142,24 @@ export interface ThreadScreen {
   readonly liveText: string;
   readonly input: string;
   readonly scrollBack: number;
+  /** Where this thread was opened from — esc returns there (back-stack). */
+  readonly cameFrom: "home" | "list";
+  /** The session's active leaf; the tree overlay's active path. */
+  readonly leafId: string | null;
 }
 
 export interface Model {
-  readonly screen: ListScreen | ThreadScreen;
+  readonly screen: HomeScreen | ListScreen | ThreadScreen;
   readonly dialog: Dialog | null;
+  readonly tree: TreeOverlay | null;
+  /** Slash-menu selection; null when the menu is closed. */
+  readonly slash: { readonly selected: number } | null;
+  /** The home prompt box's text, preserved across navigation. */
+  readonly homeInput: string;
+  /** Thread to auto-open once the list loads (`saku open <id>`). */
+  readonly pendingOpen: string | null;
+  /** Double-esc arm: the id of the pending "back" timer, if armed. */
+  readonly escArm: { readonly id: number } | null;
   readonly connected: boolean;
 }
 
@@ -190,6 +225,73 @@ export const entryLine = (entry: Entry): { readonly text: string; readonly dim: 
 };
 
 // ---------------------------------------------------------------------------
+// Session tree (tree overlay)
+// ---------------------------------------------------------------------------
+
+export interface TreeRow {
+  readonly id: string;
+  readonly depth: number;
+  readonly prefix: string;
+  readonly text: string;
+  readonly dim: boolean;
+  /** The node is on the path from the session's leaf back to the root. */
+  readonly onPath: boolean;
+}
+
+/**
+ * Flatten the session tree (entries + parentId, pi's flat-with-parent shape)
+ * into display rows with pi-style `│ ├ └` connectors. Entries arrive in seq
+ * order, so children lists are already chronological.
+ */
+export const treeRows = (entries: ReadonlyArray<Entry>, leafId: string | null): TreeRow[] => {
+  const byId = new Map(entries.map((e) => [e.id, e]));
+  const children = new Map<string, Entry[]>();
+  const roots: Entry[] = [];
+  for (const entry of entries) {
+    const parent = entry.parentId;
+    if (parent === null || !byId.has(parent)) {
+      roots.push(entry);
+    } else {
+      const list = children.get(parent) ?? [];
+      list.push(entry);
+      children.set(parent, list);
+    }
+  }
+
+  // Active path: leafId and every ancestor of it.
+  const onPath = new Set<string>();
+  let cursor = leafId;
+  while (cursor !== null && byId.has(cursor)) {
+    onPath.add(cursor);
+    cursor = byId.get(cursor)?.parentId ?? null;
+  }
+
+  const rows: TreeRow[] = [];
+  const visit = (entry: Entry, depth: number, prefix: string, lastOfParent: boolean): void => {
+    const line = entryLine(entry);
+    const connector = depth === 0 ? "" : lastOfParent ? "└─ " : "├─ ";
+    rows.push({
+      id: entry.id,
+      depth,
+      prefix: prefix + connector,
+      text: line.text,
+      dim: line.dim,
+      onPath: onPath.has(entry.id),
+    });
+    const kids = children.get(entry.id) ?? [];
+    // Children hang from the connector: `│ ` while the parent has later
+    // siblings, `  ` after its last one.
+    const gutter = depth === 0 || lastOfParent ? "  " : "│ ";
+    for (let i = 0; i < kids.length; i++) {
+      const kid = kids[i];
+      if (kid !== undefined) visit(kid, depth + 1, prefix + connector + gutter, i === kids.length - 1);
+    }
+  };
+  for (const root of roots) visit(root, 0, "", roots.length === 1);
+  return rows;
+};
+
+// ---------------------------------------------------------------------------
 // Update
 // ---------------------------------------------------------------------------
 
@@ -198,6 +300,118 @@ const EMPTY_COMMANDS: ReadonlyArray<Command.Command<Msg>> = [];
 const cwd = process.cwd();
 
 const visibleLines = 18;
+
+const DOUBLE_ESC_MS = 250;
+
+let escArmSeq = 0;
+
+const homeOf = (model: Model): Model => ({
+  ...model,
+  screen: { kind: "home" },
+  tree: null,
+  slash: null,
+  escArm: null,
+});
+
+const listOf = (model: Model): Model => ({
+  ...model,
+  screen: { kind: "list", threads: [], selected: 0, loading: true },
+  tree: null,
+  slash: null,
+  escArm: null,
+});
+
+const refreshList = (model: Model, hub: WireHub): readonly [Model, ReadonlyArray<Command.Command<Msg>>] => [
+  listOf(model),
+  [cmd("refresh", hub.refreshThreads())],
+];
+
+/** Set the active input's text, keeping the slash menu in sync. */
+const withInput = (model: Model, input: string): Model => {
+  const next =
+    model.screen.kind === "home"
+      ? { ...model, homeInput: input }
+      : model.screen.kind === "thread"
+        ? { ...model, screen: { ...model.screen, input } }
+        : model;
+  if (!input.startsWith("/")) return { ...next, slash: null };
+  const matches = slashMatches(next);
+  if (matches.length === 0) return { ...next, slash: null };
+  const selected = Math.min(next.slash?.selected ?? 0, matches.length - 1);
+  return { ...next, slash: { selected } };
+};
+
+/** Submit the active input: quick start on home, prompt or slash command on a thread. */
+const submitInput = (
+  model: Model,
+  hub: WireHub,
+  onQuit: () => void,
+): readonly [Model, ReadonlyArray<Command.Command<Msg>>] => {
+  const input = model.screen.kind === "home" ? model.homeInput : model.screen.kind === "thread" ? model.screen.input : "";
+  const text = input.trim();
+  if (text.length === 0) return [model, EMPTY_COMMANDS];
+
+  if (model.screen.kind === "home") {
+    return [{ ...model, homeInput: "" }, [cmd("quick-start", hub.quickStart(text))]];
+  }
+  if (model.screen.kind !== "thread") return [model, EMPTY_COMMANDS];
+
+  const parsed = parseSlash(text);
+  if (parsed.kind === "prompt") {
+    return [
+      { ...model, screen: { ...model.screen, input: "" } },
+      [cmd("prompt", hub.sendPrompt(model.screen.threadId, text))],
+    ];
+  }
+  if (parsed.kind === "unknown") {
+    return [
+      { ...model, screen: { ...model.screen, input: "" } },
+      [
+        cmd(
+          "unknown-command",
+          Effect.succeed({
+            _tag: "WireError",
+            message: `unknown command /${parsed.name}`,
+          } satisfies Msg),
+        ),
+      ],
+    ];
+  }
+  if (parsed.command.scope !== "any" && parsed.command.scope !== "thread") {
+    return [
+      { ...model, screen: { ...model.screen, input: "" } },
+      [
+        cmd(
+          "out-of-scope",
+          Effect.succeed({
+            _tag: "WireError",
+            message: `/${parsed.command.name} is only available on the ${parsed.command.scope} screen`,
+          } satisfies Msg),
+        ),
+      ],
+    ];
+  }
+  return [
+    { ...model, screen: { ...model.screen, input: "" }, slash: null },
+    [cmd(`slash-${parsed.command.name}`, parsed.command.run({ hub, model, onQuit }, parsed.args))],
+  ];
+};
+
+/** Fill (and possibly submit) the slash menu's selected item. */
+const slashActivate = (
+  model: Model,
+  hub: WireHub,
+  onQuit: () => void,
+  submit: boolean,
+): readonly [Model, ReadonlyArray<Command.Command<Msg>>] => {
+  const matches = slashMatches(model);
+  const selected = matches[model.slash?.selected ?? 0];
+  if (selected === undefined) return [model, EMPTY_COMMANDS];
+  const fill = slashFill(model, selected);
+  const next = withInput(model, fill.input);
+  if (!submit || !fill.submit) return [next, EMPTY_COMMANDS];
+  return submitInput({ ...next, slash: null }, hub, onQuit);
+};
 
 export const update = (
   model: Model,
@@ -216,37 +430,57 @@ export const update = (
       return [model, EMPTY_COMMANDS];
 
     case "Threads": {
-      const screen = model.screen;
-      if (screen.kind !== "list") return [model, EMPTY_COMMANDS];
-      const next: ListScreen = {
-        ...screen,
-        threads: message.threads,
-        loading: false,
-        selected: Math.min(screen.selected, Math.max(0, message.threads.length - 1)),
-      };
-      if (next.pendingOpen !== null) {
-        const match = resolveThreadArg(message.threads, next.pendingOpen);
-        if (match !== undefined) {
+      const next = { ...model, pendingOpen: null };
+      if (model.screen.kind === "list") {
+        const screen: ListScreen = {
+          ...model.screen,
+          threads: message.threads,
+          loading: false,
+          selected: Math.min(model.screen.selected, Math.max(0, message.threads.length - 1)),
+        };
+        if (model.pendingOpen !== null) {
+          const match = resolveThreadArg(message.threads, model.pendingOpen);
+          if (match !== undefined) {
+            return [
+              { ...next, screen },
+              [cmd("open-thread", hub.openThread(match.id))],
+            ];
+          }
           return [
-            { ...model, screen: { ...next, pendingOpen: null } },
-            [cmd("open-thread", hub.openThread(match.id))],
+            {
+              ...next,
+              screen,
+              dialog: {
+                kind: "confirm",
+                title: "unknown thread",
+                message: `no thread matches "${model.pendingOpen}"`,
+                action: "ok",
+              },
+            },
+            EMPTY_COMMANDS,
           ];
+        }
+        return [{ ...next, screen }, EMPTY_COMMANDS];
+      }
+      if (model.screen.kind === "home" && model.pendingOpen !== null) {
+        const match = resolveThreadArg(message.threads, model.pendingOpen);
+        if (match !== undefined) {
+          return [{ ...next }, [cmd("open-thread", hub.openThread(match.id))]];
         }
         return [
           {
-            ...model,
-            screen: { ...next, pendingOpen: null },
+            ...next,
             dialog: {
               kind: "confirm",
               title: "unknown thread",
-              message: `no thread matches "${next.pendingOpen}"`,
+              message: `no thread matches "${model.pendingOpen}"`,
               action: "ok",
             },
           },
           EMPTY_COMMANDS,
         ];
       }
-      return [{ ...model, screen: next }, EMPTY_COMMANDS];
+      return [model, EMPTY_COMMANDS];
     }
 
     case "ThreadChanged": {
@@ -264,28 +498,40 @@ export const update = (
     }
 
     case "ThreadOpened": {
-      if (model.screen.kind !== "list") return [model, EMPTY_COMMANDS];
+      if (model.screen.kind !== "home" && model.screen.kind !== "list") return [model, EMPTY_COMMANDS];
       const screen: ThreadScreen = {
         kind: "thread",
         threadId: message.threadId,
-        info: model.screen.threads.find((t) => t.id === message.threadId) ?? {
-          id: message.threadId,
-          name: message.threadId,
-          cwd: "",
-          mode: "local",
-          state: message.state.state,
-          sessionId: message.state.sessionId,
-          tailSeq: message.tailSeq,
-        },
+        info: model.screen.kind === "list"
+          ? model.screen.threads.find((t) => t.id === message.threadId) ?? {
+              id: message.threadId,
+              name: message.threadId,
+              cwd: "",
+              mode: "local",
+              state: message.state.state,
+              sessionId: message.state.sessionId,
+              tailSeq: message.tailSeq,
+            }
+          : {
+              id: message.threadId,
+              name: message.threadId,
+              cwd: "",
+              mode: "local",
+              state: message.state.state,
+              sessionId: message.state.sessionId,
+              tailSeq: message.tailSeq,
+            },
         state: message.state,
         entries: message.entries,
         tailSeq: message.tailSeq,
-        working: message.state.state === "working",
+        working: message.started || message.state.state === "working",
         liveText: "",
         input: "",
         scrollBack: 0,
+        cameFrom: model.screen.kind,
+        leafId: message.leafId,
       };
-      return [{ ...model, screen }, EMPTY_COMMANDS];
+      return [{ ...model, screen, pendingOpen: null, slash: null, tree: null, escArm: null }, EMPTY_COMMANDS];
     }
 
     case "Entries": {
@@ -337,6 +583,8 @@ export const update = (
                 ...screen,
                 entries: [...screen.entries, entry],
                 tailSeq: entry.seq,
+                // Appends always advance the session's leaf.
+                leafId: entry.id,
                 scrollBack: 0,
               },
             },
@@ -374,13 +622,97 @@ export const update = (
       ];
 
     case "BackToList":
+      return refreshList(model, hub);
+
+    case "GoHome":
+      return [homeOf(model), EMPTY_COMMANDS];
+
+    case "NewThreadDialog":
       return [
         {
           ...model,
-          screen: { kind: "list", threads: [], selected: 0, loading: true, pendingOpen: null },
+          dialog: {
+            kind: "input",
+            title: "new thread",
+            placeholder: "name",
+            action: "create-thread",
+            text: "",
+          },
         },
-        [cmd("refresh", hub.refreshThreads())],
+        EMPTY_COMMANDS,
       ];
+
+    case "Help":
+      return [
+        {
+          ...model,
+          dialog: {
+            kind: "help",
+            title: "commands",
+            lines: slashCommands.map((c) => `/${c.name}${c.usage.length > 0 ? ` ${c.usage}` : ""} — ${c.description}`),
+          },
+        },
+        EMPTY_COMMANDS,
+      ];
+
+    case "TreeOpen": {
+      if (model.screen.kind !== "thread") return [model, EMPTY_COMMANDS];
+      const thread = model.screen;
+      if (thread.working || model.tree !== null || model.slash !== null) return [model, EMPTY_COMMANDS];
+      const rows = treeRows(thread.entries, thread.leafId);
+      const leafIndex = rows.findIndex((r) => r.id === thread.leafId);
+      return [
+        { ...model, tree: { selected: leafIndex >= 0 ? leafIndex : 0 }, escArm: null },
+        EMPTY_COMMANDS,
+      ];
+    }
+
+    case "TreeClose":
+      return [{ ...model, tree: null, escArm: null }, EMPTY_COMMANDS];
+
+    case "TreeJump": {
+      if (model.screen.kind !== "thread" || model.tree === null || model.screen.working) {
+        return [model, EMPTY_COMMANDS];
+      }
+      const rows = treeRows(model.screen.entries, model.screen.leafId);
+      const row = rows[model.tree.selected];
+      if (row === undefined) return [model, EMPTY_COMMANDS];
+      return [model, [cmd("branch", hub.branch(model.screen.threadId, row.id))]];
+    }
+
+    case "BranchDone": {
+      if (model.screen.kind !== "thread" || model.screen.threadId !== message.threadId) {
+        return [model, EMPTY_COMMANDS];
+      }
+      return [
+        {
+          ...model,
+          screen: { ...model.screen, leafId: message.leafId },
+          tree: null,
+          escArm: null,
+        },
+        EMPTY_COMMANDS,
+      ];
+    }
+
+    case "CompactResult": {
+      const summary = (message.result as { summary?: string }).summary;
+      return [
+        {
+          ...model,
+          dialog: {
+            kind: "confirm",
+            title: "compacted",
+            message: summary === undefined ? "session compacted" : clip(summary, 240),
+            action: "ok",
+          },
+        },
+        EMPTY_COMMANDS,
+      ];
+    }
+
+    case "Renamed":
+      return [model, EMPTY_COMMANDS];
 
     case "PromptAccepted":
       if (model.screen.kind === "thread") {
@@ -419,7 +751,6 @@ export const update = (
       return [model, EMPTY_COMMANDS];
 
     case "Aborted":
-    case "Created":
       return [model, EMPTY_COMMANDS];
 
     case "Deleted": {
@@ -432,6 +763,13 @@ export const update = (
         },
         EMPTY_COMMANDS,
       ];
+    }
+
+    case "EscArm": {
+      if (model.escArm === null || model.escArm.id !== message.id) return [model, EMPTY_COMMANDS];
+      if (model.screen.kind !== "thread") return [{ ...model, escArm: null }, EMPTY_COMMANDS];
+      if (model.screen.cameFrom === "home") return [homeOf(model), EMPTY_COMMANDS];
+      return refreshList(model, hub);
     }
 
     case "DialogClose":
@@ -456,14 +794,11 @@ export const update = (
         if (name.length === 0) return [{ ...model, dialog: null }, EMPTY_COMMANDS];
         return [
           { ...model, dialog: null },
-          [cmd("create-thread", hub.createThread(name, cwd))],
+          [cmd("create-and-open", hub.createAndOpen(name, cwd))],
         ];
       }
       return [model, EMPTY_COMMANDS];
     }
-
-    case "Created":
-      return [model, EMPTY_COMMANDS];
 
     case "Key":
       return handleKey(model, message.key, message.mods, hub, onQuit);
@@ -475,11 +810,11 @@ export const update = (
           EMPTY_COMMANDS,
         ];
       }
+      if (model.screen.kind === "home") {
+        return [withInput(model, model.homeInput + message.text), EMPTY_COMMANDS];
+      }
       if (model.screen.kind === "thread") {
-        return [
-          { ...model, screen: { ...model.screen, input: model.screen.input + message.text } },
-          EMPTY_COMMANDS,
-        ];
+        return [withInput(model, model.screen.input + message.text), EMPTY_COMMANDS];
       }
       return [model, EMPTY_COMMANDS];
     }
@@ -503,9 +838,15 @@ const handleKey = (
     return handleDialogKey(model, key, mods);
   }
 
+  // The tree overlay swallows everything but its own keys.
+  if (model.tree !== null) {
+    return handleTreeKey(model, key);
+  }
+
   const screen = model.screen;
+  if (screen.kind === "home") return handleHomeKey(model, key, mods, hub, onQuit);
   if (screen.kind === "list") return handleListKey(model, screen, key, mods, hub, onQuit);
-  return handleThreadKey(model, screen, key, mods, hub);
+  return handleThreadKey(model, screen, key, mods, hub, onQuit);
 };
 
 const handleDialogKey = (
@@ -515,6 +856,11 @@ const handleDialogKey = (
 ): readonly [Model, ReadonlyArray<Command.Command<Msg>>] => {
   const dialog = model.dialog;
   if (dialog === null) return [model, EMPTY_COMMANDS];
+
+  if (dialog.kind === "help") {
+    if (key === "escape" || key === "enter" || key === "space") return [{ ...model, dialog: null }, EMPTY_COMMANDS];
+    return [model, EMPTY_COMMANDS];
+  }
 
   if (key === "escape") return [{ ...model, dialog: null }, EMPTY_COMMANDS];
 
@@ -540,6 +886,82 @@ const handleDialogKey = (
   }
   if (key.length === 1 && !mods.ctrlKey && !mods.metaKey && !mods.altKey) {
     return [{ ...model, dialog: { ...dialog, text: dialog.text + key } }, EMPTY_COMMANDS];
+  }
+  return [model, EMPTY_COMMANDS];
+};
+
+const handleTreeKey = (
+  model: Model,
+  key: string,
+): readonly [Model, ReadonlyArray<Command.Command<Msg>>] => {
+  if (model.screen.kind !== "thread" || model.tree === null) return [model, EMPTY_COMMANDS];
+  const rows = treeRows(model.screen.entries, model.screen.leafId);
+  if (key === "up") {
+    return [{ ...model, tree: { selected: Math.max(0, model.tree.selected - 1) } }, EMPTY_COMMANDS];
+  }
+  if (key === "down") {
+    return [{ ...model, tree: { selected: Math.min(rows.length - 1, model.tree.selected + 1) } }, EMPTY_COMMANDS];
+  }
+  if (key === "enter" || key === "l") {
+    return [model, [cmd("tree-jump", Effect.succeed({ _tag: "TreeJump" } satisfies Msg))]];
+  }
+  if (key === "escape") {
+    return [{ ...model, tree: null, escArm: null }, EMPTY_COMMANDS];
+  }
+  return [model, EMPTY_COMMANDS];
+};
+
+const handleHomeKey = (
+  model: Model,
+  key: string,
+  mods: KeyboardModifiers,
+  hub: WireHub,
+  onQuit: () => void,
+): readonly [Model, ReadonlyArray<Command.Command<Msg>>] => {
+  if (slashMenuOpen(model)) {
+    if (key === "up") {
+      const matches = slashMatches(model);
+      const selected = Math.max(0, (model.slash?.selected ?? 0) - 1);
+      return [{ ...model, slash: { selected: Math.min(selected, matches.length - 1) } }, EMPTY_COMMANDS];
+    }
+    if (key === "down") {
+      const matches = slashMatches(model);
+      const selected = Math.min(matches.length - 1, (model.slash?.selected ?? 0) + 1);
+      return [{ ...model, slash: { selected } }, EMPTY_COMMANDS];
+    }
+    if (key === "tab") return slashActivate(model, hub, onQuit, false);
+    if (key === "enter") return slashActivate(model, hub, onQuit, true);
+    if (key === "escape") return [{ ...model, slash: null }, EMPTY_COMMANDS];
+  }
+  if (key === "enter") return submitInput(model, hub, onQuit);
+  if (key === "l") return refreshList(model, hub);
+  if (key === "n") {
+    return [
+      {
+        ...model,
+        dialog: {
+          kind: "input",
+          title: "new thread",
+          placeholder: "name",
+          action: "create-thread",
+          text: "",
+        },
+      },
+      EMPTY_COMMANDS,
+    ];
+  }
+  if (key === "q") {
+    return [model, [cmd("quit", Effect.sync(onQuit).pipe(Effect.as({ _tag: "Quit" } satisfies Msg)))]];
+  }
+  if (mods.ctrlKey && key === "u") return [{ ...model, homeInput: "", slash: null }, EMPTY_COMMANDS];
+  if (key === "backspace") {
+    return [withInput(model, model.homeInput.slice(0, -1)), EMPTY_COMMANDS];
+  }
+  if (key === "space") {
+    return [withInput(model, model.homeInput + " "), EMPTY_COMMANDS];
+  }
+  if (key.length === 1 && !mods.ctrlKey && !mods.metaKey && !mods.altKey) {
+    return [withInput(model, model.homeInput + key), EMPTY_COMMANDS];
   }
   return [model, EMPTY_COMMANDS];
 };
@@ -598,6 +1020,9 @@ const handleListKey = (
   if (key === "r") {
     return [model, [cmd("refresh", hub.refreshThreads())]];
   }
+  if (key === "escape") {
+    return [homeOf(model), EMPTY_COMMANDS];
+  }
   if (key === "q") {
     return [model, [cmd("quit", Effect.sync(onQuit).pipe(Effect.as({ _tag: "Quit" } satisfies Msg)))]];
   }
@@ -610,6 +1035,7 @@ const handleThreadKey = (
   key: string,
   mods: KeyboardModifiers,
   hub: WireHub,
+  onQuit: () => void,
 ): readonly [Model, ReadonlyArray<Command.Command<Msg>>] => {
   // Navigation with modifiers takes precedence over text input.
   if (mods.ctrlKey && key === "up") {
@@ -621,34 +1047,73 @@ const handleThreadKey = (
   if (mods.ctrlKey && key === "l") {
     return [{ ...model, screen: { ...screen, scrollBack: 0 } }, EMPTY_COMMANDS];
   }
+
   if (key === "escape") {
-    return [model, [cmd("back-to-list", Effect.succeed({ _tag: "BackToList" } satisfies Msg))]];
+    if (model.slash !== null) return [{ ...model, slash: null }, EMPTY_COMMANDS];
+    // Double-esc opens the tree (pi's habit); a single esc leaves after the
+    // arm window. While working there is no tree, so esc leaves at once.
+    if (model.escArm !== null && !screen.working) {
+      return [{ ...model, escArm: null }, [cmd("tree-open", Effect.succeed({ _tag: "TreeOpen" } satisfies Msg))]];
+    }
+    if (screen.working) {
+      if (screen.cameFrom === "home") return [homeOf(model), EMPTY_COMMANDS];
+      return refreshList(model, hub);
+    }
+    const id = ++escArmSeq;
+    return [
+      { ...model, escArm: { id } },
+      [
+        cmd(
+          "esc-arm",
+          Effect.sleep(`${DOUBLE_ESC_MS} millis`).pipe(Effect.as({ _tag: "EscArm", id } satisfies Msg)),
+        ),
+      ],
+    ];
   }
-  if (key === "enter") {
-    const text = screen.input.trim();
-    if (text.length === 0) return [model, EMPTY_COMMANDS];
-    return [model, [cmd("prompt", hub.sendPrompt(screen.threadId, text))]];
+
+  if (slashMenuOpen(model)) {
+    if (key === "up") {
+      const matches = slashMatches(model);
+      const selected = Math.max(0, (model.slash?.selected ?? 0) - 1);
+      return [{ ...model, slash: { selected: Math.min(selected, matches.length - 1) } }, EMPTY_COMMANDS];
+    }
+    if (key === "down") {
+      const matches = slashMatches(model);
+      const selected = Math.min(matches.length - 1, (model.slash?.selected ?? 0) + 1);
+      return [{ ...model, slash: { selected } }, EMPTY_COMMANDS];
+    }
+    if (key === "tab") return slashActivate(model, hub, onQuit, false);
+    if (key === "enter") return slashActivate(model, hub, onQuit, true);
+  } else {
+    if (key === "enter") {
+      const text = screen.input.trim();
+      if (text.length === 0) return [model, EMPTY_COMMANDS];
+      return [model, [cmd("prompt", hub.sendPrompt(screen.threadId, text))]];
+    }
+    // Modal keys only while the input is empty — typing `m`/`t` must work
+    // (slash commands like /model and /tree depend on it).
+    if (key === "m" && screen.input.length === 0) {
+      return [model, [cmd("cycle-model", hub.cycleModel(screen.threadId))]];
+    }
+    if (key === "t" && screen.input.length === 0) {
+      return [model, [cmd("cycle-thinking", hub.cycleThinkingLevel(screen.threadId))]];
+    }
+    if (mods.ctrlKey && key === "d") {
+      return [model, [cmd("abort", hub.abortRun(screen.threadId))]];
+    }
+    if (mods.ctrlKey && key === "u") {
+      return [{ ...model, screen: { ...screen, input: "" }, slash: null }, EMPTY_COMMANDS];
+    }
   }
-  if (mods.ctrlKey && key === "d") {
-    return [model, [cmd("abort", hub.abortRun(screen.threadId))]];
-  }
-  if (mods.ctrlKey && key === "u") {
-    return [{ ...model, screen: { ...screen, input: "" } }, EMPTY_COMMANDS];
-  }
-  if (key === "m") {
-    return [model, [cmd("cycle-model", hub.cycleModel(screen.threadId))]];
-  }
-  if (key === "t") {
-    return [model, [cmd("cycle-thinking", hub.cycleThinking(screen.threadId))]];
-  }
+
   if (key === "backspace") {
-    return [{ ...model, screen: { ...screen, input: screen.input.slice(0, -1) } }, EMPTY_COMMANDS];
+    return [withInput(model, screen.input.slice(0, -1)), EMPTY_COMMANDS];
   }
   if (key === "space") {
-    return [{ ...model, screen: { ...screen, input: screen.input + " " } }, EMPTY_COMMANDS];
+    return [withInput(model, screen.input + " "), EMPTY_COMMANDS];
   }
   if (key.length === 1 && !mods.ctrlKey && !mods.metaKey && !mods.altKey) {
-    return [{ ...model, screen: { ...screen, input: screen.input + key } }, EMPTY_COMMANDS];
+    return [withInput(model, screen.input + key), EMPTY_COMMANDS];
   }
   return [model, EMPTY_COMMANDS];
 };
@@ -702,12 +1167,107 @@ const entryView = (h: HtmlBuilder<Msg>, entry: Entry) => {
   return h.p([h.Style({ color: line.dim ? rose.muted : rose.text, margin: "0" })], [line.text]);
 };
 
-const threadView = (h: HtmlBuilder<Msg>, screen: ThreadScreen) => {
+const slashMenuView = (h: HtmlBuilder<Msg>, model: Model) => {
+  const matches = slashMatches(model);
+  const selected = model.slash?.selected ?? 0;
+  const nodes: Array<ReturnType<typeof h.div>> = [];
+  for (let i = 0; i < matches.length; i++) {
+    const command = matches[i]!;
+    const isSelected = i === selected;
+    nodes.push(
+      h.div(
+        [h.Style({ flexDirection: "row", gap: "1", padding: "0 1", backgroundColor: isSelected ? rose.overlay : "transparent" })],
+        [
+          h.span([h.Style({ color: isSelected ? rose.gold : rose.foam, width: "18", flexShrink: "0" })], [`/${command.name} ${command.usage}`.trim()]),
+          h.span([h.Style({ color: rose.muted, flexGrow: "1" })], [command.description]),
+        ],
+      ),
+    );
+  }
+  return nodes;
+};
+
+const inputBox = (h: HtmlBuilder<Msg>, text: string) =>
+  h.div(
+    [h.Style({ flexDirection: "row", gap: "1", padding: "0 1", backgroundColor: rose.surface })],
+    [
+      h.span([h.Style({ color: rose.foam })], ["❯"]),
+      h.span([h.Style({ color: rose.text, flexGrow: "1" })], [text.length > 0 ? text : " "]),
+      h.span([h.Style({ color: rose.gold })], ["▌"]),
+    ],
+  );
+
+const homeView = (h: HtmlBuilder<Msg>, model: Model) => {
+  const nodes: Array<ReturnType<typeof h.div> | ReturnType<typeof h.p>> = [];
+  nodes.push(h.p([h.Style({ color: rose.iris })], ["saku"]));
+  nodes.push(
+    h.p([h.Style({ color: rose.muted })], [
+      "enter to start a thread · l list · n new · / commands · q quit",
+    ]),
+  );
+  nodes.push(h.p([h.Style({ color: rose.muted })], [cwd]));
+  if (slashMenuOpen(model)) {
+    nodes.push(...slashMenuView(h, model));
+  }
+  nodes.push(inputBox(h, model.homeInput));
+  return nodes;
+};
+
+const treePanel = (h: HtmlBuilder<Msg>, screen: ThreadScreen, tree: TreeOverlay) => {
+  const rows = treeRows(screen.entries, screen.leafId);
+  const windowSize = 16;
+  const start = Math.max(0, Math.min(tree.selected - Math.floor(windowSize / 2), Math.max(0, rows.length - windowSize)));
+  const end = Math.min(rows.length, start + windowSize);
+
+  const nodes: Array<ReturnType<typeof h.div>> = [];
+  nodes.push(
+    h.div(
+      [h.Style({ flexDirection: "row", gap: "1", padding: "0 1", backgroundColor: rose.overlay })],
+      [
+        h.span([h.Style({ color: rose.iris, flexGrow: "1" })], ["session tree — jump to a message"]),
+        h.span([h.Style({ color: rose.muted })], ["↑/↓ move · enter jump · esc close"]),
+      ],
+    ),
+  );
+  for (let i = start; i < end; i++) {
+    const row = rows[i]!;
+    const selected = i === tree.selected;
+    nodes.push(
+      h.div(
+        [
+          h.Style({
+            flexDirection: "row",
+            padding: "0 1",
+            backgroundColor: selected ? rose.overlay : "transparent",
+          }),
+        ],
+        [
+          h.span([h.Style({ color: selected ? rose.gold : rose.muted, flexShrink: "0" })], [row.prefix]),
+          h.span(
+            [
+              h.Style({
+                color: selected ? rose.gold : row.onPath ? rose.foam : row.dim ? rose.muted : rose.text,
+                flexGrow: "1",
+              }),
+            ],
+            [`${row.onPath ? "• " : ""}${row.text}`],
+          ),
+        ],
+      ),
+    );
+  }
+  if (rows.length === 0) {
+    nodes.push(h.p([h.Style({ color: rose.muted, margin: "0" })], ["no entries yet"]));
+  }
+  return nodes;
+};
+
+const threadView = (h: HtmlBuilder<Msg>, model: Model, screen: ThreadScreen, tree: TreeOverlay | null) => {
   const nodes: Array<ReturnType<typeof h.div> | ReturnType<typeof h.p>> = [];
 
   const state = screen.state;
-  const model = state?.model ?? null;
-  const modelLabel = model === null ? "no model" : `${model.provider}/${model.id}`;
+  const modelInfo = state?.model ?? null;
+  const modelLabel = modelInfo === null ? "no model" : `${modelInfo.provider}/${modelInfo.id}`;
 
   nodes.push(
     h.p(
@@ -726,6 +1286,11 @@ const threadView = (h: HtmlBuilder<Msg>, screen: ThreadScreen) => {
     ),
   );
 
+  if (tree !== null) {
+    nodes.push(...treePanel(h, screen, tree));
+    return nodes;
+  }
+
   const start = Math.max(0, screen.entries.length - visibleLines - screen.scrollBack);
   const end = start + visibleLines;
   if (screen.scrollBack > 0) {
@@ -741,22 +1306,15 @@ const threadView = (h: HtmlBuilder<Msg>, screen: ThreadScreen) => {
     nodes.push(h.p([h.Style({ color: rose.foam })], [`… ${clip(screen.liveText, 160)}`]));
   }
 
-  // Input box
-  nodes.push(
-    h.div(
-      [h.Style({ flexDirection: "row", gap: "1", padding: "0 1", backgroundColor: rose.surface })],
-      [
-        h.span([h.Style({ color: rose.foam })], ["❯"]),
-        h.span([h.Style({ color: rose.text, flexGrow: "1" })], [screen.input.length > 0 ? screen.input : " "]),
-        h.span([h.Style({ color: rose.gold })], ["▌"]),
-      ],
-    ),
-  );
+  if (slashMenuOpen(model)) {
+    nodes.push(...slashMenuView(h, model));
+  }
+  nodes.push(inputBox(h, screen.input));
   nodes.push(
     h.p(
       [h.Style({ color: rose.muted })],
       [
-        "enter send · ctrl+d abort · m model · t thinking · ctrl+↑/↓ scroll · ctrl+l tail · esc back",
+        "enter send · ctrl+d abort · m/t model·thinking (empty input) · esc esc tree · / commands · ctrl+↑/↓ scroll · ctrl+l tail",
       ],
     ),
   );
@@ -774,6 +1332,18 @@ const dialogView = (h: HtmlBuilder<Msg>, dialog: Dialog) => {
           title,
           h.p([h.Style({ color: rose.text, margin: "0" })], [dialog.message]),
           h.p([h.Style({ color: rose.muted, margin: "0" })], ["[enter] confirm   [esc] cancel"]),
+        ],
+      ),
+    ];
+  }
+  if (dialog.kind === "help") {
+    return [
+      h.div(
+        [h.Style({ flexDirection: "column", gap: "1", padding: "1", backgroundColor: rose.overlay })],
+        [
+          title,
+          ...dialog.lines.map((line) => h.p([h.Style({ color: rose.text, margin: "0" })], [line])),
+          h.p([h.Style({ color: rose.muted, margin: "0" })], ["[enter] close"]),
         ],
       ),
     ];
@@ -799,11 +1369,13 @@ const dialogView = (h: HtmlBuilder<Msg>, dialog: Dialog) => {
 export const view = (model: Model, h: HtmlBuilder<Msg>) => {
   const body: Array<ReturnType<typeof h.div> | ReturnType<typeof h.p>> = [];
 
-  if (model.screen.kind === "list") {
+  if (model.screen.kind === "home") {
+    body.push(...homeView(h, model));
+  } else if (model.screen.kind === "list") {
     body.push(h.p([h.Style({ color: rose.iris })], ["saku — threads"]));
     body.push(...listView(h, model.screen));
   } else {
-    body.push(...threadView(h, model.screen));
+    body.push(...threadView(h, model, model.screen, model.tree));
   }
 
   if (model.dialog !== null) {
@@ -811,15 +1383,19 @@ export const view = (model: Model, h: HtmlBuilder<Msg>) => {
   }
 
   const conn = model.connected ? h.span([h.Style({ color: rose.foam })], ["●"]) : h.span([h.Style({ color: rose.muted })], ["○"]);
+  const hints =
+    model.screen.kind === "home"
+      ? "enter start · l list · n new · / commands"
+      : model.screen.kind === "list"
+        ? "j/k move · enter open · n new · d delete · r refresh · esc home"
+        : "enter send · ctrl+d abort · m/t model·thinking · esc esc tree · / commands";
   body.push(
     h.div(
       [h.Style({ flexDirection: "row", gap: "1", marginTop: "auto", paddingTop: "1" })],
       [
         conn,
         h.span([h.Style({ color: rose.muted })], ["saku"]),
-        h.span([h.Style({ color: rose.muted, flexGrow: "1" })], [
-          model.screen.kind === "list" ? "j/k move · enter open · n new · d delete · r refresh · q quit" : "",
-        ]),
+        h.span([h.Style({ color: rose.muted, flexGrow: "1" })], [hints]),
       ],
     ),
   );
@@ -867,14 +1443,13 @@ export const makeApp = (
   return {
     init: (): readonly [Model, ReadonlyArray<Command.Command<Msg>>] => [
       {
-        screen: {
-          kind: "list",
-          threads: [],
-          selected: 0,
-          loading: true,
-          pendingOpen: initialThread ?? null,
-        },
+        screen: { kind: "home" },
         dialog: null,
+        tree: null,
+        slash: null,
+        homeInput: "",
+        pendingOpen: initialThread ?? null,
+        escArm: null,
         connected: false,
       },
       [cmd("boot", Effect.succeed({ _tag: "Boot" } satisfies Msg))],

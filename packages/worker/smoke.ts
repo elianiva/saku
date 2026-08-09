@@ -118,6 +118,30 @@ const main = async (): Promise<void> => {
     `entries=${entriesAfter.entries.length}, tailSeq=${entriesAfter.tailSeq}`,
   );
 
+  // --- rename_thread (ADR 0006: the registry name is the visible name) -------
+  const renamed = await Effect.runPromise(authed.renameThread(thread.id, "user chosen name"));
+  check("rename_thread", renamed.name === "user chosen name", renamed.name);
+  const afterRename = await Effect.runPromise(authed.getThread(thread.id));
+  check("rename_thread persists", afterRename.name === "user chosen name", afterRename.name);
+
+  // --- branch: move the leaf to a past entry ----------------------------------
+  const firstEntry = entriesAfter.entries[0];
+  if (firstEntry !== undefined) {
+    const branchLeaf = await Effect.runPromise(authed.branch(thread.id, firstEntry.id));
+    check("branch moves the leaf", branchLeaf === firstEntry.id, String(branchLeaf));
+    const afterBranch = await Effect.runPromise(authed.getEntries(thread.id));
+    check("branch leaf visible in get_entries", afterBranch.leafId === firstEntry.id, String(afterBranch.leafId));
+  } else {
+    check("branch (no entries to branch to)", false, "session trail was empty");
+  }
+  const badBranch = await Effect.runPromise(Effect.flip(authed.branch(thread.id, "no-such-entry")));
+  check("branch with unknown entry errors", badBranch.code === "command_failed", badBranch.message);
+
+  // --- autoName create (quick start) -------------------------------------------
+  const auto = await Effect.runPromise(authed.createThread("snippet", "/tmp", { autoName: true }));
+  check("create_thread with autoName", auto.name === "snippet", auto.name);
+  await Effect.runPromise(authed.deleteThread(auto.id));
+
   // --- delete + thread_changed? (no subscriber here; just verify deletion) ---
   await Effect.runPromise(authed.deleteThread(thread.id));
   const after = await Effect.runPromise(authed.listThreads());

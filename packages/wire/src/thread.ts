@@ -45,12 +45,19 @@ export const ThreadCommand = S.Union([
     name: S.String,
     cwd: S.String,
     mode: S.optional(ThreadMode),
+    /** The name is an auto-generated prompt snippet, not a user choice (CONTEXT.md: Quick start). */
+    autoName: S.optional(S.Boolean),
   }),
   S.TaggedStruct("get_thread", {
     threadId: S.String,
   }),
   S.TaggedStruct("delete_thread", {
     threadId: S.String,
+  }),
+  /** Rename the registry record — the visible thread name (CONTEXT.md: Auto-title). */
+  S.TaggedStruct("rename_thread", {
+    threadId: S.String,
+    name: S.String,
   }),
 ]);
 export type ThreadCommand = S.Schema.Type<typeof ThreadCommand>;

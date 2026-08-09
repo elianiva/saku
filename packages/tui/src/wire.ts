@@ -13,11 +13,12 @@ import { Effect } from "effect";
 import {
   WorkerClient,
   WireError,
+  type CompactResult,
   type Entry,
   type SessionWireEvent,
+  type ThinkingLevel,
   type ThreadInfo,
   type ThreadSessionState,
-  type ThinkingLevel,
   type WireModelInfo,
 } from "@saku/wire";
 import { getWorkerSocketPath, readAuthToken } from "@saku/worker";
@@ -29,6 +30,17 @@ export interface EntriesResult {
   readonly tailSeq: number;
   readonly leafId: string | null;
 }
+
+/**
+ * The quick-start naming rule (CONTEXT.md: Quick start, Auto-title): the
+ * prompt's first line, whitespace-collapsed, ~60 chars — the snippet that
+ * auto-title later upgrades to `title — snippet`.
+ */
+export const snippetOf = (text: string): string => {
+  const flat = text.replace(/\s+/g, " ").trim();
+  if (flat.length === 0) return "untitled";
+  return flat.length > 60 ? `${flat.slice(0, 60)}…` : flat;
+};
 
 export class WireHub {
   private client: WorkerClient | undefined;
@@ -160,13 +172,57 @@ export class WireHub {
 
   /** Open a thread: durable entries first, then the session state snapshot. */
   openThread(threadId: string): Effect.Effect<Msg, never, never> {
+    return this.withClient((client) => this.openThreadWith(client, threadId, false));
+  }
+
+  private openThreadWith(
+    client: WorkerClient,
+    threadId: string,
+    started: boolean,
+  ): Effect.Effect<Msg, WireError, never> {
+    return client.getEntries(threadId).pipe(
+      Effect.flatMap(({ entries, tailSeq, leafId }) =>
+        client.getState(threadId).pipe(
+          Effect.map((state) => ({
+            _tag: "ThreadOpened",
+            threadId,
+            entries,
+            tailSeq,
+            leafId,
+            state,
+            started,
+          } satisfies Msg)),
+        ),
+      ),
+    );
+  }
+
+  private promptWith(client: WorkerClient, threadId: string, text: string): Effect.Effect<Msg, WireError, never> {
+    return client.prompt(threadId, text).pipe(Effect.map(() => ({ _tag: "PromptAccepted" } satisfies Msg)));
+  }
+
+  /**
+   * Quick start (CONTEXT.md: Quick start): create a thread named from the
+   * prompt snippet, open it, and fire the prompt — one gesture. The final
+   * message is the `ThreadOpened` (with `started`) that switches the screen.
+   */
+  quickStart(text: string): Effect.Effect<Msg, never, never> {
     return this.withClient((client) =>
-      client.getEntries(threadId).pipe(
-        Effect.flatMap(({ entries, tailSeq, leafId }) =>
-          client.getState(threadId).pipe(
-            Effect.map((state) => ({ _tag: "ThreadOpened", threadId, entries, tailSeq, leafId, state })),
+      client.createThread(snippetOf(text), process.cwd(), { autoName: true }).pipe(
+        Effect.flatMap((thread) =>
+          this.openThreadWith(client, thread.id, true).pipe(
+            Effect.flatMap((opened) => this.promptWith(client, thread.id, text).pipe(Effect.as(opened))),
           ),
         ),
+      ),
+    );
+  }
+
+  /** Create a named thread and open it (the `n` dialog / `/new`). */
+  createAndOpen(name: string, cwd: string): Effect.Effect<Msg, never, never> {
+    return this.withClient((client) =>
+      client.createThread(name, cwd).pipe(
+        Effect.flatMap((thread) => this.openThreadWith(client, thread.id, false)),
       ),
     );
   }
@@ -183,9 +239,7 @@ export class WireHub {
   }
 
   sendPrompt(threadId: string, text: string): Effect.Effect<Msg, never, never> {
-    return this.withClient((client) =>
-      client.prompt(threadId, text).pipe(Effect.map(() => ({ _tag: "PromptAccepted" } satisfies Msg))),
-    );
+    return this.withClient((client) => this.promptWith(client, threadId, text));
   }
 
   abortRun(threadId: string): Effect.Effect<Msg, never, never> {
@@ -200,7 +254,15 @@ export class WireHub {
     );
   }
 
-  cycleThinking(threadId: string): Effect.Effect<Msg, never, never> {
+  setModel(threadId: string, provider: string, modelId: string): Effect.Effect<Msg, never, never> {
+    return this.withClient((client) =>
+      client.setModel(threadId, provider, modelId).pipe(
+        Effect.map((model) => ({ _tag: "ModelChanged", model })),
+      ),
+    );
+  }
+
+  cycleThinkingLevel(threadId: string): Effect.Effect<Msg, never, never> {
     return this.withClient((client) =>
       client.cycleThinkingLevel(threadId).pipe(
         Effect.map((level) => ({ _tag: "ThinkingChanged", level })),
@@ -208,9 +270,34 @@ export class WireHub {
     );
   }
 
-  createThread(name: string, cwd: string): Effect.Effect<Msg, never, never> {
+  setThinkingLevel(threadId: string, level: ThinkingLevel): Effect.Effect<Msg, never, never> {
     return this.withClient((client) =>
-      client.createThread(name, cwd).pipe(Effect.map((thread) => ({ _tag: "Created", thread }))),
+      client.setThinkingLevel(threadId, level).pipe(
+        Effect.map((level) => ({ _tag: "ThinkingChanged", level })),
+      ),
+    );
+  }
+
+  compact(threadId: string): Effect.Effect<Msg, never, never> {
+    return this.withClient((client) =>
+      client.compact(threadId).pipe(
+        Effect.map((result) => ({ _tag: "CompactResult", result: result as CompactResult } satisfies Msg)),
+      ),
+    );
+  }
+
+  renameThread(threadId: string, name: string): Effect.Effect<Msg, never, never> {
+    return this.withClient((client) =>
+      client.renameThread(threadId, name).pipe(Effect.map(() => ({ _tag: "Renamed" } satisfies Msg))),
+    );
+  }
+
+  /** Jump the session's leaf to a past entry (the tree overlay). */
+  branch(threadId: string, entryId: string): Effect.Effect<Msg, never, never> {
+    return this.withClient((client) =>
+      client.branch(threadId, entryId).pipe(
+        Effect.map((leafId) => ({ _tag: "BranchDone", threadId, leafId })),
+      ),
     );
   }
 

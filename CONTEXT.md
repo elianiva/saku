@@ -14,6 +14,18 @@ The durable unit of agent work: a pi session plus registry metadata (name, cwd, 
 Thread state is a channel every console can read without owning it: `idle` (no run in flight), `working` (a run or compaction is live), `crashed` (the in-process host threw; the next command rebuilds it from the entry trail), `interrupted` (a run was left open and was recovered as interrupted at first touch — derived from the trail, never a boot scan). Transitions broadcast as `thread_changed` events.
 _Avoid_: session (pi's word for the log machinery), task, job, run, conversation
 
+**Auto-title**:
+A quick-started thread's name lifecycle: the prompt snippet at birth, upgraded to an LLM-generated title (`title — snippet`) by the worker after the thread's first settled run. Applies only to quick-started threads — names the user typed are never rewritten.
+_Avoid_: rename, retitle
+
+**Home**:
+A console's no-thread state: a prompt box over an empty canvas, mirroring pi's fresh-session shape. The default screen — the registry is one key away, never the default.
+_Avoid_: dashboard, launcher, start screen
+
+**Quick start**:
+Starting a thread with its first prompt in one gesture from the home prompt box: the thread is created (named from the prompt), opened, and set to work immediately.
+_Avoid_: new-thread dialog, quick-fire
+
 **Worker**:
 The execution pod. A long-lived daemon process per machine that owns the thread registry and hosts one session runtime per thread — pi-agent-core's `Agent` + `Session` embedded directly, no wrapper, one process for all threads — and serves the wire protocol on a unix socket. The seam where remote execution rendezvous later (the same worker, different transport and hands).
 _Avoid_: daemon (that's a lifecycle detail), server, backend, host

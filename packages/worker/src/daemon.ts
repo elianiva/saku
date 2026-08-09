@@ -259,6 +259,7 @@ export class SakuDaemon {
           name: command.name,
           cwd: command.cwd,
           ...(command.mode === undefined ? {} : { mode: command.mode }),
+          ...(command.autoName === undefined ? {} : { autoName: command.autoName }),
         });
         const info = await this.infoOf(record.id);
         if (info !== undefined) this.emitThreadChanged(info);
@@ -283,6 +284,19 @@ export class SakuDaemon {
         const info = this.registry.toInfo(threadId, 0);
         if (info !== undefined) this.emitThreadChanged(info);
         this.respond(client, id, { _tag: "delete_thread" });
+        return;
+      }
+      case "rename_thread": {
+        const threadId = this.resolveThreadId(command.threadId);
+        const name = command.name.trim();
+        if (name.length === 0) {
+          throw new SessionHostError("name must not be empty");
+        }
+        // A user rename wins over auto-title forever (CONTEXT.md: Auto-title).
+        this.registry.update(threadId, { name, nameAuto: false });
+        const info = await this.infoOf(threadId);
+        if (info !== undefined) this.emitThreadChanged(info);
+        this.respond(client, id, { _tag: "rename_thread", thread: info ?? (await this.infoOf(threadId))! });
         return;
       }
     }
@@ -411,6 +425,11 @@ export class SakuDaemon {
         this.respond(client, id, { _tag: "get_tree", tree });
         return;
       }
+      case "branch": {
+        const leafId = await host.branch(command.entryId);
+        this.respond(client, id, { _tag: "branch", leafId });
+        return;
+      }
       case "get_session_stats":
         this.respond(client, id, { _tag: "get_session_stats", stats: await host.getSessionStats() });
         return;
@@ -452,6 +471,12 @@ export class SakuDaemon {
       catalog: this.catalog,
       registry: this.registry,
       sink: (event) => this.emitSessionEvent(threadId, event),
+      onRecordChanged: (changed) => {
+        void (async () => {
+          const info = await this.infoOf(changed.id);
+          if (info !== undefined) this.emitThreadChanged(info);
+        })().catch(() => undefined);
+      },
     });
     this.hosts.set(threadId, host);
     return host;

@@ -23,6 +23,8 @@ export interface ThreadRecord {
   createdAt: number;
   /** Pi session id, stable across daemon restarts; set on first touch. */
   sessionId: string | null;
+  /** The name is an auto-generated prompt snippet awaiting auto-title (CONTEXT.md: Quick start, Auto-title). */
+  nameAuto: boolean;
 }
 
 /**
@@ -47,7 +49,9 @@ export class ThreadRegistry {
     for (const name of names) {
       if (!/^[0-9a-f]{32}$/u.test(name)) continue;
       try {
-        const record = JSON.parse(readFileSync(getThreadFile(name), "utf8")) as ThreadRecord;
+        const raw = JSON.parse(readFileSync(getThreadFile(name), "utf8")) as ThreadRecord;
+        // Records written before auto-title (ADR 0006) have no nameAuto field.
+        const record: ThreadRecord = { ...raw, nameAuto: raw.nameAuto === true };
         registry.records.set(record.id, record);
         // Every thread starts idle; hosts derive interrupted/crashed on touch.
         registry.states.set(record.id, "idle");
@@ -67,7 +71,7 @@ export class ThreadRegistry {
   }
 
   /** Create a thread record and persist it. */
-  create(input: { name: string; cwd: string; mode?: ThreadMode }): ThreadRecord {
+  create(input: { name: string; cwd: string; mode?: ThreadMode; autoName?: boolean }): ThreadRecord {
     const record: ThreadRecord = {
       id: randomUUID().replaceAll("-", ""),
       name: input.name,
@@ -75,6 +79,7 @@ export class ThreadRegistry {
       mode: input.mode ?? "local",
       createdAt: Date.now(),
       sessionId: null,
+      nameAuto: input.autoName === true,
     };
     this.records.set(record.id, record);
     this.states.set(record.id, "idle");
@@ -82,11 +87,12 @@ export class ThreadRegistry {
     return record;
   }
 
-  update(threadId: string, patch: Partial<Pick<ThreadRecord, "name" | "sessionId">>): ThreadRecord | undefined {
+  update(threadId: string, patch: Partial<Pick<ThreadRecord, "name" | "sessionId" | "nameAuto">>): ThreadRecord | undefined {
     const record = this.records.get(threadId);
     if (record === undefined) return undefined;
     if (patch.name !== undefined) record.name = patch.name;
     if (patch.sessionId !== undefined) record.sessionId = patch.sessionId;
+    if (patch.nameAuto !== undefined) record.nameAuto = patch.nameAuto;
     this.persist(record);
     return record;
   }

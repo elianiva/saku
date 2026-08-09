@@ -78,6 +78,8 @@ export const SessionCommand = S.Union([
   S.TaggedStruct("cycle_thinking_level", {}),
   S.TaggedStruct("get_entries", { sinceSeq: S.optional(S.Number) }),
   S.TaggedStruct("get_tree", {}),
+  /** Move the session's leaf to a past entry; the next prompt forks there (idle only). */
+  S.TaggedStruct("branch", { entryId: S.String }),
   S.TaggedStruct("get_session_stats", {}),
   S.TaggedStruct("set_session_name", { name: S.String }),
   S.TaggedStruct("get_state", {}),
@@ -111,6 +113,7 @@ export const ResponsePayload = S.Union([
     leafId: S.Union([S.Null, S.String]),
   }),
   S.TaggedStruct("get_tree", { tree: WireTree }),
+  S.TaggedStruct("branch", { leafId: S.Union([S.Null, S.String]) }),
   S.TaggedStruct("get_session_stats", { stats: S.Unknown }),
   S.TaggedStruct("set_session_name", {}),
   S.TaggedStruct("get_state", { state: ThreadSessionState }),
@@ -118,6 +121,7 @@ export const ResponsePayload = S.Union([
   S.TaggedStruct("create_thread", { thread: ThreadInfo }),
   S.TaggedStruct("get_thread", { thread: ThreadInfo }),
   S.TaggedStruct("delete_thread", {}),
+  S.TaggedStruct("rename_thread", { thread: ThreadInfo }),
 ]);
 export type ResponsePayload = S.Schema.Type<typeof ResponsePayload>;
 

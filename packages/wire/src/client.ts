@@ -466,8 +466,11 @@ export class WorkerClient {
     ).pipe(Effect.map((p) => p.levels));
   }
 
-  setThinkingLevel(threadId: string, level: ThinkingLevel): Effect.Effect<void, WireError, never> {
-    return this.request({ _tag: "set_thinking_level", level }, threadId).pipe(Effect.map(() => undefined));
+  setThinkingLevel(threadId: string, level: ThinkingLevel): Effect.Effect<ThinkingLevel, WireError, never> {
+    return this.request<{ _tag: "set_thinking_level"; level: ThinkingLevel }>(
+      { _tag: "set_thinking_level", level },
+      threadId,
+    ).pipe(Effect.map((p) => p.level));
   }
 
   cycleThinkingLevel(threadId: string): Effect.Effect<ThinkingLevel, WireError, never> {
@@ -490,6 +493,13 @@ export class WorkerClient {
   getTree(threadId: string): Effect.Effect<WireTree, WireError, never> {
     return this.request<{ _tag: "get_tree"; tree: WireTree }>({ _tag: "get_tree" }, threadId).pipe(
       Effect.map((p) => p.tree),
+    );
+  }
+
+  /** Move the session's leaf to a past entry (idle threads only). */
+  branch(threadId: string, entryId: string): Effect.Effect<string | null, WireError, never> {
+    return this.request<{ _tag: "branch"; leafId: string | null }>({ _tag: "branch", entryId }, threadId).pipe(
+      Effect.map((p) => p.leafId),
     );
   }
 
@@ -517,14 +527,32 @@ export class WorkerClient {
     );
   }
 
-  createThread(name: string, cwd: string, mode?: ThreadMode): Effect.Effect<ThreadInfo, WireError, never> {
-    return this.request<{ _tag: "create_thread"; thread: ThreadInfo }>(
-      mode === undefined ? { _tag: "create_thread", name, cwd } : { _tag: "create_thread", name, cwd, mode },
-    ).pipe(Effect.map((p) => p.thread));
+  createThread(
+    name: string,
+    cwd: string,
+    options?: { readonly mode?: ThreadMode; readonly autoName?: boolean },
+  ): Effect.Effect<ThreadInfo, WireError, never> {
+    const command: ThreadCommand =
+      options === undefined
+        ? { _tag: "create_thread", name, cwd }
+        : {
+            _tag: "create_thread",
+            name,
+            cwd,
+            ...(options.mode === undefined ? {} : { mode: options.mode }),
+            ...(options.autoName === undefined ? {} : { autoName: options.autoName }),
+          };
+    return this.request<{ _tag: "create_thread"; thread: ThreadInfo }>(command).pipe(Effect.map((p) => p.thread));
   }
 
   getThread(threadId: string): Effect.Effect<ThreadInfo, WireError, never> {
     return this.request<{ _tag: "get_thread"; thread: ThreadInfo }>({ _tag: "get_thread", threadId }).pipe(
+      Effect.map((p) => p.thread),
+    );
+  }
+
+  renameThread(threadId: string, name: string): Effect.Effect<ThreadInfo, WireError, never> {
+    return this.request<{ _tag: "rename_thread"; thread: ThreadInfo }>({ _tag: "rename_thread", threadId, name }).pipe(
       Effect.map((p) => p.thread),
     );
   }

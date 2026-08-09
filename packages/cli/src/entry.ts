@@ -106,7 +106,7 @@ const cmdNew = async (name: string | undefined, cwd: string, mode: ThreadMode | 
   const client = await connect();
   try {
     const thread = await run(
-      mode === undefined ? client.createThread(name, cwd) : client.createThread(name, cwd, mode),
+      mode === undefined ? client.createThread(name, cwd) : client.createThread(name, cwd, { mode }),
       "create thread",
     );
     console.log(shortThreadId(thread.id));
