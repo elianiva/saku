@@ -24,20 +24,20 @@ import {
 import { WireHub } from "./wire.ts";
 
 // ---------------------------------------------------------------------------
-// Palette (rose-pine)
+// Palette (rose-pine dawn)
 // ---------------------------------------------------------------------------
 
 const rose = {
-  base: "#191724",
-  surface: "#1f1d2e",
-  overlay: "#26233a",
-  muted: "#6e6a86",
-  text: "#e0def4",
-  gold: "#f6c177",
-  love: "#eb6f92",
-  foam: "#9ccfd8",
-  iris: "#c4a7e7",
-  pine: "#31748f",
+  base: "#faf4ed",
+  surface: "#fffaf3",
+  overlay: "#f2e9e1",
+  muted: "#9893a5",
+  text: "#575279",
+  gold: "#ea9d34",
+  love: "#b4637a",
+  foam: "#286983",
+  iris: "#907aa9",
+  pine: "#56949f",
 } as const;
 
 // ---------------------------------------------------------------------------
