@@ -43,5 +43,5 @@ export const writeJsonLine = (socket: Socket, value: unknown): boolean =>
 export const parseJsonLine = (line: string): unknown => {
   const text = line.trim();
   if (text.length === 0) return undefined;
-  return JSON.parse(text) as unknown;
+  return JSON.parse(text);
 };

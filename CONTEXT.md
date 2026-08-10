@@ -18,8 +18,12 @@ _Avoid_: session (pi's word for the log machinery), task, job, run, conversation
 A quick-started thread's name lifecycle: the prompt snippet at birth, upgraded to an LLM-generated title (`title — snippet`) by the worker after the thread's first settled run. Applies only to quick-started threads — names the user typed are never rewritten.
 _Avoid_: rename, retitle
 
+**Chat**:
+A console's primary surface, one per console: header, message canvas, editor, footer. Either empty (no thread attached — the **Home**) or showing a live **thread**; the two states are the same shape, so quick start morphs in place — no screen switch. Never holds session state — it renders what the wire sends.
+_Avoid_: session view, thread view (one surface, two states), chat log
+
 **Home**:
-A console's no-thread state: a prompt box over an empty canvas, mirroring pi's fresh-session shape. The default screen — the registry is one key away, never the default.
+The chat surface's no-thread state — pi's fresh-session shape: header, blank canvas, editor, footer. The default screen; the registry is one key away, never the default. Quick start happens in place: typing + enter attaches a thread and starts it.
 _Avoid_: dashboard, launcher, start screen
 
 **Quick start**:
@@ -32,7 +36,7 @@ _Avoid_: daemon (that's a lifecycle detail), server, backend, host
 
 **Session**:
 The pi agent session inside a thread — the machinery that owns a message tree (entries, lanes, compaction, forks) and speaks pi-agent-core's event vocabulary (`AgentEvent`, stripped of partial snapshots). A thread wraps exactly one session.
-_Avoid_: conversation, chat, log
+_Avoid_: conversation, log (chat is the console surface, not the machinery)
 
 **Console**:
 Any client of the wire protocol — the TUI (interactive), the CLI (headless, scripting), the future GUI. Consoles never hold session state; they attach, tail, and command.

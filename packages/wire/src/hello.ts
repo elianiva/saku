@@ -8,8 +8,6 @@
 
 import { Schema as S } from "effect";
 
-import { WIRE_VERSION } from "./version.ts";
-
 export const Hello = S.TaggedStruct("hello", {
   token: S.String,
   role: S.Literals(["tui", "cli"]),
@@ -22,14 +20,4 @@ export const HelloOk = S.TaggedStruct("hello_ok", {
 });
 export type HelloOk = S.Schema.Type<typeof HelloOk>;
 
-export const HelloError = S.TaggedStruct("error", {
-  message: S.String,
-});
-export type HelloError = S.Schema.Type<typeof HelloError>;
-
-/** Encode a `hello_ok` reply. */
-export const encodeHelloOk = (pid: number): HelloOk => ({
-  _tag: "hello_ok",
-  pid,
-  version: WIRE_VERSION,
-});
+// Handshake failure is the envelope's `error` frame — see ErrorEvent.

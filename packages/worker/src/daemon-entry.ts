@@ -3,33 +3,22 @@
  *
  * `saku daemon start` spawns `node daemon-entry.ts` detached with its output
  * redirected to `~/.saku/worker.log`; this module owns the process lifetime.
+ *
+ * The daemon runs as a scoped resource: `SakuDaemonLayer` acquires the
+ * registry, catalog, and socket server; the program idles on `Effect.never`
+ * until `NodeRuntime.runMain` interrupts the fiber on SIGINT/SIGTERM, which
+ * runs the layer's finalizers (hosts disposed, clients dropped, socket
+ * unlinked) before the process exits.
  */
 
-import { SakuDaemon } from "./daemon.ts";
+import { runMain } from "@effect/platform-node/NodeRuntime";
+import { Effect } from "effect";
 
-const main = async (): Promise<void> => {
-  const daemon = SakuDaemon.create();
-  await daemon.start();
+import { SakuDaemon, SakuDaemonLayer } from "./daemon.ts";
 
-  let shuttingDown = false;
-  const shutdown = async (signal: string): Promise<void> => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    console.log(`[saku-worker] ${signal}: shutting down`);
-    await daemon.close();
-    process.exit(0);
-  };
-  process.on("SIGTERM", () => void shutdown("SIGTERM"));
-  process.on("SIGINT", () => void shutdown("SIGINT"));
-  process.on("uncaughtException", (error) => {
-    console.error(`[saku-worker] uncaught exception: ${error instanceof Error ? error.stack : String(error)}`);
-  });
-  process.on("unhandledRejection", (reason) => {
-    console.error(`[saku-worker] unhandled rejection: ${String(reason)}`);
-  });
-};
-
-main().catch((error) => {
-  console.error(`[saku-worker] failed to start: ${error instanceof Error ? error.stack : String(error)}`);
-  process.exit(1);
+const program: Effect.Effect<never, Error, SakuDaemon> = Effect.gen(function* () {
+  yield* SakuDaemon;
+  return yield* Effect.never;
 });
+
+runMain(Effect.provide(SakuDaemonLayer)(program));

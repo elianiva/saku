@@ -9,20 +9,19 @@ import { HelloOk } from "./hello.ts";
 import { ThreadCommand, ThreadChanged } from "./thread.ts";
 import { ResponsePayload, SessionCommand } from "./session.ts";
 
-/** One JSON line from console to worker. */
-export const WireCommand = S.Union([
-  S.TaggedStruct("session", {
-    id: S.optional(S.String),
-    threadId: S.String,
-    command: SessionCommand,
-  }),
-  S.TaggedStruct("thread", {
-    id: S.optional(S.String),
-    command: ThreadCommand,
-  }),
-]);
-export type WireCommand = S.Schema.Type<typeof WireCommand>;
+export const SessionEnvelope = S.TaggedStruct("session", {
+  id: S.optional(S.String),
+  threadId: S.String,
+  command: SessionCommand,
+});
+export const ThreadEnvelope = S.TaggedStruct("thread", {
+  id: S.optional(S.String),
+  command: ThreadCommand,
+});
 
+/** One JSON line from console to worker. */
+export const WireCommand = S.Union([SessionEnvelope, ThreadEnvelope]);
+export type WireCommand = S.Schema.Type<typeof WireCommand>;
 export const ResponseOk = S.TaggedStruct("response", {
   id: S.String,
   ok: S.Literal(true),
@@ -58,6 +57,3 @@ export const WireEvent = S.Union([
   ErrorEvent,
 ]);
 export type WireEvent = S.Schema.Type<typeof WireEvent>;
-
-/** Typed view of a decoded wire event. */
-export type WireEventKind = WireEvent["_tag"];

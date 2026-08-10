@@ -21,7 +21,7 @@ import {
   type ThreadSessionState,
   type WireModelInfo,
 } from "@saku/wire";
-import { getWorkerSocketPath, readAuthToken } from "@saku/worker";
+import { getWorkerSocketPath, nodeFs, readAuthToken } from "@saku/worker";
 
 import type { Msg } from "./app.ts";
 
@@ -62,33 +62,33 @@ export class WireHub {
 
   // -- connection ------------------------------------------------------------
 
-  private token(): string {
-    const token = readAuthToken();
-    if (token === undefined) {
-      throw new Error("worker auth token missing — start it with: saku daemon start");
-    }
-    return token;
+  private token(): Effect.Effect<string, WireError, never> {
+    return readAuthToken(nodeFs).pipe(
+      Effect.flatMap((token) =>
+        token === undefined
+          ? Effect.fail(
+              new WireError({ code: "refused", message: "worker auth token missing — start it with: saku daemon start" }),
+            )
+          : Effect.succeed(token),
+      ),
+    );
   }
 
   private connect(): Effect.Effect<WorkerClient, WireError, never> {
-    let token: string;
-    try {
-      token = this.token();
-    } catch (error) {
-      return Effect.fail(
-        new WireError({ code: "refused", message: (error as Error).message }),
-      );
-    }
-    const client = new WorkerClient({
-      socketPath: getWorkerSocketPath(),
-      token,
-      role: "tui",
-    });
-    return client.connect().pipe(
-      Effect.map(() => {
-        this.client = client;
-        this.install(client);
-        return client;
+    return this.token().pipe(
+      Effect.flatMap((token) => {
+        const client = new WorkerClient({
+          socketPath: getWorkerSocketPath(),
+          token,
+          role: "tui",
+        });
+        return client.connect().pipe(
+          Effect.map(() => {
+            this.client = client;
+            this.install(client);
+            return client;
+          }),
+        );
       }),
     );
   }

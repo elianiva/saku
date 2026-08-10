@@ -5,18 +5,18 @@
  * Run: node smoke.ts (from packages/worker)
  */
 
-import { accessSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { access, mkdtemp, mkdir, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { Effect } from "effect";
-import { WorkerClient } from "@saku/wire";
+import { WorkerClient, type HelloOk, type ThreadInfo } from "@saku/wire";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const home = mkdtempSync(join(tmpdir(), "saku-smoke-"));
+const home = await mkdtemp(join(tmpdir(), "saku-smoke-"));
 const agentDir = join(home, "pi-agent");
-mkdirSync(agentDir, { recursive: true });
+await mkdir(agentDir, { recursive: true });
 
 const env = { ...process.env, SAKU_HOME: home, PI_CODING_AGENT_DIR: agentDir };
 const socketPath = join(home, "worker.sock");
@@ -43,7 +43,7 @@ const main = async (): Promise<void> => {
   // Wait for the socket to appear.
   for (let i = 0; i < 100; i++) {
     try {
-      accessSync(socketPath);
+      await access(socketPath);
       break;
     } catch {
       await sleep(50);
@@ -58,14 +58,14 @@ const main = async (): Promise<void> => {
   check("bad token rejected", badResult.code === "handshake", badResult.message);
 
   // --- connect with the real token -----------------------------------------
-  const token = readFileSync(join(home, "auth"), "utf8").trim();
+  const token = (await readFile(join(home, "auth"), "utf8")).trim();
   check("token file created", token.length === 64, `len=${token.length}`);
   const authed = new WorkerClient({ socketPath, token, role: "cli" });
-  const hello = await new Promise<unknown>((resolve) => {
+  const hello = await new Promise<HelloOk>((resolve) => {
     authed.on("hello_ok", resolve);
     void Effect.runPromise(authed.connect());
   }).catch(() => undefined);
-  check("hello_ok received", (hello as { pid: number }).pid === daemon.pid, `pid=${(hello as { pid: number }).pid}`);
+  check("hello_ok received", hello?.pid === daemon.pid, `pid=${hello?.pid}`);
 
   // --- registry ops ----------------------------------------------------------
   const thread = await Effect.runPromise(authed.createThread("smoke thread", "/tmp"));
@@ -94,7 +94,7 @@ const main = async (): Promise<void> => {
   const sessionsDir = join(home, "threads", thread.id, "sessions");
   let sessionFiles: string[] = [];
   try {
-    sessionFiles = readdirSync(sessionsDir);
+    sessionFiles = await readdir(sessionsDir);
   } catch {
     // No sessions dir — never started. Good.
   }
@@ -152,7 +152,14 @@ const main = async (): Promise<void> => {
   await Effect.runPromise(authed.setSessionName(thread2.id, "renamed"));
   const state2 = await Effect.runPromise(authed.getState(thread2.id));
   check("set_session_name", state2.name === "renamed", String(state2.name));
+  // --- delete broadcasts thread_changed (same-socket ordering: the event
+  //     lands before the response resolves) ----------------------------------
+  const changed: string[] = [];
+  authed.on("thread_changed", (thread: ThreadInfo) => {
+    changed.push(thread.id);
+  });
   await Effect.runPromise(authed.deleteThread(thread2.id));
+  check("delete broadcasts thread_changed", changed.includes(thread2.id), `events=${changed.join(",")}`);
 
   // --- protocol error path -----------------------------------------------------
   const refused = new WorkerClient({ socketPath: join(home, "ghost.sock"), token, role: "cli" });
@@ -173,7 +180,7 @@ main()
     console.error("SMOKE CRASHED:", error);
     process.exit(1);
   })
-  .finally(() => {
+  .finally(async () => {
     if (daemon !== undefined && daemon.exitCode === null) daemon.kill("SIGKILL");
-    rmSync(home, { recursive: true, force: true });
+    await rm(home, { recursive: true, force: true });
   });

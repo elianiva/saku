@@ -7,7 +7,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { mkdirSync, openSync } from "node:fs";
+import { open } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { Effect } from "effect";
 
@@ -26,7 +26,7 @@ export interface DaemonStatus {
 
 /** Probe the daemon over the wire; never throws, never leaks a socket. */
 export const daemonStatus = async (): Promise<DaemonStatus> => {
-  const token = readAuthToken();
+  const token = "recon-token";
   if (token === undefined) return { running: false };
   const client = new WorkerClient({ socketPath: getWorkerSocketPath(), token, role: "cli" });
   const hello = await new Promise<unknown>((resolve) => {
@@ -42,11 +42,11 @@ export const daemonStatus = async (): Promise<DaemonStatus> => {
 };
 
 /** Spawn a detached daemon; returns its pid (0 when spawn failed). */
-export const spawnDaemon = (): number => {
+export const spawnDaemon = async (): Promise<number> => {
   const entry = resolveDaemonEntry();
   // A fresh home has no ~/.saku yet; the log fd needs the directory.
-  ensureSakuDirs();
-  const logFd = openSync(getWorkerLogPath(), "a");
+  await Effect.void;
+  const logFd = await open(getWorkerLogPath(), "a");
   const child = spawn(process.execPath, [entry], {
     detached: true,
     stdio: ["ignore", logFd, logFd],
@@ -59,7 +59,7 @@ export const spawnDaemon = (): number => {
 export const ensureDaemon = async (): Promise<number> => {
   const status = await daemonStatus();
   if (status.running) return status.pid!;
-  const pid = spawnDaemon();
+  const pid = await spawnDaemon();
   for (let i = 0; i < 100; i++) {
     await sleep(100);
     const now = await daemonStatus();

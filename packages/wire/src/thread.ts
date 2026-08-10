@@ -6,7 +6,7 @@
  * there is no attach/detach; every console sees every thread).
  */
 
-import { Schema as S } from "effect";
+import { Result, Schema as S } from "effect";
 
 /** A thread's hands policy. Hard-pinned at creation (CONTEXT.md: Mode). */
 export const ThreadMode = S.Literals(["local", "sandbox", "any"]);
@@ -38,27 +38,32 @@ export const ThreadInfo = S.Struct({
 });
 export type ThreadInfo = S.Schema.Type<typeof ThreadInfo>;
 
-/** Registry ops: the control-plane layer pi doesn't have. */
+export const ListThreadsCommand = S.TaggedStruct("list_threads", {});
+export const CreateThreadCommand = S.TaggedStruct("create_thread", {
+  name: S.String,
+  cwd: S.String,
+  mode: S.optional(ThreadMode),
+  /** The name is an auto-generated prompt snippet, not a user choice (CONTEXT.md: Quick start). */
+  autoName: S.optional(S.Boolean),
+});
+export const GetThreadCommand = S.TaggedStruct("get_thread", {
+  threadId: S.String,
+});
+export const DeleteThreadCommand = S.TaggedStruct("delete_thread", {
+  threadId: S.String,
+});
+/** Rename the registry record — the visible thread name (CONTEXT.md: Auto-title). */
+export const RenameThreadCommand = S.TaggedStruct("rename_thread", {
+  threadId: S.String,
+  name: S.String,
+});
+
 export const ThreadCommand = S.Union([
-  S.TaggedStruct("list_threads", {}),
-  S.TaggedStruct("create_thread", {
-    name: S.String,
-    cwd: S.String,
-    mode: S.optional(ThreadMode),
-    /** The name is an auto-generated prompt snippet, not a user choice (CONTEXT.md: Quick start). */
-    autoName: S.optional(S.Boolean),
-  }),
-  S.TaggedStruct("get_thread", {
-    threadId: S.String,
-  }),
-  S.TaggedStruct("delete_thread", {
-    threadId: S.String,
-  }),
-  /** Rename the registry record — the visible thread name (CONTEXT.md: Auto-title). */
-  S.TaggedStruct("rename_thread", {
-    threadId: S.String,
-    name: S.String,
-  }),
+  ListThreadsCommand,
+  CreateThreadCommand,
+  GetThreadCommand,
+  DeleteThreadCommand,
+  RenameThreadCommand,
 ]);
 export type ThreadCommand = S.Schema.Type<typeof ThreadCommand>;
 
@@ -71,23 +76,24 @@ export type ThreadChanged = S.Schema.Type<typeof ThreadChanged>;
 /** First N characters of the thread id — the human-facing short id. */
 export const shortThreadId = (id: string, length = 8): string => id.slice(0, length);
 
-/** Resolve a user-supplied prefix/name against a thread list (git-style). */
-export const resolveThread = (
-  threads: readonly ThreadInfo[],
+/**
+ * Resolve a user-supplied prefix/name against a thread list (git-style).
+ * `Failure` carries the user-facing message.
+ */
+export const resolveThread = <T extends { readonly id: string; readonly name: string }>(
+  threads: readonly T[],
   input: string,
-): { readonly ok: true; readonly thread: ThreadInfo } | { readonly ok: false; readonly message: string } => {
+): Result.Result<T, string> => {
   const exactName = threads.find((t) => t.name === input);
-  if (exactName) return { ok: true, thread: exactName };
+  if (exactName !== undefined) return Result.succeed(exactName);
   const matches = threads.filter((t) => t.id.startsWith(input));
-  if (matches.length === 1) {
-    const only = matches[0];
-    if (only !== undefined) return { ok: true, thread: only };
+  if (matches.length === 1 && matches[0] !== undefined) {
+    return Result.succeed(matches[0]);
   }
   if (matches.length === 0) {
-    return { ok: false, message: `no thread matches "${input}"` };
+    return Result.fail(`no thread matches "${input}"`);
   }
-  return {
-    ok: false,
-    message: `"${input}" is ambiguous: ${matches.map((t) => `${shortThreadId(t.id)} (${t.name})`).join(", ")}`,
-  };
+  return Result.fail(
+    `"${input}" is ambiguous: ${matches.map((t) => `${shortThreadId(t.id)} (${t.name})`).join(", ")}`,
+  );
 };

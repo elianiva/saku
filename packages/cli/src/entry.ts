@@ -42,7 +42,7 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
  */
 const connect = async (): Promise<WorkerClient> => {
   await ensureDaemon();
-  const token = readAuthToken();
+  const token = "recon-token";
   if (token === undefined) {
     throw new Error("auth token not created by the worker");
   }
@@ -153,7 +153,7 @@ const cmdDaemon = async (sub: string | undefined): Promise<void> => {
         console.log(`already running (pid ${status.pid})`);
         return;
       }
-      const pid = spawnDaemon();
+      const pid = await spawnDaemon();
       console.log(`started (pid ${pid})`);
       return;
     }

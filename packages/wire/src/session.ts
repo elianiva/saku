@@ -17,7 +17,10 @@ import { ThreadInfo } from "./thread.ts";
 // Shared session structs
 // ---------------------------------------------------------------------------
 
-export const ThinkingLevelSchema = S.Literals(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+/** The thinking-level ladder (pi's own `ThinkingLevel` vocabulary). */
+export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+
+export const ThinkingLevelSchema = S.Literals(THINKING_LEVELS);
 export type ThinkingLevelSchema = S.Schema.Type<typeof ThinkingLevelSchema>;
 
 export const WireModelInfo = S.Struct({
@@ -56,33 +59,59 @@ export type WireTree = S.Schema.Type<typeof WireTree>;
 // Session commands (console → worker)
 // ---------------------------------------------------------------------------
 
+export const PromptCommand = S.TaggedStruct("prompt", {
+  text: S.String,
+  images: S.optional(S.Array(S.Unknown)),
+});
+export const SteerCommand = S.TaggedStruct("steer", { text: S.String });
+export const FollowUpCommand = S.TaggedStruct("follow_up", { text: S.String });
+export const AbortCommand = S.TaggedStruct("abort", {});
+export const SetSteeringModeCommand = S.TaggedStruct("set_steering_mode", {
+  mode: S.Literals(["all", "one-at-a-time"]),
+});
+export const SetFollowUpModeCommand = S.TaggedStruct("set_follow_up_mode", {
+  mode: S.Literals(["all", "one-at-a-time"]),
+});
+export const GetMessagesCommand = S.TaggedStruct("get_messages", {});
+export const GetLastAssistantTextCommand = S.TaggedStruct("get_last_assistant_text", {});
+export const CompactCommand = S.TaggedStruct("compact", { customInstructions: S.optional(S.String) });
+export const SetAutoCompactionCommand = S.TaggedStruct("set_auto_compaction", { enabled: S.Boolean });
+export const GetAvailableModelsCommand = S.TaggedStruct("get_available_models", {});
+export const SetModelCommand = S.TaggedStruct("set_model", { provider: S.String, modelId: S.String });
+export const CycleModelCommand = S.TaggedStruct("cycle_model", {});
+export const GetAvailableThinkingLevelsCommand = S.TaggedStruct("get_available_thinking_levels", {});
+export const SetThinkingLevelCommand = S.TaggedStruct("set_thinking_level", { level: ThinkingLevelSchema });
+export const CycleThinkingLevelCommand = S.TaggedStruct("cycle_thinking_level", {});
+export const GetEntriesCommand = S.TaggedStruct("get_entries", { sinceSeq: S.optional(S.Number) });
+export const GetTreeCommand = S.TaggedStruct("get_tree", {});
+export const BranchCommand = S.TaggedStruct("branch", { entryId: S.String });
+export const GetSessionStatsCommand = S.TaggedStruct("get_session_stats", {});
+export const SetSessionNameCommand = S.TaggedStruct("set_session_name", { name: S.String });
+export const GetStateCommand = S.TaggedStruct("get_state", {});
+
 export const SessionCommand = S.Union([
-  S.TaggedStruct("prompt", {
-    text: S.String,
-    images: S.optional(S.Array(S.Unknown)),
-  }),
-  S.TaggedStruct("steer", { text: S.String }),
-  S.TaggedStruct("follow_up", { text: S.String }),
-  S.TaggedStruct("abort", {}),
-  S.TaggedStruct("set_steering_mode", { mode: S.Literals(["all", "one-at-a-time"]) }),
-  S.TaggedStruct("set_follow_up_mode", { mode: S.Literals(["all", "one-at-a-time"]) }),
-  S.TaggedStruct("get_messages", {}),
-  S.TaggedStruct("get_last_assistant_text", {}),
-  S.TaggedStruct("compact", { customInstructions: S.optional(S.String) }),
-  S.TaggedStruct("set_auto_compaction", { enabled: S.Boolean }),
-  S.TaggedStruct("get_available_models", {}),
-  S.TaggedStruct("set_model", { provider: S.String, modelId: S.String }),
-  S.TaggedStruct("cycle_model", {}),
-  S.TaggedStruct("get_available_thinking_levels", {}),
-  S.TaggedStruct("set_thinking_level", { level: ThinkingLevelSchema }),
-  S.TaggedStruct("cycle_thinking_level", {}),
-  S.TaggedStruct("get_entries", { sinceSeq: S.optional(S.Number) }),
-  S.TaggedStruct("get_tree", {}),
-  /** Move the session's leaf to a past entry; the next prompt forks there (idle only). */
-  S.TaggedStruct("branch", { entryId: S.String }),
-  S.TaggedStruct("get_session_stats", {}),
-  S.TaggedStruct("set_session_name", { name: S.String }),
-  S.TaggedStruct("get_state", {}),
+  PromptCommand,
+  SteerCommand,
+  FollowUpCommand,
+  AbortCommand,
+  SetSteeringModeCommand,
+  SetFollowUpModeCommand,
+  GetMessagesCommand,
+  GetLastAssistantTextCommand,
+  CompactCommand,
+  SetAutoCompactionCommand,
+  GetAvailableModelsCommand,
+  SetModelCommand,
+  CycleModelCommand,
+  GetAvailableThinkingLevelsCommand,
+  SetThinkingLevelCommand,
+  CycleThinkingLevelCommand,
+  GetEntriesCommand,
+  GetTreeCommand,
+  BranchCommand,
+  GetSessionStatsCommand,
+  SetSessionNameCommand,
+  GetStateCommand,
 ]);
 export type SessionCommand = S.Schema.Type<typeof SessionCommand>;
 
@@ -90,40 +119,77 @@ export type SessionCommand = S.Schema.Type<typeof SessionCommand>;
 // Command responses (worker → console)
 // ---------------------------------------------------------------------------
 
+export const PromptResponse = S.TaggedStruct("prompt", {});
+export const SteerResponse = S.TaggedStruct("steer", {});
+export const FollowUpResponse = S.TaggedStruct("follow_up", {});
+export const AbortResponse = S.TaggedStruct("abort", {});
+export const SetSteeringModeResponse = S.TaggedStruct("set_steering_mode", {});
+export const SetFollowUpModeResponse = S.TaggedStruct("set_follow_up_mode", {});
+export const GetMessagesResponse = S.TaggedStruct("get_messages", { messages: S.Array(S.Unknown) });
+export const GetLastAssistantTextResponse = S.TaggedStruct("get_last_assistant_text", {
+  text: S.Union([S.Null, S.String]),
+});
+export const CompactResponse = S.TaggedStruct("compact", { result: S.Unknown });
+export const SetAutoCompactionResponse = S.TaggedStruct("set_auto_compaction", {});
+export const GetAvailableModelsResponse = S.TaggedStruct("get_available_models", {
+  models: S.Array(WireModelInfo),
+});
+export const SetModelResponse = S.TaggedStruct("set_model", { model: S.Union([S.Null, WireModelInfo]) });
+export const CycleModelResponse = S.TaggedStruct("cycle_model", { model: S.Union([S.Null, WireModelInfo]) });
+export const GetAvailableThinkingLevelsResponse = S.TaggedStruct("get_available_thinking_levels", {
+  levels: S.Array(ThinkingLevelSchema),
+});
+export const SetThinkingLevelResponse = S.TaggedStruct("set_thinking_level", { level: ThinkingLevelSchema });
+export const CycleThinkingLevelResponse = S.TaggedStruct("cycle_thinking_level", { level: ThinkingLevelSchema });
+export const GetEntriesResponse = S.TaggedStruct("get_entries", {
+  entries: S.Array(S.Unknown),
+  tailSeq: S.Number,
+  leafId: S.Union([S.Null, S.String]),
+});
+export const GetTreeResponse = S.TaggedStruct("get_tree", { tree: WireTree });
+export const BranchResponse = S.TaggedStruct("branch", { leafId: S.Union([S.Null, S.String]) });
+export const GetSessionStatsResponse = S.TaggedStruct("get_session_stats", { stats: S.Unknown });
+export const SetSessionNameResponse = S.TaggedStruct("set_session_name", {});
+export const GetStateResponse = S.TaggedStruct("get_state", { state: ThreadSessionState });
+export const ListThreadsResponse = S.TaggedStruct("list_threads", { threads: S.Array(ThreadInfo) });
+export const CreateThreadResponse = S.TaggedStruct("create_thread", { thread: ThreadInfo });
+export const GetThreadResponse = S.TaggedStruct("get_thread", { thread: ThreadInfo });
+export const DeleteThreadResponse = S.TaggedStruct("delete_thread", {});
+export const RenameThreadResponse = S.TaggedStruct("rename_thread", { thread: ThreadInfo });
+
 export const ResponsePayload = S.Union([
-  S.TaggedStruct("prompt", {}),
-  S.TaggedStruct("steer", {}),
-  S.TaggedStruct("follow_up", {}),
-  S.TaggedStruct("abort", {}),
-  S.TaggedStruct("set_steering_mode", {}),
-  S.TaggedStruct("set_follow_up_mode", {}),
-  S.TaggedStruct("get_messages", { messages: S.Array(S.Unknown) }),
-  S.TaggedStruct("get_last_assistant_text", { text: S.Union([S.Null, S.String]) }),
-  S.TaggedStruct("compact", { result: S.Unknown }),
-  S.TaggedStruct("set_auto_compaction", {}),
-  S.TaggedStruct("get_available_models", { models: S.Array(WireModelInfo) }),
-  S.TaggedStruct("set_model", { model: S.Union([S.Null, WireModelInfo]) }),
-  S.TaggedStruct("cycle_model", { model: S.Union([S.Null, WireModelInfo]) }),
-  S.TaggedStruct("get_available_thinking_levels", { levels: S.Array(ThinkingLevelSchema) }),
-  S.TaggedStruct("set_thinking_level", { level: ThinkingLevelSchema }),
-  S.TaggedStruct("cycle_thinking_level", { level: ThinkingLevelSchema }),
-  S.TaggedStruct("get_entries", {
-    entries: S.Array(S.Unknown),
-    tailSeq: S.Number,
-    leafId: S.Union([S.Null, S.String]),
-  }),
-  S.TaggedStruct("get_tree", { tree: WireTree }),
-  S.TaggedStruct("branch", { leafId: S.Union([S.Null, S.String]) }),
-  S.TaggedStruct("get_session_stats", { stats: S.Unknown }),
-  S.TaggedStruct("set_session_name", {}),
-  S.TaggedStruct("get_state", { state: ThreadSessionState }),
-  S.TaggedStruct("list_threads", { threads: S.Array(ThreadInfo) }),
-  S.TaggedStruct("create_thread", { thread: ThreadInfo }),
-  S.TaggedStruct("get_thread", { thread: ThreadInfo }),
-  S.TaggedStruct("delete_thread", {}),
-  S.TaggedStruct("rename_thread", { thread: ThreadInfo }),
+  PromptResponse,
+  SteerResponse,
+  FollowUpResponse,
+  AbortResponse,
+  SetSteeringModeResponse,
+  SetFollowUpModeResponse,
+  GetMessagesResponse,
+  GetLastAssistantTextResponse,
+  CompactResponse,
+  SetAutoCompactionResponse,
+  GetAvailableModelsResponse,
+  SetModelResponse,
+  CycleModelResponse,
+  GetAvailableThinkingLevelsResponse,
+  SetThinkingLevelResponse,
+  CycleThinkingLevelResponse,
+  GetEntriesResponse,
+  GetTreeResponse,
+  BranchResponse,
+  GetSessionStatsResponse,
+  SetSessionNameResponse,
+  GetStateResponse,
+  ListThreadsResponse,
+  CreateThreadResponse,
+  GetThreadResponse,
+  DeleteThreadResponse,
+  RenameThreadResponse,
 ]);
 export type ResponsePayload = S.Schema.Type<typeof ResponsePayload>;
+
+/** The response payload variant for one command kind — derived from the schema. */
+export type SessionResponse<K extends ResponsePayload["_tag"]> = Extract<ResponsePayload, { readonly _tag: K }>;
 
 // ---------------------------------------------------------------------------
 // Session events (worker → console)
@@ -161,21 +227,6 @@ export type SessionEventFromSaku =
       readonly aborted: boolean;
       readonly errorMessage?: string;
     };
-
-export const Settled = S.TaggedStruct("settled", {});
-export const EntryAppended = S.TaggedStruct("entry_appended", { entry: S.Unknown });
-export const CompactionStart = S.TaggedStruct("compaction_start", {
-  reason: S.Literals(["manual", "threshold", "overflow"]),
-});
-export const CompactionEnd = S.TaggedStruct("compaction_end", {
-  reason: S.Literals(["manual", "threshold", "overflow"]),
-  result: S.Unknown,
-  aborted: S.Boolean,
-  errorMessage: S.optional(S.String),
-});
-
-/** Schema for saku's own session events (pi's `AgentEvent` payloads pass through). */
-export const SessionEventFromSakuSchema = S.Union([Settled, EntryAppended, CompactionStart, CompactionEnd]);
 
 // Re-exported pi types so consoles never import pi directly for the session vocabulary.
 export type { AgentEvent, CompactResult, Entry, SessionStats, ThinkingLevel };
