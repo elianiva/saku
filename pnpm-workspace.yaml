@@ -8,3 +8,6 @@ allowBuilds:
   esbuild: true
   msgpackr-extract: false
   protobufjs: true
+
+patchedDependencies:
+  effect-machine@0.17.1: patches/effect-machine@0.17.1.patch

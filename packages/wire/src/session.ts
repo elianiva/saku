@@ -2,15 +2,21 @@
  * The wire's session feature: pi's own session vocabulary, carried verbatim,
  * plus the thread-scoped commands that drive it.
  *
- * Standing rule (ADR 0001): extend pi, never shim it. `AgentEvent`, `Entry`,
+ * Standing rule (ADR 0005): extend pi, never shim it. `AgentEvent`, `Entry`,
  * `SessionStats`, and friends cross the wire as-is (schemas here treat them
  * as opaque JSON payloads — they are pi's types, not ours to re-schema).
  * Everything saku adds is schema-validated with Effect's `Schema`.
+ *
+ * The TUI-shaped sugar is gone (`cycle_model`, `cycle_thinking_level`,
+ * `get_messages`, `get_last_assistant_text`, `get_tree`); the reads that
+ * remain never start a session, so browsing a thread is free and a stopped
+ * Box stays stopped until a prompt (ADR 0004).
  */
 
 import { Schema as S } from "effect";
 import type { AgentEvent, CompactResult, Entry, SessionStats, ThinkingLevel } from "@earendil-works/pi-agent-core";
 
+import { SkillResponse } from "./skills.ts";
 import { ThreadInfo } from "./thread.ts";
 
 // ---------------------------------------------------------------------------
@@ -35,28 +41,15 @@ export type WireModelInfo = S.Schema.Type<typeof WireModelInfo>;
 export const ThreadSessionState = S.Struct({
   sessionId: S.Union([S.Null, S.String]),
   name: S.optional(S.String),
-  state: S.Literals(["idle", "working", "crashed", "interrupted"]),
+  state: S.Literals(["idle", "working", "interrupted"]),
   tailSeq: S.Number,
   model: S.Union([S.Null, WireModelInfo]),
   thinkingLevel: ThinkingLevelSchema,
 });
 export type ThreadSessionState = S.Schema.Type<typeof ThreadSessionState>;
 
-/** Tree shape returned by `get_tree`: lanes + every entry. */
-export const WireTree = S.Struct({
-  leafId: S.Union([S.Null, S.String]),
-  lanes: S.Array(
-    S.Struct({
-      lane: S.String,
-      leafId: S.Union([S.Null, S.String]),
-    }),
-  ),
-  entries: S.Array(S.Unknown),
-});
-export type WireTree = S.Schema.Type<typeof WireTree>;
-
 // ---------------------------------------------------------------------------
-// Session commands (console → worker)
+// Session commands (console → server)
 // ---------------------------------------------------------------------------
 
 export const PromptCommand = S.TaggedStruct("prompt", {
@@ -72,18 +65,13 @@ export const SetSteeringModeCommand = S.TaggedStruct("set_steering_mode", {
 export const SetFollowUpModeCommand = S.TaggedStruct("set_follow_up_mode", {
   mode: S.Literals(["all", "one-at-a-time"]),
 });
-export const GetMessagesCommand = S.TaggedStruct("get_messages", {});
-export const GetLastAssistantTextCommand = S.TaggedStruct("get_last_assistant_text", {});
 export const CompactCommand = S.TaggedStruct("compact", { customInstructions: S.optional(S.String) });
 export const SetAutoCompactionCommand = S.TaggedStruct("set_auto_compaction", { enabled: S.Boolean });
 export const GetAvailableModelsCommand = S.TaggedStruct("get_available_models", {});
 export const SetModelCommand = S.TaggedStruct("set_model", { provider: S.String, modelId: S.String });
-export const CycleModelCommand = S.TaggedStruct("cycle_model", {});
 export const GetAvailableThinkingLevelsCommand = S.TaggedStruct("get_available_thinking_levels", {});
 export const SetThinkingLevelCommand = S.TaggedStruct("set_thinking_level", { level: ThinkingLevelSchema });
-export const CycleThinkingLevelCommand = S.TaggedStruct("cycle_thinking_level", {});
 export const GetEntriesCommand = S.TaggedStruct("get_entries", { sinceSeq: S.optional(S.Number) });
-export const GetTreeCommand = S.TaggedStruct("get_tree", {});
 export const BranchCommand = S.TaggedStruct("branch", { entryId: S.String });
 export const GetSessionStatsCommand = S.TaggedStruct("get_session_stats", {});
 export const SetSessionNameCommand = S.TaggedStruct("set_session_name", { name: S.String });
@@ -96,18 +84,13 @@ export const SessionCommand = S.Union([
   AbortCommand,
   SetSteeringModeCommand,
   SetFollowUpModeCommand,
-  GetMessagesCommand,
-  GetLastAssistantTextCommand,
   CompactCommand,
   SetAutoCompactionCommand,
   GetAvailableModelsCommand,
   SetModelCommand,
-  CycleModelCommand,
   GetAvailableThinkingLevelsCommand,
   SetThinkingLevelCommand,
-  CycleThinkingLevelCommand,
   GetEntriesCommand,
-  GetTreeCommand,
   BranchCommand,
   GetSessionStatsCommand,
   SetSessionNameCommand,
@@ -116,7 +99,7 @@ export const SessionCommand = S.Union([
 export type SessionCommand = S.Schema.Type<typeof SessionCommand>;
 
 // ---------------------------------------------------------------------------
-// Command responses (worker → console)
+// Command responses (server → console)
 // ---------------------------------------------------------------------------
 
 export const PromptResponse = S.TaggedStruct("prompt", {});
@@ -125,28 +108,21 @@ export const FollowUpResponse = S.TaggedStruct("follow_up", {});
 export const AbortResponse = S.TaggedStruct("abort", {});
 export const SetSteeringModeResponse = S.TaggedStruct("set_steering_mode", {});
 export const SetFollowUpModeResponse = S.TaggedStruct("set_follow_up_mode", {});
-export const GetMessagesResponse = S.TaggedStruct("get_messages", { messages: S.Array(S.Unknown) });
-export const GetLastAssistantTextResponse = S.TaggedStruct("get_last_assistant_text", {
-  text: S.Union([S.Null, S.String]),
-});
 export const CompactResponse = S.TaggedStruct("compact", { result: S.Unknown });
 export const SetAutoCompactionResponse = S.TaggedStruct("set_auto_compaction", {});
 export const GetAvailableModelsResponse = S.TaggedStruct("get_available_models", {
   models: S.Array(WireModelInfo),
 });
 export const SetModelResponse = S.TaggedStruct("set_model", { model: S.Union([S.Null, WireModelInfo]) });
-export const CycleModelResponse = S.TaggedStruct("cycle_model", { model: S.Union([S.Null, WireModelInfo]) });
 export const GetAvailableThinkingLevelsResponse = S.TaggedStruct("get_available_thinking_levels", {
   levels: S.Array(ThinkingLevelSchema),
 });
 export const SetThinkingLevelResponse = S.TaggedStruct("set_thinking_level", { level: ThinkingLevelSchema });
-export const CycleThinkingLevelResponse = S.TaggedStruct("cycle_thinking_level", { level: ThinkingLevelSchema });
 export const GetEntriesResponse = S.TaggedStruct("get_entries", {
   entries: S.Array(S.Unknown),
   tailSeq: S.Number,
   leafId: S.Union([S.Null, S.String]),
 });
-export const GetTreeResponse = S.TaggedStruct("get_tree", { tree: WireTree });
 export const BranchResponse = S.TaggedStruct("branch", { leafId: S.Union([S.Null, S.String]) });
 export const GetSessionStatsResponse = S.TaggedStruct("get_session_stats", { stats: S.Unknown });
 export const SetSessionNameResponse = S.TaggedStruct("set_session_name", {});
@@ -164,18 +140,13 @@ export const ResponsePayload = S.Union([
   AbortResponse,
   SetSteeringModeResponse,
   SetFollowUpModeResponse,
-  GetMessagesResponse,
-  GetLastAssistantTextResponse,
   CompactResponse,
   SetAutoCompactionResponse,
   GetAvailableModelsResponse,
   SetModelResponse,
-  CycleModelResponse,
   GetAvailableThinkingLevelsResponse,
   SetThinkingLevelResponse,
-  CycleThinkingLevelResponse,
   GetEntriesResponse,
-  GetTreeResponse,
   BranchResponse,
   GetSessionStatsResponse,
   SetSessionNameResponse,
@@ -185,6 +156,7 @@ export const ResponsePayload = S.Union([
   GetThreadResponse,
   DeleteThreadResponse,
   RenameThreadResponse,
+  SkillResponse,
 ]);
 export type ResponsePayload = S.Schema.Type<typeof ResponsePayload>;
 
@@ -192,7 +164,7 @@ export type ResponsePayload = S.Schema.Type<typeof ResponsePayload>;
 export type SessionResponse<K extends ResponsePayload["_tag"]> = Extract<ResponsePayload, { readonly _tag: K }>;
 
 // ---------------------------------------------------------------------------
-// Session events (worker → console)
+// Session events (server → console)
 // ---------------------------------------------------------------------------
 
 /**

@@ -20,6 +20,8 @@ export const getSakuDir = (): string =>
   process.env.SAKU_HOME !== undefined ? resolve(process.env.SAKU_HOME) : join(homedir(), ".saku");
 
 export const getWorkerSocketPath = (): string => join(getSakuDir(), "worker.sock");
+/** Where the daemon publishes its WebSocket URL (127.0.0.1:port). */
+export const getWorkerUrlPath = (): string => join(getSakuDir(), "worker.url");
 export const getAuthPath = (): string => join(getSakuDir(), "auth");
 export const getWorkerLogPath = (): string => join(getSakuDir(), "worker.log");
 export const getThreadsDir = (): string => join(getSakuDir(), "threads");

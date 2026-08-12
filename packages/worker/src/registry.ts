@@ -41,7 +41,8 @@ export interface ThreadRegistryShape {
   readonly get: (threadId: string) => Effect.Effect<Option.Option<ThreadRecord>, RegistryError>;
   readonly create: (input: {
     name: string;
-    cwd: string;
+    /** Defaults to the daemon's working directory (local-only semantics, ADR 0003). */
+    cwd?: string;
     mode?: ThreadMode;
     autoName?: boolean;
   }) => Effect.Effect<ThreadRecord, RegistryError>;
@@ -143,7 +144,7 @@ export const ThreadRegistryLive: Layer.Layer<ThreadRegistry, RegistryError, File
           const record: ThreadRecord = {
             id: randomUUID().replaceAll("-", ""),
             name: input.name,
-            cwd: input.cwd,
+            cwd: input.cwd ?? process.cwd(),
             mode: input.mode ?? "local",
             createdAt: Date.now(),
             sessionId: null,
@@ -195,6 +196,9 @@ export const ThreadRegistryLive: Layer.Layer<ThreadRegistry, RegistryError, File
             cwd: record.cwd,
             mode: record.mode,
             state,
+            // The local daemon is the env for local threads; the hub derives
+            // the real env states (stopped/provisioning/ready/error) for Boxes.
+            env: "ready",
             sessionId: record.sessionId,
             tailSeq,
           });

@@ -4,6 +4,10 @@
  * Consoles list, create, get, and delete threads; every mutation is
  * broadcast to all consoles as a `thread_changed` event (stateless routing —
  * there is no attach/detach; every console sees every thread).
+ *
+ * Lifecycle: the thread state and the env state are separate axes — a
+ * thread can be `working` while its Box is `ready`, or `idle` while the Box
+ * is `stopped` (idle-stop; the next prompt provisions it again).
  */
 
 import { Result, Schema as S } from "effect";
@@ -18,20 +22,38 @@ export type ThreadMode = S.Schema.Type<typeof ThreadMode>;
  *
  * - `idle` — session host alive, no run in flight
  * - `working` — a run is in flight (agent_start → settled)
- * - `crashed` — the session host faulted; history intact on disk
- * - `interrupted` — the daemon died mid-run; an operation is left open
+ * - `interrupted` — the worker died mid-run; an operation is left open and
+ *   recovery happens on the next command
+ *
+ * `crashed` is gone: a failed run is an error response, and the next command
+ * rebuilds from the entry trail.
  */
-export const ThreadState = S.Literals(["idle", "working", "crashed", "interrupted"]);
+export const ThreadState = S.Literals(["idle", "working", "interrupted"]);
 export type ThreadState = S.Schema.Type<typeof ThreadState>;
+
+/**
+ * The env axis of a thread (CONTEXT.md: Env): where its hands live and
+ * whether they answer.
+ *
+ * - `stopped` — env exists but is not running (idle-stop, or the local
+ *   daemon is not registered)
+ * - `provisioning` — a Box is being created/resumed right now
+ * - `ready` — the env answers (a run can proceed)
+ * - `error` — provisioning failed; the next prompt retries
+ */
+export const ThreadEnvState = S.Literals(["stopped", "provisioning", "ready", "error"]);
+export type ThreadEnvState = S.Schema.Type<typeof ThreadEnvState>;
 
 /** Registry view of a thread, broadcast on every mutation. */
 export const ThreadInfo = S.Struct({
   id: S.String,
   name: S.String,
-  cwd: S.String,
+  /** The working directory the thread was created with; null for sandbox threads. */
+  cwd: S.Union([S.Null, S.String]),
   mode: ThreadMode,
   state: ThreadState,
-  /** Pi session id (stable across daemon restarts); null before first touch. */
+  env: ThreadEnvState,
+  /** Pi session id (stable across restarts); null before first touch. */
   sessionId: S.Union([S.Null, S.String]),
   /** Highest durable-log sequence the thread has reached. */
   tailSeq: S.Number,
@@ -41,7 +63,8 @@ export type ThreadInfo = S.Schema.Type<typeof ThreadInfo>;
 export const ListThreadsCommand = S.TaggedStruct("list_threads", {});
 export const CreateThreadCommand = S.TaggedStruct("create_thread", {
   name: S.String,
-  cwd: S.String,
+  /** Local-only: the working directory on the local machine (ADR 0003). */
+  cwd: S.optional(S.String),
   mode: S.optional(ThreadMode),
   /** The name is an auto-generated prompt snippet, not a user choice (CONTEXT.md: Quick start). */
   autoName: S.optional(S.Boolean),
@@ -67,7 +90,7 @@ export const ThreadCommand = S.Union([
 ]);
 export type ThreadCommand = S.Schema.Type<typeof ThreadCommand>;
 
-/** Broadcast registry mutation (worker → console). */
+/** Broadcast registry mutation (server → console). */
 export const ThreadChanged = S.TaggedStruct("thread_changed", {
   thread: ThreadInfo,
 });

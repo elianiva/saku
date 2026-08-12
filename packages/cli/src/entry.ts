@@ -10,25 +10,15 @@
  * The daemon auto-starts on demand for every command except `daemon stop`.
  */
 
-import { Effect, Result } from "effect";
+import { Effect, Option, Result } from "effect";
 
-import {
-  WorkerClient,
-  WireError,
-  shortThreadId,
-  resolveThread,
-  type ThreadInfo,
-  type ThreadMode,
-} from "@saku/wire";
-import { getWorkerSocketPath, readAuthToken } from "@saku/worker";
+import { makeWireClient, WireError, shortThreadId, resolveThread, type ThreadMode, type WireClient } from "@saku/wire";
 
-import { daemonStatus, ensureDaemon, spawnDaemon, stopDaemon } from "./daemon.ts";
+import { daemonStatus, ensureDaemon, readWorkerToken, readWorkerUrl, spawnDaemon, stopDaemon } from "./daemon.ts";
 
 // ---------------------------------------------------------------------------
 // Console plumbing
 // ---------------------------------------------------------------------------
-
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Connect to the worker, starting the daemon on demand — opencode-style:
@@ -36,39 +26,43 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
  * that talks to the worker goes through here, so a plain `saku list` boots
  * the local stack automatically, and an existing daemon is reused.
  */
-const connect = async (): Promise<WorkerClient> => {
-  await ensureDaemon();
-  const token = "recon-token";
-  if (token === undefined) {
-    throw new Error("auth token not created by the worker");
-  }
-  const client = new WorkerClient({ socketPath: getWorkerSocketPath(), token, role: "cli" });
-  await Effect.runPromise(client.connect());
-  return client;
-};
-
-function fail(error: unknown): never {
-  if (error instanceof WireError) {
-    console.error(`saku: ${error.message}`);
-  } else if (error instanceof Error) {
-    console.error(`saku: ${error.message}`);
-  } else {
-    console.error(`saku: ${String(error)}`);
-  }
-  process.exit(1);
-}
-
-
-const run = async <T>(effect: Effect.Effect<T, WireError, never>, label: string): Promise<T> => {
-  try {
-    return await Effect.runPromise(effect);
-  } catch (error) {
-    if (error instanceof WireError && error.code === "refused") {
-      fail(new Error(`worker refused the connection (${label}) — it may have just shut down; try: saku daemon status`));
+const connect = (): Effect.Effect<WireClient, Error, never> =>
+  Effect.gen(function* () {
+    yield* ensureDaemon();
+    const url = yield* readWorkerUrl();
+    if (Option.isNone(url)) {
+      return yield* Effect.fail(new Error("the worker did not publish its url"));
     }
-    fail(error);
-  }
+    const token = yield* readWorkerToken();
+    if (Option.isNone(token)) {
+      return yield* Effect.fail(new Error("auth token not created by the worker"));
+    }
+    const client = yield* makeWireClient({ url: url.value, token: token.value, role: "cli" });
+    yield* client.connect();
+    return client;
+  });
+
+/** Print the error and exit; the only imperative boundary of the CLI. */
+const fail = (error: unknown): never => {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`saku: ${message}`);
+  process.exit(1);
 };
+
+/** Give connection-refused errors a steer, keep everything else as-is. */
+const run = <T>(effect: Effect.Effect<T, WireError, never>, label: string): Effect.Effect<T, WireError, never> =>
+  effect.pipe(
+    Effect.catchIf(
+      (error): error is WireError => error instanceof WireError && error.code === "refused",
+      () =>
+        Effect.fail(
+          new WireError({
+            code: "refused",
+            message: `worker refused the connection (${label}) — it may have just shut down; try: saku daemon status`,
+          }),
+        ),
+    ),
+  );
 
 // ---------------------------------------------------------------------------
 // Commands
@@ -76,90 +70,90 @@ const run = async <T>(effect: Effect.Effect<T, WireError, never>, label: string)
 
 const pad = (text: string, width: number): string => text.padEnd(width).slice(0, width);
 
-const cmdList = async (): Promise<void> => {
-  const client = await connect();
-  try {
-    const threads = await run(client.listThreads(), "list threads");
+const cmdList = (): Effect.Effect<void, WireError | Error, never> =>
+  Effect.gen(function* () {
+    const client = yield* connect();
+    const threads = yield* run(client.listThreads(), "list threads");
     if (threads.length === 0) {
       console.log("no threads — create one with: saku new <name>");
+      yield* client.disconnect();
       return;
     }
-    console.log(pad("ID", 10) + pad("NAME", 28) + pad("MODE", 10) + pad("STATE", 12) + "CWD");
+    console.log(pad("ID", 10) + pad("NAME", 28) + pad("MODE", 10) + pad("STATE", 12) + pad("ENV", 12) + "CWD");
     for (const thread of threads) {
       console.log(
-        pad(shortThreadId(thread.id), 10) + pad(thread.name, 28) + pad(thread.mode, 10) + pad(thread.state, 12) + thread.cwd,
+        pad(shortThreadId(thread.id), 10) +
+          pad(thread.name, 28) +
+          pad(thread.mode, 10) +
+          pad(thread.state, 12) +
+          pad(thread.env, 12) +
+          (thread.cwd ?? "—"),
       );
     }
-  } finally {
-    client.disconnect();
-  }
-};
+    yield* client.disconnect();
+  });
 
-const cmdNew = async (name: string | undefined, cwd: string, mode: ThreadMode | undefined): Promise<void> => {
-  if (name === undefined || name.length === 0) {
-    fail(new Error("saku new requires a name: saku new <name> [--cwd <dir>]"));
-  }
-  const client = await connect();
-  try {
-    const thread = await run(
-      mode === undefined ? client.createThread(name, cwd) : client.createThread(name, cwd, { mode }),
+const cmdNew = (name: string | undefined, cwd: string, mode: ThreadMode | undefined): Effect.Effect<void, WireError | Error, never> =>
+  Effect.gen(function* () {
+    if (name === undefined || name.length === 0) {
+      return yield* Effect.fail(new Error("saku new requires a name: saku new <name> [--cwd <dir>]"));
+    }
+    const client = yield* connect();
+    const thread = yield* run(
+      mode === undefined ? client.createThread(name, { cwd }) : client.createThread(name, { cwd, mode }),
       "create thread",
     );
     console.log(shortThreadId(thread.id));
-  } finally {
-    client.disconnect();
-  }
-};
+    yield* client.disconnect();
+  });
 
-const cmdRm = async (threadArg: string | undefined): Promise<void> => {
-  if (threadArg === undefined) {
-    fail(new Error("saku rm requires a thread: saku rm <id-or-name>"));
-  }
-  const client = await connect();
-  try {
-    const threads = await run(client.listThreads(), "list threads");
-    const resolved = resolveThread(threads, threadArg ?? "");
-    if (Result.isFailure(resolved)) {
-      fail(new Error(resolved.failure));
+const cmdRm = (threadArg: string | undefined): Effect.Effect<void, WireError | Error, never> =>
+  Effect.gen(function* () {
+    if (threadArg === undefined) {
+      return yield* Effect.fail(new Error("saku rm requires a thread: saku rm <id-or-name>"));
     }
-    await run(client.deleteThread(resolved.success.id), "delete thread");
+    const client = yield* connect();
+    const threads = yield* run(client.listThreads(), "list threads");
+    const resolved = resolveThread(threads, threadArg);
+    if (Result.isFailure(resolved)) {
+      return yield* Effect.fail(new Error(resolved.failure));
+    }
+    yield* run(client.deleteThread(resolved.success.id), "delete thread");
     console.log(`deleted ${shortThreadId(resolved.success.id)} (${resolved.success.name})`);
-  } finally {
-    client.disconnect();
-  }
-};
+    yield* client.disconnect();
+  });
 
-const cmdDaemon = async (sub: string | undefined): Promise<void> => {
-  switch (sub) {
-    case "start": {
-      const status = await daemonStatus();
-      if (status.running) {
-        console.log(`already running (pid ${status.pid})`);
+const cmdDaemon = (sub: string | undefined): Effect.Effect<void, Error, never> =>
+  Effect.gen(function* () {
+    switch (sub) {
+      case "start": {
+        const status = yield* daemonStatus();
+        if (status.running && status.pid !== undefined) {
+          console.log(`already running (pid ${status.pid})`);
+          return;
+        }
+        const pid = yield* spawnDaemon();
+        console.log(`started (pid ${pid})`);
         return;
       }
-      const pid = await spawnDaemon();
-      console.log(`started (pid ${pid})`);
-      return;
-    }
-    case "stop": {
-      const pid = await stopDaemon();
-      console.log(pid === undefined ? "not running" : `stopped (pid ${pid})`);
-      return;
-    }
-    case "status": {
-      const status = await daemonStatus();
-      if (status.running) {
-        console.log(`running (pid ${status.pid}, wire ${status.version})`);
-      } else {
-        console.log("not running");
+      case "stop": {
+        const pid = yield* stopDaemon();
+        console.log(Option.match(pid, { onNone: () => "not running", onSome: (value) => `stopped (pid ${value})` }));
+        return;
       }
-      return;
+      case "status": {
+        const status = yield* daemonStatus();
+        if (status.running) {
+          console.log(`running (pid ${status.pid}, wire ${status.version})`);
+        } else {
+          console.log("not running");
+        }
+        return;
+      }
+      default:
+        return yield* Effect.fail(new Error("saku daemon <start|stop|status>"));
     }
-    default:
-      console.error("saku daemon <start|stop|status>");
-      process.exit(1);
-  }
-};
+  });
 
 const usage = (): void => {
   console.log(`saku — local software factory
@@ -176,49 +170,46 @@ usage:
 // Dispatch
 // ---------------------------------------------------------------------------
 
-const main = async (): Promise<void> => {
-  const args = process.argv.slice(2);
-  const command = args[0];
-  const rest = args.slice(1);
+const main = (): Effect.Effect<void, WireError | Error, never> =>
+  Effect.gen(function* () {
+    const args = process.argv.slice(2);
+    const command = args[0];
+    const rest = args.slice(1);
 
-  const flagValue = (flags: string[], fallback: string): string => {
-    const index = rest.findIndex((arg) => flags.includes(arg));
-    if (index === -1) return fallback;
-    return rest[index + 1] ?? fallback;
-  };
+    const flagValue = (flags: string[], fallback: string): string => {
+      const index = rest.findIndex((arg) => flags.includes(arg));
+      if (index === -1) return fallback;
+      return rest[index + 1] ?? fallback;
+    };
 
-  switch (command) {
-    case "daemon":
-      await cmdDaemon(rest[0]);
-      return;
-    case "list":
-      await cmdList();
-      return;
-    case "new": {
-      const name = rest[0];
-      const cwd = flagValue(["--cwd", "-c"], process.cwd());
-      const modeArg = flagValue(["--mode", "-m"], "local");
-      const mode: ThreadMode = modeArg === "sandbox" || modeArg === "any" ? modeArg : "local";
-      await cmdNew(name, cwd, mode);
-      return;
+    switch (command) {
+      case "daemon":
+        yield* cmdDaemon(rest[0]);
+        return;
+      case "list":
+        yield* cmdList();
+        return;
+      case "new": {
+        const name = rest[0];
+        const cwd = flagValue(["--cwd", "-c"], process.cwd());
+        const modeArg = flagValue(["--mode", "-m"], "local");
+        const mode: ThreadMode = modeArg === "sandbox" || modeArg === "any" ? modeArg : "local";
+        yield* cmdNew(name, cwd, mode);
+        return;
+      }
+      case "rm":
+      case "remove":
+      case "delete":
+        yield* cmdRm(rest[0]);
+        return;
+      case "help":
+      case "--help":
+      case "-h":
+        usage();
+        return;
+      default:
+        return yield* Effect.fail(new Error(`unknown command "${command}"`));
     }
-    case "rm":
-    case "remove":
-    case "delete":
-      await cmdRm(rest[0]);
-      return;
-    case "help":
-    case "--help":
-    case "-h":
-      usage();
-      return;
-    default:
-      console.error(`saku: unknown command "${command}"`);
-      usage();
-      process.exit(1);
-  }
-};
+  });
 
-main().catch((error) => {
-  fail(error);
-});
+Effect.runPromise(main()).catch(fail);

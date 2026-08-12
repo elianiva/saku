@@ -39,7 +39,7 @@ import {
   type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import { JsonlSessionRepo } from "@earendil-works/pi-agent-core";
-import type { Api, AssistantMessage, ImageContent, Model, TextContent, UserMessage } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessage, ImageContent, Model, UserMessage } from "@earendil-works/pi-ai";
 import { clampThinkingLevel, getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { THINKING_LEVELS, type SessionWireEvent, type ThreadState, type WireModelInfo } from "@saku/wire";
 
@@ -50,6 +50,14 @@ import { ThreadRegistry, RegistryError, type ThreadRecord, type ThreadRegistrySh
 import { getThreadSessionsRoot } from "./paths.ts";
 
 const LANE = "main";
+
+/**
+ * The host's internal lifecycle: the wire's `ThreadState` plus a host-local
+ * `crashed` recovery state. `crashed` never crosses the wire — the registry
+ * and `get_state` see `idle`, and the daemon rebuilds the host on the next
+ * command (ADR 0001: a failed run is an error response, not a thread state).
+ */
+export type HostState = ThreadState | "crashed";
 
 export type HostEventSink = (event: SessionWireEvent) => void;
 
@@ -93,7 +101,7 @@ export class SessionHost {
 
   private readonly sink: HostEventSink;
   private readonly onRecordChanged: ((record: ThreadRecord) => void) | undefined;
-  private readonly stateRef: Ref.Ref<ThreadState>;
+  private readonly stateRef: Ref.Ref<HostState>;
   private readonly modelRef: Ref.Ref<Model<Api> | null>;
   private readonly thinkingLevelRef: Ref.Ref<ThinkingLevel>;
   private readonly compactionSettingsRef: Ref.Ref<CompactionSettings>;
@@ -113,7 +121,7 @@ export class SessionHost {
     sink: HostEventSink;
     /** Fired after the host renames its own registry record (auto-title). */
     onRecordChanged?: (record: ThreadRecord) => void;
-    stateRef: Ref.Ref<ThreadState>;
+    stateRef: Ref.Ref<HostState>;
     modelRef: Ref.Ref<Model<Api> | null>;
     thinkingLevelRef: Ref.Ref<ThinkingLevel>;
     compactionSettingsRef: Ref.Ref<CompactionSettings>;
@@ -200,7 +208,7 @@ export class SessionHost {
         try: () => session.findOpenOperations(LANE, { limit: 1 }),
         catch: toSessionHostError,
       });
-      const initialState: ThreadState = openOperations.length > 0 ? "interrupted" : "idle";
+      const initialState: HostState = openOperations.length > 0 ? "interrupted" : "idle";
 
       const agent = new Agent({
         initialState: {
@@ -250,7 +258,7 @@ export class SessionHost {
         registry: options.registry,
         sink: options.sink,
         ...(options.onRecordChanged === undefined ? {} : { onRecordChanged: options.onRecordChanged }),
-        stateRef: yield* Ref.make<ThreadState>(initialState),
+        stateRef: yield* Ref.make<HostState>(initialState),
         modelRef: yield* Ref.make(model),
         thinkingLevelRef: yield* Ref.make(thinkingLevel),
         compactionSettingsRef: yield* Ref.make({ ...DEFAULT_COMPACTION_SETTINGS }),
@@ -290,7 +298,8 @@ export class SessionHost {
       return {
         sessionId: this.agent.sessionId ?? null,
         ...(name === undefined ? {} : { name }),
-        state,
+        // A crashed host looks idle on the wire; the next command rebuilds it.
+        state: state === "crashed" ? "idle" : state,
         tailSeq,
         model: model === null ? null : this.catalog.toWireInfo(model),
         thinkingLevel,
@@ -298,7 +307,7 @@ export class SessionHost {
     });
   }
 
-  get threadState(): ThreadState {
+  get threadState(): HostState {
     return Ref.getUnsafe(this.stateRef);
   }
 
@@ -322,41 +331,6 @@ export class SessionHost {
       const leafId = yield* Effect.tryPromise({ try: () => this.session.getLeafId(), catch: toSessionHostError });
       return { entries, tailSeq, leafId };
     });
-  }
-
-  getTree(): Effect.Effect<
-    { leafId: string | null; lanes: Array<{ lane: string; leafId: string | null }>; entries: Entry[] },
-    SessionHostError,
-    never
-  > {
-    return Effect.gen({ self: this }, function* () {
-      const [lanes, leafId, log] = yield* Effect.all([
-        Effect.tryPromise({ try: () => this.session.getLanes(), catch: toSessionHostError }),
-        Effect.tryPromise({ try: () => this.session.getLeafId(), catch: toSessionHostError }),
-        Effect.tryPromise({ try: () => this.session.getLog(), catch: toSessionHostError }),
-      ]);
-      return { leafId, lanes, entries: entriesFromLog(log) };
-    });
-  }
-
-  getMessages(): AgentMessage[] {
-    return this.agent.state.messages;
-  }
-
-  getLastAssistantText(): string | null {
-    const messages = this.agent.state.messages;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const message = messages[i];
-      if (message === undefined) continue;
-      if (message.role === "assistant") {
-        const text = message.content
-          .filter((part): part is TextContent => part.type === "text")
-          .map((part) => part.text)
-          .join("");
-        return text.length > 0 ? text : null;
-      }
-    }
-    return null;
   }
 
   getSessionStats(): Effect.Effect<SessionStats, SessionHostError, never> {
@@ -461,23 +435,6 @@ export class SessionHost {
     });
   }
 
-  cycleModel(): Effect.Effect<Model<Api> | null, SessionHostError, never> {
-    return Effect.gen({ self: this }, function* () {
-      const available = yield* Effect.tryPromise({
-        try: () => this.catalog.models.getAvailable(),
-        catch: toSessionHostError,
-      });
-      if (available.length <= 1) return yield* Ref.get(this.modelRef);
-      const current = yield* Ref.get(this.modelRef);
-      const index =
-        current === null ? -1 : available.findIndex((m) => m.provider === current.provider && m.id === current.id);
-      const next = available[(index + 1) % available.length];
-      if (next === undefined) return yield* Ref.get(this.modelRef);
-      yield* this.setModelInternal(next.provider, next.id);
-      return next;
-    });
-  }
-
   getAvailableThinkingLevels(): Effect.Effect<ThinkingLevel[], never> {
     return Ref.get(this.modelRef).pipe(
       Effect.map((model) =>
@@ -513,17 +470,6 @@ export class SessionHost {
       });
       this.sink({ type: "entry_appended", entry });
       return effective;
-    });
-  }
-
-  cycleThinkingLevel(): Effect.Effect<ThinkingLevel, SessionHostError, never> {
-    return Effect.gen({ self: this }, function* () {
-      const levels = yield* this.getAvailableThinkingLevels();
-      const current = yield* Ref.get(this.thinkingLevelRef);
-      const index = levels.indexOf(current);
-      const next = levels[(index + 1) % levels.length];
-      if (next === undefined) return current;
-      return yield* this.setThinkingLevelInternal(next);
     });
   }
 
@@ -567,10 +513,11 @@ export class SessionHost {
     );
   }
 
-  private setState(state: ThreadState): Effect.Effect<void, never> {
+  private setState(state: HostState): Effect.Effect<void, never> {
     return Effect.gen({ self: this }, function* () {
       yield* Ref.set(this.stateRef, state);
-      yield* this.registry.setState(this.threadId, state);
+      // `crashed` is host-local; the registry (and therefore the wire) sees idle.
+      yield* this.registry.setState(this.threadId, state === "crashed" ? "idle" : state);
     });
   }
 

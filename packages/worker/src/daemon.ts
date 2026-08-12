@@ -1,12 +1,18 @@
 /**
- * The daemon (daemon.ts): the worker's socket server, provided as a scoped
- * resource layer (`SakuDaemonLive` — the daemon-entry process runs it under
- * `Effect.never` and interrupts the fiber to shut down).
+ * The daemon (daemon.ts): the worker's WebSocket server, provided as a
+ * scoped resource layer (`SakuDaemonLive` — the daemon-entry process runs it
+ * under `Effect.never` and interrupts the fiber to shut down).
  *
- * Listens on `~/.saku/worker.sock`, authenticates consoles by token,
- * routes wire commands to the registry or to per-thread session hosts,
- * and fans session events out to every connected console (stateless
- * routing — no attach/detach).
+ * Serves the wire protocol (ADR 0004) over WebSocket on 127.0.0.1 (random
+ * port), authenticates consoles by token, routes wire commands to the
+ * registry or to per-thread session hosts, and fans session events out to
+ * every connected console (stateless routing — no attach/detach). The URL is
+ * published to `~/.saku/worker.url` (the CLI reads it to connect).
+ *
+ * This is the transitional local spine: the hub (ADR 0001) will own the
+ * wire's server side in production; the daemon keeps the local stack alive
+ * and speaks exactly the same protocol, so the wire's contract is exercised
+ * by two real implementations until the rework lands.
  *
  * `makeSakuDaemon` builds the daemon inside an `Effect.gen` (the same shape
  * as `@effect/platform-node`'s `NodeSocketServer` factory): all state that
@@ -17,7 +23,7 @@
  * scope holds it open, and closing the scope runs the finalizer.
  */
 
-import { createServer, type Server, type Socket } from "node:net";
+import { WebSocketServer, type WebSocket } from "ws";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Context, Effect, FileSystem, Layer, Option, Ref, Result, Schema, Scope, Semaphore } from "effect";
 
@@ -26,20 +32,16 @@ import {
   BranchResponse,
   CompactResponse,
   CreateThreadResponse,
-  CycleModelResponse,
-  CycleThinkingLevelResponse,
   DeleteThreadResponse,
   ErrorEvent,
+  EventFrame,
   FollowUpResponse,
   GetAvailableModelsResponse,
   GetAvailableThinkingLevelsResponse,
   GetEntriesResponse,
-  GetLastAssistantTextResponse,
-  GetMessagesResponse,
   GetSessionStatsResponse,
   GetStateResponse,
   GetThreadResponse,
-  GetTreeResponse,
   Hello,
   HelloOk,
   ListThreadsResponse,
@@ -47,7 +49,7 @@ import {
   RenameThreadResponse,
   ResponseOk,
   ResponseError,
-  SessionEventEnvelope,
+  SessionCommand,
   SetAutoCompactionResponse,
   SetFollowUpModeResponse,
   SetModelResponse,
@@ -59,18 +61,21 @@ import {
   ThreadChanged,
   WIRE_VERSION,
   WireCommand,
+  decodeFrame,
+  parseFrame,
   resolveThread,
+  serializeFrame,
   type ResponsePayload,
-  type SessionCommand,
+  type SessionCommand as SessionCommandType,
   type SessionWireEvent,
+  type SkillCommand,
   type ThreadCommand,
   type ThreadInfo,
   type WireEvent,
 } from "@saku/wire";
-import { JsonLinesReader, parseJsonLine, writeJsonLine } from "@saku/wire";
 
 import { ensureAuthToken, ensureSakuDirs } from "./auth.ts";
-import { getThreadSessionsRoot, getWorkerSocketPath } from "./paths.ts";
+import { getThreadSessionsRoot, getWorkerUrlPath } from "./paths.ts";
 import {
   ThreadRegistry,
   ThreadRegistryLive,
@@ -83,14 +88,18 @@ import { SessionHost, SessionHostError } from "./session-host.ts";
 
 const DECODE_COMMAND = Schema.decodeUnknownSync(Schema.Union([Hello, WireCommand]));
 
+/** Whether a decoded command is thread-scoped (session vocabulary vs. hub-level). */
+const isSessionCommand = (c: SessionCommandType | ThreadCommand | SkillCommand): c is SessionCommandType =>
+  Schema.is(SessionCommand)(c);
+
 interface Client {
-  readonly socket: Socket;
+  readonly socket: WebSocket;
   readonly authed: Ref.Ref<boolean>;
 }
 
 export interface DaemonOptions {
-  /** Override the socket path (tests). Defaults to ~/.saku/worker.sock. */
-  socketPath?: string;
+  /** Override the URL file path (tests). Defaults to ~/.saku/worker.url. */
+  urlPath?: string;
 }
 
 /** A command-level failure owned by the daemon (resolve/validation). */
@@ -104,9 +113,9 @@ type CommandError = DaemonError | RegistryError | SessionHostError;
 
 /** The daemon's service surface. */
 export interface SakuDaemonShape {
-  /** The socket path the daemon listens on. */
-  readonly socketPath: string;
-  /** Stop the daemon: drop clients, dispose hosts, unlink the socket. */
+  /** The ws:// URL the daemon listens on. */
+  readonly url: string;
+  /** Stop the daemon: drop clients, dispose hosts, close the server. */
   readonly close: () => Effect.Effect<void, never>;
 }
 
@@ -137,14 +146,14 @@ export const makeSakuDaemon = (options: {
   registry: ThreadRegistryShape;
   catalog: ModelCatalogShape;
   fs: FileSystem.FileSystem;
-  socketPath: string;
+  urlPath: string;
 }): Effect.Effect<SakuDaemonShape, Error, Scope.Scope> =>
   Effect.gen(function* () {
-    const { registry, catalog, fs, socketPath } = options;
+    const { registry, catalog, fs, urlPath } = options;
     const clientsRef = yield* Ref.make<ReadonlySet<Client>>(new Set());
     const hostsRef = yield* Ref.make<ReadonlyMap<string, SessionHost>>(new Map());
     const closedRef = yield* Ref.make(false);
-    const serverRef = yield* Ref.make<Option.Option<Server>>(Option.none());
+    const serverRef = yield* Ref.make<Option.Option<WebSocketServer>>(Option.none());
     // Serializes host construction: two concurrent first-touch commands must
     // not build two live hosts for one thread.
     const hostSemaphore = yield* Semaphore.make(1);
@@ -157,7 +166,9 @@ export const makeSakuDaemon = (options: {
 
     const send = (client: Client, event: WireEvent): Effect.Effect<void, never> =>
       Effect.sync(() => {
-        writeJsonLine(client.socket, event);
+        // A socket that closed between the check and the send is a no-op;
+        // the close handler cleans the client up.
+        Result.try(() => client.socket.send(serializeFrame(event)));
       });
 
     const broadcast = (event: WireEvent): Effect.Effect<void, never> =>
@@ -174,7 +185,7 @@ export const makeSakuDaemon = (options: {
 
     /** All consoles see every session event (stateless routing). */
     const emitSessionEvent = (threadId: string, event: SessionWireEvent): Effect.Effect<void, never> =>
-      broadcast(SessionEventEnvelope.make({ threadId, event }));
+      broadcast(EventFrame.make({ threadId, event }));
 
     const emitThreadChanged = (thread: ThreadInfo): Effect.Effect<void, never> =>
       broadcast(ThreadChanged.make({ thread }));
@@ -218,7 +229,7 @@ export const makeSakuDaemon = (options: {
         const expected = yield* ensureAuthToken(fs).pipe(Effect.catch(() => Effect.succeed("")));
         if (hello.token !== expected) {
           yield* send(client, ErrorEvent.make({ message: "invalid token" }));
-          client.socket.destroy();
+          client.socket.close();
           return;
         }
         yield* Ref.set(client.authed, true);
@@ -233,10 +244,19 @@ export const makeSakuDaemon = (options: {
           return;
         }
         const id = command.id;
-        const run =
-          command._tag === "thread"
-            ? handleThreadCommand(client, id, command.command)
-            : handleSessionCommand(client, id, command.threadId, command.command);
+        // Routing by command kind: session commands are thread-scoped; threads
+        // and skills are hub-level. A session command without a threadId is a
+        // protocol error, not a hub command.
+        let run: Effect.Effect<void, CommandError, never>;
+        if (isSessionCommand(command.command)) {
+          if (command.threadId === undefined) {
+            run = Effect.fail(new DaemonError({ message: "session command without a threadId" }));
+          } else {
+            run = handleSessionCommand(client, id, command.threadId, command.command);
+          }
+        } else {
+          run = handleHubCommand(client, id, command.command);
+        }
         yield* Effect.catch(run, (error) => respondCommandFailure(client, id, error));
       });
 
@@ -251,17 +271,17 @@ export const makeSakuDaemon = (options: {
       return send(client, ResponseOk.make({ id, ok: true, payload }));
     };
 
-    const handleThreadCommand = (
+    const handleHubCommand = (
       client: Client,
       id: string | undefined,
-      command: ThreadCommand,
+      command: ThreadCommand | SkillCommand,
     ): Effect.Effect<void, CommandError, never> =>
       Effect.gen(function* () {
-        const payload = yield* runThreadCommand(command);
+        const payload = yield* runHubCommand(command);
         yield* respond(client, id, payload);
       });
 
-    const runThreadCommand = (command: ThreadCommand): Effect.Effect<ResponsePayload, CommandError, never> =>
+    const runHubCommand = (command: ThreadCommand | SkillCommand): Effect.Effect<ResponsePayload, CommandError, never> =>
       Effect.gen(function* () {
         switch (command._tag) {
           case "list_threads": {
@@ -275,7 +295,7 @@ export const makeSakuDaemon = (options: {
           case "create_thread": {
             const record = yield* registry.create({
               name: command.name,
-              cwd: command.cwd,
+              ...(command.cwd === undefined ? {} : { cwd: command.cwd }),
               ...(command.mode === undefined ? {} : { mode: command.mode }),
               ...(command.autoName === undefined ? {} : { autoName: command.autoName }),
             });
@@ -319,11 +339,19 @@ export const makeSakuDaemon = (options: {
             yield* emitThreadChanged(info);
             return RenameThreadResponse.make({ thread: info });
           }
+          case "list_skills":
+          case "import_skill":
+          case "delete_skill":
+            // The skills store is hub-hosted (ADR 0007); the local daemon
+            // deliberately does not implement it.
+            return yield* Effect.fail(
+              new DaemonError({ message: "skills are served by the hub, not the local daemon" }),
+            );
           default: {
-            // Exhaustiveness: a new ThreadCommand tag must be handled here.
+            // Exhaustiveness: a new command tag must be handled here.
             const exhaustive: never = command;
             void exhaustive;
-            return yield* Effect.fail(new DaemonError({ message: "unknown thread command" }));
+            return yield* Effect.fail(new DaemonError({ message: "unknown command" }));
           }
         }
       });
@@ -332,7 +360,7 @@ export const makeSakuDaemon = (options: {
       client: Client,
       id: string | undefined,
       threadIdInput: string,
-      command: SessionCommand,
+      command: SessionCommandType,
     ): Effect.Effect<void, CommandError, never> =>
       Effect.gen(function* () {
         const threadId = yield* resolveThreadId(threadIdInput);
@@ -342,13 +370,13 @@ export const makeSakuDaemon = (options: {
 
     const runSessionCommand = (
       threadId: string,
-      command: SessionCommand,
+      command: SessionCommandType,
     ): Effect.Effect<ResponsePayload, CommandError, never> =>
       Effect.gen(function* () {
         // Read-only commands are served without a session host: a thread that
         // has never started answers from the registry/catalog alone, so
-        // browsing the TUI never starts the thread's pi session. The session
-        // starts on the first mutating command below.
+        // browsing never starts the thread's pi session. The session starts
+        // on the first mutating command below.
         switch (command._tag) {
           case "get_entries": {
             const readOnly = yield* readOnlyHost(threadId);
@@ -414,14 +442,6 @@ export const makeSakuDaemon = (options: {
             });
             return SetFollowUpModeResponse.make({});
           }
-          case "get_messages": {
-            const host = yield* hostFor(threadId);
-            return GetMessagesResponse.make({ messages: host.getMessages() });
-          }
-          case "get_last_assistant_text": {
-            const host = yield* hostFor(threadId);
-            return GetLastAssistantTextResponse.make({ text: host.getLastAssistantText() });
-          }
           case "compact": {
             const host = yield* hostFor(threadId);
             const result = yield* host.compact(command.customInstructions);
@@ -437,25 +457,10 @@ export const makeSakuDaemon = (options: {
             const model = yield* host.setModel(command.provider, command.modelId);
             return SetModelResponse.make({ model: model === null ? null : catalog.toWireInfo(model) });
           }
-          case "cycle_model": {
-            const host = yield* hostFor(threadId);
-            const model = yield* host.cycleModel();
-            return CycleModelResponse.make({ model: model === null ? null : catalog.toWireInfo(model) });
-          }
           case "set_thinking_level": {
             const host = yield* hostFor(threadId);
             const level = yield* host.setThinkingLevel(command.level);
             return SetThinkingLevelResponse.make({ level });
-          }
-          case "cycle_thinking_level": {
-            const host = yield* hostFor(threadId);
-            const level = yield* host.cycleThinkingLevel();
-            return CycleThinkingLevelResponse.make({ level });
-          }
-          case "get_tree": {
-            const host = yield* hostFor(threadId);
-            const tree = yield* host.getTree();
-            return GetTreeResponse.make({ tree });
           }
           case "branch": {
             const host = yield* hostFor(threadId);
@@ -536,8 +541,8 @@ export const makeSakuDaemon = (options: {
         }),
       );
 
-    /** One console connection: read lines, route commands, live until close. */
-    const runConnection = (socket: Socket): Effect.Effect<void, never, Scope.Scope> =>
+    /** One console connection: read frames, route commands, live until close. */
+    const runConnection = (socket: WebSocket): Effect.Effect<void, never, Scope.Scope> =>
       Effect.gen(function* () {
         const authed = yield* Ref.make(false);
         const client: Client = { socket, authed };
@@ -549,10 +554,10 @@ export const makeSakuDaemon = (options: {
             return next;
           }),
         );
-        const reader = new JsonLinesReader((line) => {
-          const value = Result.try(() => parseJsonLine(line));
+        const onMessage = (data: unknown): void => {
+          const value = Result.try(() => parseFrame(decodeFrame(data)));
           if (Result.isFailure(value)) {
-            void Effect.runFork(send(client, ErrorEvent.make({ message: "malformed JSON line" })));
+            void Effect.runFork(send(client, ErrorEvent.make({ message: "malformed JSON frame" })));
             return;
           }
           const decoded = Result.try(() => DECODE_COMMAND(value.success));
@@ -565,14 +570,11 @@ export const makeSakuDaemon = (options: {
           } else {
             void Effect.runFork(handleCommand(client, decoded.success));
           }
-        });
-        const onData = (chunk: Buffer): void => {
-          reader.push(chunk);
         };
         const onError = (error: Error): void => {
           log(`socket error: ${error.message}`);
         };
-        socket.on("data", onData);
+        socket.on("message", onMessage);
         socket.on("error", onError);
         // Resolve when the socket closes; the scope's finalizer then drops the client.
         yield* Effect.callback<void>((resume) => {
@@ -584,7 +586,7 @@ export const makeSakuDaemon = (options: {
         });
       });
 
-    const handleConnection = (socket: Socket): void => {
+    const handleConnection = (socket: WebSocket): void => {
       void Effect.runFork(Effect.scoped(runConnection(socket)));
     };
 
@@ -596,7 +598,7 @@ export const makeSakuDaemon = (options: {
         if (closed) return;
         yield* Ref.set(closedRef, true);
         const clients = yield* Ref.get(clientsRef);
-        yield* Effect.forEach(clients, (client) => Effect.sync(() => client.socket.destroy()), { discard: true });
+        yield* Effect.forEach(clients, (client) => Effect.sync(() => client.socket.close()), { discard: true });
         yield* Ref.set(clientsRef, new Set());
         const hosts = yield* Ref.get(hostsRef);
         yield* Effect.forEach([...hosts.values()], (host) => host.dispose(), { discard: true });
@@ -608,22 +610,34 @@ export const makeSakuDaemon = (options: {
             return Effect.void;
           });
         }
-        yield* fs.remove(socketPath, { force: true }).pipe(Effect.catch(() => Effect.void));
+        yield* fs.remove(urlPath, { force: true }).pipe(Effect.catch(() => Effect.void));
       });
 
     // -- startup -------------------------------------------------------------
 
     yield* ensureSakuDirs(fs);
     yield* ensureAuthToken(fs);
-    yield* fs.remove(socketPath, { force: true }).pipe(Effect.catch(() => Effect.void));
-    const server = yield* Effect.callback<Server, Error>((resume) => {
-      const server = createServer((socket) => handleConnection(socket));
+    yield* fs.remove(urlPath, { force: true }).pipe(Effect.catch(() => Effect.void));
+    const server = yield* Effect.callback<WebSocketServer, Error>((resume) => {
+      const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+      server.on("connection", (socket) => handleConnection(socket));
       server.on("error", (error) => {
         log(`server error: ${error.message}`);
         resume(Effect.fail(error));
       });
-      server.listen(socketPath, () => {
-        log(`listening on ${socketPath}`);
+      server.on("listening", () => {
+        const address = server.address();
+        if (address === null || typeof address === "string") {
+          resume(Effect.fail(new Error("no listening address")));
+          return;
+        }
+        const url = `ws://127.0.0.1:${address.port}`;
+        void Effect.runFork(
+          fs.writeFileString(urlPath, `${url}\n`).pipe(
+            Effect.catch((error) => Effect.sync(() => log(`failed to write ${urlPath}: ${error.message}`))),
+          ),
+        );
+        log(`listening on ${url}`);
         resume(Effect.succeed(server));
       });
       return Effect.sync(() => {
@@ -632,7 +646,9 @@ export const makeSakuDaemon = (options: {
     });
     yield* Ref.set(serverRef, Option.some(server));
     yield* Effect.addFinalizer(() => close());
-    return { socketPath, close };
+    const address = server.address();
+    const url = address !== null && typeof address !== "string" ? `ws://127.0.0.1:${address.port}` : "";
+    return { url, close };
   });
 
 /**
@@ -652,7 +668,7 @@ export const SakuDaemonLive = (
         registry,
         catalog,
         fs,
-        socketPath: options.socketPath ?? getWorkerSocketPath(),
+        urlPath: options.urlPath ?? getWorkerUrlPath(),
       });
       // The layer's scope stays open for the program's lifetime; closing it
       // (interruption, program end) runs the daemon's teardown.

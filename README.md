@@ -24,7 +24,7 @@ approval gates; hub-hosted skills).
 
 | Package | Role |
 | ------- | ---- |
-| `packages/wire` | the wire protocol: JSONL over WebSocket, hello/version, thread + session + skills commands, typed `WorkerClient` |
+| `packages/wire` | the wire protocol: JSONL over WebSocket, hello/version, thread + session + skills commands, typed `WireClient` (an effect-machine actor) |
 | `packages/hub` | the control-plane DO: registry, Box provisioning, skills store, auth, routing, fan-out |
 | `packages/worker` | the thread DO: pi-agent-core `Agent` + `Session` over DO storage, env client, idle-stop |
 | `packages/env` | the hands daemon: pi tool surface over a streaming protocol, local and in-Box |

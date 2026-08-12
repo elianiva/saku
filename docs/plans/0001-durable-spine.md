@@ -15,7 +15,7 @@ The managed-agents shape: a **hub** (Cloudflare Workers, or celld locally) hosts
 
 | Package | Role |
 |---------|------|
-| `packages/wire` | Rework: the protocol — JSONL over WebSocket, hello/version handshake, thread/session/skills commands, typed `WorkerClient` (browser-compatible). Zero pi imports at runtime for framing; pi's public types cross verbatim. |
+| `packages/wire` | Rework: the protocol — JSONL over WebSocket, hello/version handshake, thread/session/skills commands, typed `WireClient` (browser-compatible; the client is an `effect-machine` actor — connection lifecycle as a schema-first state machine). Zero pi imports at runtime for framing; pi's public types cross verbatim. |
 | `packages/hub` | New: the control-plane DO — registry, Box provisioning (owns Box keys), skills store, auth (deployment secret), WS routing, event fan-out. |
 | `packages/worker` | Rework: the thread DO — `SessionHost` ported onto a DO-storage `SessionRepo`, env data-plane client, idle-stop alarm, event projection. |
 | `packages/env` | New: the hands daemon — pi tool surface (`read`/`bash`/`edit`/`write`) over a streaming protocol; local host (relay registration) and Box host (`host --private`). |
@@ -115,7 +115,13 @@ program). Box API key + LLM provider keys are deployment secrets.
 - Passkeys/accounts (v1 is a shared deployment secret).
 - Box `desktop` (VNC) and preview URLs.
 
-## 10. Verification items (not blockers)
+## 10. Notes
+
+- `effect-machine` (0.17.1) is patched (`patches/effect-machine@0.17.1.patch`): its
+  runtime still calls `Schema.TaggedErrorClass`, renamed to `Schema.TaggedError` in
+  effect 4.0.0-beta.105+; the patch is a one-file rename. No shims elsewhere.
+
+## 11. Verification items (not blockers)
 
 - celld DO → host-loopback reachability for `mode: local` when the hub runs on celld.
 - alchemy's celld target maturity.
