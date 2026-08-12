@@ -12,10 +12,12 @@
 
 export { ensureAuthToken, readAuthToken, ensureSakuDirs } from "./auth.ts";
 export { isNotFound } from "./fs.ts";
+export { memoryKv, fileKv, type KvStore, type KvEntry } from "./kv.ts";
+export { DoSessionRepo, DoSessionStorage, type DoSessionMetadata } from "./do-session.ts";
 export { LocalEnv } from "./local-env.ts";
 export { ModelCatalog, ModelCatalogLive, type CatalogOptions, type ModelCatalogShape } from "./model-catalog.ts";
 export { buildTools } from "./tools.ts";
-export { SessionHost, SessionHostError } from "./session-host.ts";
+export { SessionHost, SessionHostError, type HostEventSink, type HostState, type SessionHostOptions } from "./session-host.ts";
 export {
   ThreadRegistry,
   ThreadRegistryLive,

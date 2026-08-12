@@ -75,7 +75,7 @@ import {
 } from "@saku/wire";
 
 import { ensureAuthToken, ensureSakuDirs } from "./auth.ts";
-import { getThreadSessionsRoot, getWorkerUrlPath } from "./paths.ts";
+import { getThreadTrailRoot, getWorkerUrlPath } from "./paths.ts";
 import {
   ThreadRegistry,
   ThreadRegistryLive,
@@ -129,11 +129,10 @@ const sessionStarted = (
 ): Effect.Effect<boolean, never, never> =>
   Effect.gen(function* () {
     if (Option.isSome(record) && record.value.sessionId !== null) return true;
-    const sessionsRoot = getThreadSessionsRoot(threadId);
-    const exists = yield* fs.exists(sessionsRoot).pipe(Effect.catch(() => Effect.succeed(false)));
-    if (!exists) return false;
-    const names = yield* fs.readDirectory(sessionsRoot).pipe(Effect.catch(() => Effect.succeed([] as string[])));
-    return names.some((name) => name.endsWith(".jsonl"));
+    // The session's metadata key is written before any mutation (do-session.ts),
+    // so its presence means the session was created.
+    const metaPath = `${getThreadTrailRoot(threadId)}/session/${threadId}/meta`;
+    return yield* fs.exists(metaPath).pipe(Effect.catch(() => Effect.succeed(false)));
   });
 
 /**
@@ -430,16 +429,12 @@ export const makeSakuDaemon = (options: {
           }
           case "set_steering_mode": {
             const host = yield* hostFor(threadId);
-            yield* Effect.sync(() => {
-              host.agent.steeringMode = command.mode;
-            });
+            yield* host.setSteeringMode(command.mode);
             return SetSteeringModeResponse.make({});
           }
           case "set_follow_up_mode": {
             const host = yield* hostFor(threadId);
-            yield* Effect.sync(() => {
-              host.agent.followUpMode = command.mode;
-            });
+            yield* host.setFollowUpMode(command.mode);
             return SetFollowUpModeResponse.make({});
           }
           case "compact": {
@@ -455,7 +450,7 @@ export const makeSakuDaemon = (options: {
           case "set_model": {
             const host = yield* hostFor(threadId);
             const model = yield* host.setModel(command.provider, command.modelId);
-            return SetModelResponse.make({ model: model === null ? null : catalog.toWireInfo(model) });
+            return SetModelResponse.make({ model });
           }
           case "set_thinking_level": {
             const host = yield* hostFor(threadId);

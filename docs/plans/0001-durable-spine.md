@@ -98,9 +98,20 @@ program). Box API key + LLM provider keys are deployment secrets.
 
 ## 8. Milestones
 
-- **M0 — wire**: WS transport, handshake, command/event schemas, typed client.
-- **M1 — worker on DO storage**: `SessionRepo` over DO storage, `SessionHost` port,
-  env client; unit tests with a stub env (no Box needed).
+- **M0 — wire** ✅: WS transport, handshake, command/event schemas, typed client
+  (`makeWireClient` as an effect-machine actor), 19 integration tests against a
+  mock hub.
+- **M1 — worker on DO storage** ✅: `SessionRepo`/`SessionStorage` over the
+  `KvStore` seam (`DoSessionRepo`/`DoSessionStorage` — pi's own backend
+  conformance suite passes against both the memory and file backends), the
+  `SessionHost` ported from a class to an effect-machine actor
+  (Idle/Interrupted/Working/Compacting/Crashed; commands are reply-bearing
+  calls settled by the state-scoped run effects), idle/interrupted recovery,
+  and a stub env for hermetic host tests (79 worker tests). The local daemon
+  now serves the wire from the file-backed trail; verified live
+  (create → set_model → get_state/get_entries → rename → delete, and
+  restart persistence). The env data plane stays a seam: `ExecutionEnv`
+  (LocalEnv locally, the remote client in M3).
 - **M2 — hub**: registry, routing, fan-out, auth; integration tests over the wire
   (the user's call: tests, not a CLI smoke).
 - **M3 — env daemon**: local host + relay registration; Box bootstrap via the one-shot

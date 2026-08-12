@@ -32,8 +32,12 @@ approval gates; hub-hosted skills).
 
 ## Status
 
-The rework is planned and the TUI/foldtui/demo surface is removed. The durable spine
-(wire · hub · worker · env) is the current build target — see the plan's milestones.
+The rework is underway: the wire (M0) and the worker on DO storage (M1) are
+landed — the local daemon serves the trimmed wire protocol from a per-thread
+KvStore trail (`session/<id>/` under `threads/<id>/trail/`), the session host is
+an effect-machine actor, and pi's own session-backend conformance suite passes
+against both KvStore backends. The hub (M2) and the env daemon (M3) are the
+current build targets — see the plan's milestones.
 
 ## Prerequisites
 

@@ -3,12 +3,12 @@
  *
  * ```
  * ~/.saku/                    <- SAKU_HOME overrides
- *   worker.sock               unix socket for consoles
+ *   worker.url                the daemon's WebSocket URL (127.0.0.1:port)
  *   auth                      32-byte hex token, 0600 (created on first boot)
  *   worker.log                daemon log
  *   threads/<id>/
  *     thread.json             registry record (name, cwd, mode, sessionId)
- *     sessions/               JsonlSessionRepo root for the thread's session
+ *     trail/                  the thread session's KvStore (meta + log/*)
  * ```
  */
 
@@ -26,10 +26,11 @@ export const getAuthPath = (): string => join(getSakuDir(), "auth");
 export const getWorkerLogPath = (): string => join(getSakuDir(), "worker.log");
 export const getThreadsDir = (): string => join(getSakuDir(), "threads");
 
-/** Per-thread directory; also the sessions root for its JsonlSessionRepo. */
+/** Per-thread directory. */
 export const getThreadDir = (threadId: string): string => join(getThreadsDir(), threadId);
 export const getThreadFile = (threadId: string): string => join(getThreadDir(threadId), "thread.json");
-export const getThreadSessionsRoot = (threadId: string): string => join(getThreadDir(threadId), "sessions");
+/** The thread session's KvStore root (meta + log/* under it, see do-session.ts). */
+export const getThreadTrailRoot = (threadId: string): string => join(getThreadDir(threadId), "trail");
 
 /** pi's agent dir: ~/.pi/agent, overridable via PI_CODING_AGENT_DIR. */
 export const getAgentDir = (): string =>
