@@ -14,22 +14,14 @@
  * `host --private` URL) or the hub's relay server; with `relay`, the
  * client attaches to a registered env (`relay_attach`) before its
  * `env_hello`, and the hub pipes the rest.
+ *
+ * The socket is an explicit dependency (`socket`): `RemoteEnv` itself is
+ * isolate-clean and runs in a Durable Object (where the socket is a
+ * workerd `WebSocket`, see `workerdSocket`) and on node (where it is a
+ * `ws` socket, see `nodeSocket` in remote-node.ts). The env protocol is
+ * the same over both.
  */
 
-import { randomUUID } from "node:crypto";
-import { WebSocket } from "ws";
-import {
-  ExecutionError,
-  err,
-  ok,
-  type ExecutionEnv,
-  type FileError,
-  type FileInfo,
-  type Result as PiResult,
-  type ShellExecOptions,
-} from "@earendil-works/pi-agent-core";
-
-import { decodeFrame, parseFrame, serializeFrame } from "@saku/wire";
 import {
   ENV_VERSION,
   EnvHello,
@@ -41,14 +33,94 @@ import {
   RelayAttach,
   toPiError,
   type EnvErrorFrame,
+  type EnvHandle,
   type EnvOp as EnvOpType,
 } from "./protocol.ts";
+
+export type { EnvHandle } from "./protocol.ts";
+import {
+  ExecutionError,
+  err,
+  ok,
+  type ExecutionEnv,
+  type FileError,
+  type FileInfo,
+  type Result as PiResult,
+  type ShellExecOptions,
+} from "@earendil-works/pi-agent-core";
+import { decodeFrame, parseFrame, serializeFrame } from "@saku/wire";
+
+/**
+ * The socket surface RemoteEnv needs: `on` listeners for the four
+ * connection events, `send` for frames, `close` to drop. Both `ws`
+ * sockets (node) and workerd `WebSocket`s satisfy it through adapters.
+ */
+export interface SocketLike {
+  readonly send: (data: string) => void;
+  readonly close: () => void;
+  readonly on: (
+    event: "open" | "message" | "error" | "close",
+    listener: (data: unknown) => void,
+  ) => void;
+}
+
+/** The minimal workerd `WebSocket` surface the adapter needs. */
+export interface WorkerdWebSocketLike {
+  readonly send: (data: string) => void;
+  readonly close: () => void;
+  readonly addEventListener: (
+    event: string,
+    listener: (event: { readonly data?: unknown }) => void,
+  ) => void;
+}
+
+/** Adapt a workerd `WebSocket` to the `SocketLike` surface (DOs, celld). */
+export const workerdSocket = (ws: WorkerdWebSocketLike): SocketLike => ({
+  send: (data) => ws.send(data),
+  close: () => ws.close(),
+  on: (event, listener) => {
+    if (event === "message") {
+      ws.addEventListener("message", (ev) => listener(ev.data));
+    } else if (event === "error") {
+      ws.addEventListener("error", () => listener(new Error("websocket error")));
+    } else if (event === "close") {
+      ws.addEventListener("close", () => listener(undefined));
+    } else {
+      ws.addEventListener("open", () => listener(undefined));
+    }
+  },
+});
+
+/** A workerd socket factory for `RemoteEnv` (the DO's `socket` option). */
+export const workerdSocketFactory = (url: string): SocketLike =>
+  workerdSocket(new WebSocket(url) as unknown as WorkerdWebSocketLike);
+
+/** Binary ↔ base64 without node's Buffer (workerd has atob/btoa). */
+const bytesToBase64 = (bytes: Uint8Array): string => {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+};
+
+const base64ToBytes = (encoded: string): Uint8Array => {
+  const binary = atob(encoded);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+};
 
 export interface RemoteEnvOptions {
   /** The daemon's endpoint: direct (host URL) or the hub's relay server. */
   readonly url: string;
   /** The env protocol token, presented in `env_hello`. */
   readonly token: string;
+  /** The socket factory: `nodeSocket` on node, `workerdSocket` in DOs. */
+  readonly socket: (url: string) => SocketLike;
   /** The workspace the connection's tools operate on (hello cwd). */
   readonly cwd?: string;
   /** Attach through the hub relay to this registered env. */
@@ -85,11 +157,12 @@ export class RemoteEnv implements ExecutionEnv {
   private readonly token: string;
   /** The workspace the connection's tools operate on (hello cwd). */
   readonly cwd: string;
+  private readonly socketFactory: (url: string) => SocketLike;
   private readonly relay: { readonly envId: string; readonly token: string } | undefined;
   private readonly requestTimeoutMs: number | undefined;
   private readonly log: (message: string) => void;
 
-  private socket: WebSocket | null = null;
+  private socket: SocketLike | null = null;
   private pending = new Map<string, Pending>();
   private seq = 0;
   private onceHello:
@@ -100,7 +173,8 @@ export class RemoteEnv implements ExecutionEnv {
   constructor(options: RemoteEnvOptions) {
     this.url = options.url;
     this.token = options.token;
-    this.cwd = options.cwd ?? process.cwd();
+    this.cwd = options.cwd ?? ((globalThis as { process?: { cwd?: () => string } }).process?.cwd?.() ?? "/");
+    this.socketFactory = options.socket;
     this.relay = options.relay;
     this.requestTimeoutMs = options.requestTimeoutMs;
     this.log = options.log ?? (() => {});
@@ -119,7 +193,7 @@ export class RemoteEnv implements ExecutionEnv {
         this.socket = null;
         reject(error);
       };
-      const socket = new WebSocket(this.url);
+      const socket = this.socketFactory(this.url);
       this.socket = socket;
       socket.on("open", () => {
         if (this.relay !== undefined) {
@@ -139,8 +213,9 @@ export class RemoteEnv implements ExecutionEnv {
       });
       socket.on("message", (data) => this.onMessage(data));
       socket.on("error", (error) => {
-        this.log(`env connection error: ${error.message}`);
-        fail(new Error(`env connection failed: ${error.message}`));
+        const message = error instanceof Error ? error.message : String(error);
+        this.log(`env connection error: ${message}`);
+        fail(new Error(`env connection failed: ${message}`));
       });
       socket.on("close", () => {
         const wasConnected = this.connected;
@@ -225,7 +300,7 @@ export class RemoteEnv implements ExecutionEnv {
     if (this.socket === null || !this.connected) {
       return Promise.resolve({ ok: false, error: { kind: "unknown", message: "env not connected" } });
     }
-    const id = `${++this.seq}:${randomUUID().slice(0, 8)}`;
+    const id = `${++this.seq}:${crypto.randomUUID().slice(0, 8)}`;
     return new Promise((resolve) => {
       const pending: Pending = { resolve, onStream: options.onStream };
       const effective = options.timeoutMs ?? this.requestTimeoutMs;
@@ -300,7 +375,7 @@ export class RemoteEnv implements ExecutionEnv {
   ): Promise<PiResult<Uint8Array, FileError>> {
     const outcome = await this.fileOp<string>({ _tag: "read_binary_file", path });
     return isSuccess(outcome)
-      ? ok(new Uint8Array(Buffer.from(outcome.value, "base64")))
+      ? ok(base64ToBytes(outcome.value))
       : asFile(outcome);
   }
 
@@ -312,7 +387,7 @@ export class RemoteEnv implements ExecutionEnv {
     return this.fileOp<void>({
       _tag: "write_file",
       path,
-      content: binary ? Buffer.from(content).toString("base64") : content,
+      content: binary ? bytesToBase64(content as Uint8Array) : content,
       ...(binary ? { encoding: "base64" as const } : {}),
     });
   }
@@ -325,7 +400,7 @@ export class RemoteEnv implements ExecutionEnv {
     return this.fileOp<void>({
       _tag: "append_file",
       path,
-      content: binary ? Buffer.from(content).toString("base64") : content,
+      content: binary ? bytesToBase64(content as Uint8Array) : content,
       ...(binary ? { encoding: "base64" as const } : {}),
     });
   }

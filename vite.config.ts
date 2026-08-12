@@ -20,13 +20,13 @@ export default defineConfig({
     },
     overrides: [
       {
-        files: ["packages/{wire,worker,cli,hub,store}/**"],
+        files: ["packages/{wire,worker,cli,hub,store,deploy}/**"],
         env: { node: true },
       },
       {
         // Process entries log to a file the CLI/systemd captures; the
         // worker daemon is grandfathered under the node env block.
-        files: ["packages/cli/**", "packages/env/src/entry.ts"],
+        files: ["packages/cli/**", "packages/env/src/entry.ts", "packages/deploy/scripts/**"],
         rules: {
           "no-console": "off",
         },

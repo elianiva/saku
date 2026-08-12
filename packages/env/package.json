@@ -11,6 +11,10 @@
       "types": "./src/index.ts",
       "import": "./src/index.ts"
     },
+    "./remote": {
+      "types": "./src/remote.ts",
+      "import": "./src/remote.ts"
+    },
     "./entry": {
       "types": "./src/entry.ts",
       "import": "./src/entry.ts"

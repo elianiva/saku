@@ -56,8 +56,13 @@ export {
 } from "./daemon.ts";
 export {
   RemoteEnv,
+  workerdSocket,
+  workerdSocketFactory,
+  type SocketLike,
+  type WorkerdWebSocketLike,
   type RemoteEnvOptions,
 } from "./remote.ts";
+export { nodeSocket } from "./remote-node.ts";
 export {
   makeEnvRelayClient,
   type RelayClientOptions,

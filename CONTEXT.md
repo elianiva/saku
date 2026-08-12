@@ -59,7 +59,7 @@ The remote sandbox provider (ascii.dev). One Box per thread, lazily provisioned 
 _Avoid_: sandbox (the mode name), orb (amp's word), VM
 
 **Idle-stop**:
-The env lifecycle policy: a Box that has been idle is stopped (snapshot, billing paused) by the hub and resumed on the next prompt; local envs never stop. The worker arms the timer; the hub pulls the trigger.
+The env lifecycle policy: a Box that has been idle is stopped (snapshot, billing paused) by the hub and resumed on the next prompt; local envs never stop. In the deployment, the thread DO owns the timer as a Durable Object alarm (armed via the hub's `/arm-idle`, cleared on activity): the alarm fires in the worker and pushes `idleStopFired` back to the hub, which validates, releases, and flips the env axis.
 _Avoid_: timeout, auto-stop (Box's own wall-clock TTL — a different thing)
 
 **Registry**:
@@ -73,3 +73,15 @@ _Avoid_: api, rpc-as-a-name (pi calls its JSONL framing “RPC”; the wire is t
 **Skills / Prompt Templates**:
 Pi's own extension vocabulary, saku-hosted (amp-style): the hub keeps a skills store with `personal` and `workspace` scopes; skills are imported from repos, updated, and loaded by every worker from the hub — a Box has no `~/.pi/agent/`, so the hub is the only place they can come from. The thread's repo `.pi/` still contributes in place. The extension system itself (extension UI, slash commands, extension-provided models) is shell-only and cut from v1 — if it ever lands, it enters through the same wire seam. Same philosophy as pi: never invent parallel concepts — stay minimal, stay extensible.
 _Avoid_: plugins (pi says extensions), modules, addons
+
+**Deployment**:
+The deployable whole: one alchemy program (`packages/deploy/alchemy.run.ts`) declaring the Worker, the `HUB` and `THREAD` Durable Object namespaces, the deployment secret, and the LLM provider keys — targeted at Cloudflare (`bun alchemy deploy`) or celld (the hand-maintained twin in `packages/deploy/celld/`). The DO classes (`SakuHubDO`, `SakuThreadDO`) are plain workerd — no alchemy runtime in the entry bundle — so the same code ships to both hosts.
+_Avoid_: app, service, api
+
+**Env handle**:
+What the hub hands the worker after provisioning: the env daemon's URL + token (+ relay identity for local envs). The worker rebuilds its `RemoteEnv` connection from the handle — pushed on provisioning and on resume, cleared on release.
+_Avoid_: credentials, ticket, lease
+
+**Static provisioner**:
+The deployment's `SAKU_ENV_PROVISIONER=static` mode (dev/celld shape): one configured env daemon at `SAKU_ENV_URL` is every thread's env — no Box, no provisioning loop. The Box provisioner stays the production default.
+_Avoid_: local mode (the mode name is a per-thread pin, this is a deployment shape)

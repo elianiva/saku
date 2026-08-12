@@ -30,10 +30,11 @@ approval gates; hub-hosted skills).
 | `packages/worker` | the thread DO: pi-agent-core `Agent` + `Session` over DO storage, env client, idle-stop                                                  |
 | `packages/env`    | the hands daemon: pi tool surface over a streaming protocol, local and in-Box                                                            |
 | `packages/cli`    | local daemon management: `saku env start\|stop\|status`                                                                                  |
+| `packages/deploy` | the deployment's own code: the alchemy program (`alchemy.run.ts`), the workerd DOs (`SakuHubDO`/`SakuThreadDO`), the celld twin (`celld/`) |
 
 ## Status
 
-The durable spine's milestones through M3 are built and tested:
+The durable spine's milestones M0–M4 are built and tested:
 
 - **M0 — wire**: the protocol (JSONL over WebSocket, hello/version, threads,
   sessions, skills), the typed `makeWireClient`.
@@ -49,9 +50,19 @@ The durable spine's milestones through M3 are built and tested:
   idle-stop, and the `saku env start|stop|status` CLI. The agent's tools
   execute on a real env daemon through the hub's relay, and the built Box
   bundle serves the tool surface (live-verified).
+- **M4 — deploy + docs**: `packages/deploy` — the deployment's own code,
+  proven in real workerd. The alchemy program declares the Worker + the two
+  DO namespaces + the deployment secret; the DOs are plain workerd classes
+  (no alchemy runtime in the entry bundle) sharing the hub/worker/env cores.
+  The dev harness deploys the stack to local workerd and the integration
+  suite drives it over the real wire: create → lazy env provisioning →
+  prompt → run in the thread DO → entries back, idle-stop through the DO
+  alarm (env stopped → resume on the next prompt), the env relay
+  register/attach/exec through the hub DO, and `delete_thread` teardown.
+  The celld twin (`celld/wrangler.jsonc` + `index.ts`) ships the same code
+  for self-hosted fleets — see `packages/deploy/celld/README.md`.
 
-Remaining: the alchemy deployment on celld (M4) and the foldkit frontend —
-see the plan.
+Remaining: the foldkit frontend — see the plan.
 
 ## Prerequisites
 
@@ -79,6 +90,19 @@ pnpm build       # turbo: tsdown per package
 
 The wire is the integration seam: the whole system is verified with unit and
 integration tests against it (no CLI smoke; the frontend is the next consumer).
+
+## Deploying
+
+The deployment lives in `packages/deploy` (the same code both hosts ship):
+
+- **Cloudflare** (production): `bun alchemy deploy` with the secrets as env
+  vars — `BOX_API_KEY`, the LLM provider keys, and `SAKU_ENV_*` for the
+  static-provisioner shape (a single configured env daemon instead of Boxes).
+- **celld** (development/self-hosted): `celld deploy packages/deploy/celld
+  --bucket <s3-bucket>` with esbuild on PATH — the wrangler twin mirrors the
+  same bindings; vars are plaintext in the fleet bucket (trust domain).
+
+Details in `packages/deploy/celld/README.md`.
 
 ## Conventions
 

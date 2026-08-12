@@ -151,10 +151,10 @@ describe("makeProvisioner", () => {
 
     // The bootstrap: bundle + unit + wrapper uploaded, node ensured,
     // systemd install run, and the daemon's URL read from host.url.
-    expect(box.files.get(handle.value.boxId)?.get("/home/user/.saku-env/entry.bundle.js")).toBe(
-      "// bundle",
-    );
-    const unit = box.files.get(handle.value.boxId)?.get("/home/user/.saku-env/saku-env.service");
+    const boxId = handle.value.boxId ?? "";
+    const bundle = box.files.get(boxId)?.get("/home/user/.saku-env/entry.bundle.js") ?? "";
+    expect(bundle).toBe("// bundle");
+    const unit = box.files.get(boxId)?.get("/home/user/.saku-env/saku-env.service") ?? "";
     expect(unit).toContain(`SAKU_ENV_TOKEN=${TOKEN}`);
     expect(unit).toContain("ExecStart=/home/user/.saku-env/run.sh");
     expect(box.commands.some((c) => c.includes("node-") && c.includes("tar.xz"))).toBe(true);

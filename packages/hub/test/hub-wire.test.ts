@@ -27,7 +27,6 @@ import { Hello, WireCommand } from "@saku/wire";
 
 import {
   HubError,
-  localOnlyProvisioner,
   makeHub,
   makeHubRegistry,
   makeHubServer,

@@ -32,7 +32,7 @@
  * machine's state in a Durable Object later is trivial.
  */
 
-import { Duration, Effect, FileSystem, Option, Ref, Result, Schema } from "effect";
+import { Duration, Effect, Option, Ref, Result, Schema } from "effect";
 import { Event, Machine, State, type DeferReplyResult, type ReplyResult } from "effect-machine";
 import {
   Agent,
@@ -71,12 +71,12 @@ import {
 } from "@saku/wire";
 
 import { DoSessionRepo } from "./do-session.ts";
-import { fileKv } from "@saku/store";
-import { LocalEnv } from "@saku/env";
+import type { KvStore } from "@saku/store";
 import type { ModelCatalogShape } from "./model-catalog.ts";
 import { buildTools } from "./tools.ts";
-import { RegistryError, type ThreadRecord, type ThreadRegistryShape } from "./registry.ts";
-import { getThreadTrailRoot } from "./paths.ts";
+import { RegistryError } from "./registry-error.ts";
+import type { ThreadRecord, ThreadRegistryShape } from "./registry.ts";
+import { LocalEnv } from "@saku/env";
 
 const LANE = "main";
 
@@ -771,15 +771,16 @@ export interface SessionHostOptions {
   readonly threadId: string;
   /** The registry record; its sessionId is back-filled when null (first touch). */
   readonly record: ThreadRecord;
-  readonly fs: FileSystem.FileSystem;
+  /** The thread's session trail on the `KvStore` seam (DO storage in production). */
+  readonly kv: KvStore;
   readonly catalog: ModelCatalogShape;
   readonly registry: ThreadRegistryShape;
   readonly sink: HostEventSink;
   readonly onRecordChanged?: (record: ThreadRecord) => void;
   /** Test seam: the agent's stream function. Defaults to the catalog's models. */
   readonly streamFn?: StreamFn;
-  /** Test seam: the thread's hands. Defaults to a `LocalEnv` over the thread cwd. */
-  readonly env?: ExecutionEnv;
+  /** The thread's hands (an env daemon client, local or remote). */
+  readonly env: ExecutionEnv;
 }
 
 /** Create the host for a thread: open/create the DO session, recover, spawn. */
@@ -788,10 +789,10 @@ export const SessionHost = {
     options: SessionHostOptions,
   ): Effect.Effect<SessionHost, SessionHostError | RegistryError, never> {
     return Effect.gen(function* () {
-      const { threadId, record, fs, catalog, registry } = options;
-      const env = options.env ?? new LocalEnv(record.cwd, fs);
-      // The trail: the session's mutations on DO storage (file-backed here).
-      const repo = new DoSessionRepo(fileKv(fs, getThreadTrailRoot(threadId)));
+      const { threadId, record, kv, catalog, registry, env } = options;
+      // The trail: the session's mutations on DO storage (the daemon passes
+      // a file-backed store; a Durable Object passes its own storage).
+      const repo = new DoSessionRepo(kv);
       const found = (yield* Effect.tryPromise({
         try: () => repo.list(),
         catch: toSessionHostError,

@@ -16,7 +16,6 @@ export default defineConfig({
   format: "esm",
   platform: "node",
   outDir: "dist",
-  noSplitting: true,
   clean: false,
   outExtension: () => ({ js: ".bundle.js" }),
   sourcemap: false,

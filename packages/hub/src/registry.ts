@@ -18,7 +18,6 @@
  * Consoles only ever see the registry through the wire (`toInfo`).
  */
 
-import { randomUUID } from "node:crypto";
 import { Effect, Option, Ref } from "effect";
 import type { EnvHandle } from "@saku/env";
 import type { ThreadEnvState, ThreadInfo, ThreadMode, ThreadState } from "@saku/wire";
@@ -160,7 +159,7 @@ export const makeHubRegistry = (kv: KvStore): Effect.Effect<HubRegistryShape, Hu
       create: (input) =>
         Effect.gen(function* () {
           const record: HubRecord = {
-            id: randomUUID().replaceAll("-", ""),
+            id: crypto.randomUUID().replaceAll("-", ""),
             name: input.name,
             // Sandbox threads have no local directory (ADR 0003); local
             // threads default to none until the env daemon reports one.

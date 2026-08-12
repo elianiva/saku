@@ -145,6 +145,7 @@ export const scriptedWorker = (): ScriptedWorker => {
       Effect.sync(() => {
         deleted.push(threadId);
       }),
+    setEnvHandle: () => Effect.void,
     command: (threadId, command) =>
       Effect.gen(function* () {
         commands.push({ threadId, command });

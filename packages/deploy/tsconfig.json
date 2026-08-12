@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.saku.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM"],
+    "types": ["bun-types", "@cloudflare/workers-types", "@types/node"],
+    "outDir": "./dist",
+    "rootDir": "./src"
+  },
+  "include": ["src"],
+  "exclude": ["node_modules", "dist", "test"]
+}

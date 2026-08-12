@@ -1,0 +1,29 @@
+{
+  "$schema": "https://raw.githubusercontent.com/cloudflare/workers-sdk/main/packages/wrangler/config-schema.json",
+  "name": "saku-celld",
+  "main": "index.ts",
+  "compatibility_date": "2025-08-01",
+  "durable_objects": {
+    "bindings": [
+      { "name": "HUB", "class_name": "SakuHubDO" },
+      { "name": "THREAD", "class_name": "SakuThreadDO" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["SakuHubDO", "SakuThreadDO"] }
+  ],
+  "vars": {
+    // The deployment secret consoles present in `hello` — set a real
+    // value (dev/self-hosted trust domain: these vars are plaintext in
+    // the fleet bucket).
+    "DEPLOYMENT_SECRET": "",
+    // Box provisioning is off in the celld twin (static provisioner);
+    // keep the key slot for parity with the Cloudflare deployment.
+    "BOX_API_KEY": "",
+    "SAKU_ENV_PROVISIONER": "static",
+    "SAKU_ENV_URL": "",
+    "SAKU_ENV_TOKEN": "",
+    "SAKU_IDLE_STOP_MS": "300000",
+    "SAKU_FAKE_MODEL": "1"
+  }
+}

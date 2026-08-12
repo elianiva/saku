@@ -26,6 +26,8 @@ import {
   type ThreadRecord,
   type ThreadRegistryShape,
 } from "@saku/worker";
+import { fileKv } from "@saku/store";
+import { LocalEnv } from "@saku/env";
 import {
   AbortResponse,
   BranchResponse,
@@ -191,7 +193,7 @@ export const inProcessWorker = (
         const host = yield* SessionHost.create({
           threadId,
           record,
-          fs,
+          kv: fileKv(fs, getThreadTrailRoot(threadId)),
           catalog,
           registry,
           sink: (event) => {
@@ -205,8 +207,8 @@ export const inProcessWorker = (
               }),
             );
           },
+          env: options.env?.(record) ?? new LocalEnv(record.cwd, fs),
           ...(options.streamFn === undefined ? {} : { streamFn: options.streamFn }),
-          ...(options.env === undefined ? {} : { env: options.env(record) }),
         }).pipe(Effect.mapError(toHubError("create host")));
         yield* Ref.set(hostRef, Option.some(host));
         yield* Ref.update(hostsRef, (hosts) => new Map(hosts).set(threadId, host));
@@ -331,6 +333,9 @@ export const inProcessWorker = (
               }),
             );
           }),
+        // The in-process host's env is pinned at construction (options.env);
+        // the hub's handle is for the DO worker's remote env.
+        setEnvHandle: () => Effect.void,
         delete: (threadId) =>
           Effect.gen(function* () {
             const hosts = yield* Ref.get(hostsRef);
@@ -387,6 +392,7 @@ export const inProcessWorker = (
               createdAt: record.createdAt,
               sessionId: record.sessionId,
               env: "ready",
+              envHandle: null,
             });
             const payload = yield* runHostCommand(host, command);
             return { payload, tailSeq: yield* tailSeqOf(host) };

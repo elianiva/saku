@@ -21,6 +21,7 @@
 
 import { Effect } from "effect";
 import type { ResponsePayload, SessionCommand, SessionWireEvent, ThreadState } from "@saku/wire";
+import type { EnvHandle } from "@saku/env";
 
 import { HubError } from "./hub-error.ts";
 import type { HubRecord } from "./registry.ts";
@@ -54,6 +55,14 @@ export interface ThreadWorkerRef {
   readonly create: (threadId: string, record: HubRecord) => Effect.Effect<void, HubError>;
   /** Delete the worker (called on `delete_thread`): storage, alarms, env. */
   readonly delete: (threadId: string) => Effect.Effect<void, HubError>;
+  /**
+   * Push the thread's env handle to the worker (after provisioning, on
+   * release with null). The worker rebuilds its env connection from it.
+   */
+  readonly setEnvHandle: (
+    threadId: string,
+    handle: EnvHandle | null,
+  ) => Effect.Effect<void, HubError>;
   /** Forward one session command to the thread's worker. */
   readonly command: (
     threadId: string,

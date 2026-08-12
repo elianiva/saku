@@ -221,6 +221,11 @@ export interface EnvHandle {
   readonly token: string;
   /** The backing Box, when the env is a sandbox thread's. */
   readonly boxId: string | null;
+  /**
+   * Attach through the hub relay to this registered env (the local
+   * machine's daemon, cloud workers) — the direct-URL path otherwise.
+   */
+  readonly relay?: { readonly envId: string; readonly token: string };
 }
 
 /** Reconstruct pi's FileError/ExecutionError classes from a wire error. */

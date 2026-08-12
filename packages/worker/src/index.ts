@@ -11,6 +11,7 @@
  */
 
 export { ensureAuthToken, readAuthToken, ensureSakuDirs } from "./auth.ts";
+export { RegistryError } from "./registry-error.ts";
 export { isNotFound, memoryKv, fileKv, type KvStore, type KvEntry } from "@saku/store";
 export { DoSessionRepo, DoSessionStorage, type DoSessionMetadata } from "./do-session.ts";
 export {
@@ -30,7 +31,6 @@ export {
 export {
   ThreadRegistry,
   ThreadRegistryLive,
-  RegistryError,
   type ThreadRecord,
   type ThreadRegistryShape,
 } from "./registry.ts";

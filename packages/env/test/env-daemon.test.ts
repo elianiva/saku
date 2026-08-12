@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect, Exit, FileSystem, Scope } from "effect";
 import { FileError } from "@earendil-works/pi-agent-core";
+import { nodeSocket } from "../src/remote-node.ts";
 
 import { makeEnvDaemon, RemoteEnv, type EnvDaemonShape } from "../src/index.ts";
 
@@ -39,7 +40,7 @@ describe("env daemon", () => {
         );
       }).pipe(Effect.provide(NodeFileSystem.layer)),
     );
-    env = new RemoteEnv({ url: daemon.url, token: TOKEN, cwd: workdir });
+    env = new RemoteEnv({ url: daemon.url, token: TOKEN, socket: nodeSocket, cwd: workdir });
     await env.connect();
   });
 
@@ -60,10 +61,10 @@ describe("env daemon", () => {
   });
 
   it("rejects a wrong token and a wrong version", async () => {
-    const bad = new RemoteEnv({ url: daemon.url, token: "nope" });
+    const bad = new RemoteEnv({ url: daemon.url, token: "nope", socket: nodeSocket });
     await expect(bad.connect()).rejects.toThrow("invalid token");
 
-    const old = new RemoteEnv({ url: daemon.url, token: TOKEN });
+    const old = new RemoteEnv({ url: daemon.url, token: TOKEN, socket: nodeSocket, });
     // Force a version mismatch by connecting with a stale protocol version:
     // RemoteEnv pins ENV_VERSION, so speak raw frames for this one.
     const raw = new WebSocket(daemon.url);
@@ -111,7 +112,7 @@ describe("env daemon", () => {
     const sub = join(workdir, "sub");
     const dir = await env.createDir("sub");
     expect(dir.ok).toBe(true);
-    const inside = new RemoteEnv({ url: daemon.url, token: TOKEN, cwd: sub });
+    const inside = new RemoteEnv({ url: daemon.url, token: TOKEN, socket: nodeSocket, cwd: sub });
     await inside.connect();
     const abs = await inside.absolutePath("file.txt");
     expect(abs.ok && abs.value).toBe(join(sub, "file.txt"));

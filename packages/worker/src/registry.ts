@@ -9,12 +9,12 @@
  * filesystem failures are `RegistryError`.
  */
 
-import { randomUUID } from "node:crypto";
 import { Context, Effect, FileSystem, Layer, Option, Ref, Schema } from "effect";
 import type { ThreadInfo, ThreadMode, ThreadState } from "@saku/wire";
 
 import { isNotFound } from "@saku/store";
 import { getThreadDir, getThreadFile } from "./paths.ts";
+import { RegistryError } from "./registry-error.ts";
 
 export interface ThreadRecord {
   /** Full uuid (unhyphenated). Consoles see an 8-char prefix. */
@@ -29,12 +29,6 @@ export interface ThreadRecord {
   /** The name is an auto-generated prompt snippet awaiting auto-title (CONTEXT.md: Quick start, Auto-title). */
   nameAuto: boolean;
 }
-
-/** A failed registry operation (persist, load, delete on disk). */
-export class RegistryError extends Schema.TaggedError<RegistryError>()("RegistryError", {
-  message: Schema.String,
-  cause: Schema.optional(Schema.Unknown),
-}) {}
 
 export interface ThreadRegistryShape {
   readonly list: () => Effect.Effect<readonly ThreadRecord[], RegistryError>;
@@ -169,9 +163,11 @@ export const ThreadRegistryLive: Layer.Layer<ThreadRegistry, RegistryError, File
         create: (input) =>
           Effect.gen(function* () {
             const record: ThreadRecord = {
-              id: randomUUID().replaceAll("-", ""),
+              id: crypto.randomUUID().replaceAll("-", ""),
               name: input.name,
-              cwd: input.cwd ?? process.cwd(),
+              cwd:
+                input.cwd ??
+                ((globalThis as { process?: { cwd?: () => string } }).process?.cwd?.() ?? "/"),
               mode: input.mode ?? "local",
               createdAt: Date.now(),
               sessionId: null,

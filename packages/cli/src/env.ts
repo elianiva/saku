@@ -20,7 +20,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Effect, Option } from "effect";
-import { RemoteEnv } from "@saku/env";
+import { RemoteEnv, nodeSocket } from "@saku/env";
 import { getEnvConfigPath, getEnvLogPath, getEnvUrlPath } from "@saku/env";
 import { getAuthPath } from "@saku/worker";
 
@@ -107,7 +107,7 @@ export const envStatus = (): Effect.Effect<EnvStatus, never, never> =>
     const url = yield* readEnvUrl();
     const config = yield* readEnvConfig();
     if (Option.isNone(url) || Option.isNone(config)) return { running: false };
-    const env = new RemoteEnv({ url: url.value, token: config.value.token });
+    const env = new RemoteEnv({ url: url.value, token: config.value.token, socket: nodeSocket });
     const hello = yield* Effect.tryPromise(() => env.connect()).pipe(
       Effect.map(Option.some),
       Effect.catch(() => Effect.succeed(Option.none())),

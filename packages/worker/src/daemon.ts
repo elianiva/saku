@@ -87,13 +87,15 @@ import {
 
 import { ensureAuthToken, ensureSakuDirs } from "./auth.ts";
 import { getThreadTrailRoot, getWorkerUrlPath } from "./paths.ts";
+import { fileKv } from "@saku/store";
+import { LocalEnv } from "@saku/env";
 import {
   ThreadRegistry,
   ThreadRegistryLive,
-  RegistryError,
   type ThreadRecord,
   type ThreadRegistryShape,
 } from "./registry.ts";
+import { RegistryError } from "./registry-error.ts";
 import { ModelCatalog, ModelCatalogLive, type ModelCatalogShape } from "./model-catalog.ts";
 import { SessionHost, SessionHostError } from "./session-host.ts";
 
@@ -558,7 +560,12 @@ export const makeSakuDaemon = (options: {
           const host = yield* SessionHost.create({
             threadId,
             record: record.value,
-            fs,
+            // The daemon's trail is file-backed; a Durable Object passes its
+            // own storage through the same seam (do-session.ts).
+            kv: fileKv(fs, getThreadTrailRoot(threadId)),
+            // The daemon's hands are in-process; a DO drives the env daemon
+            // over the wire (RemoteEnv).
+            env: new LocalEnv(record.value.cwd, fs),
             catalog,
             registry,
             sink: (event) => {

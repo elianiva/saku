@@ -1,7 +1,8 @@
 # Plan 0001 — The durable spine (hub · worker · env · wire)
 
-Status: planned — the design agreed in the rework grilling session. Supersedes the
-local-spine plan; the TUI, foldtui, demo, and pty harness are removed.
+Status: **implemented** — M0–M4 done, the durable spine ships as `packages/deploy`
+(Cloudflare + celld). Supersedes the local-spine plan; the TUI, foldtui, demo, and
+pty harness are removed.
 
 The managed-agents shape: a **hub** (Cloudflare Workers, or celld locally) hosts one
 **worker** (a Durable Object) per thread; each worker runs pi-agent-core's
@@ -147,7 +148,37 @@ program). Box API key + LLM provider keys are deployment secrets.
   `bash` executes on the daemon and its stdout lands in the trail);
   live-verified: the built bundle serves the tool surface, and the CLI
   lifecycle works end to end.
-- **M4 — deploy + docs**: alchemy program on celld, README, polish.
+- **M4 — deploy + docs** ✅: `packages/deploy` — the deployment's own code. One
+  alchemy program (`alchemy.run.ts` → `Alchemy.Stack("Saku")`) declares the
+  worker (`src/worker.ts`), the `HUB` + `THREAD` Durable Object namespaces, the
+  deployment secret, and the LLM provider keys; the same program is what
+  `bun alchemy deploy` (Cloudflare) and `celld deploy` (self-hosted) ship.
+  The DOs are plain workerd classes (`SakuHubDO`/`SakuThreadDO` — no alchemy
+  runtime import in the entry bundle): the hub DO serves `/ws` (the wire
+  server core) + `/relay` (the relay core) + `/push` (idle-stop), the thread
+  DO runs the real `SessionHost` over DO storage with a `RemoteEnv` whose
+  socket comes from the env's `workerdSocket` factory — all isolate-clean
+  entries (`@saku/env/remote`, `@saku/worker/isolate`, `@saku/hub/core`,
+  proven by bundling). Provisioning: Box (production, the env bundle embedded
+  via codegen — DOs can't read filesystems) or `SAKU_ENV_PROVISIONER=static`
+  (dev/celld: one configured env daemon, no Box). Idle-stop became the
+  thread DO's alarm: the hub's controller arms/disarms over `/arm-idle`
+  (`setAlarm`), the fired alarm pushes `idleStopFired` back, the hub
+  validates + releases + flips the env axis. The celld twin is
+  hand-maintained (`celld/wrangler.jsonc` + `index.ts` — `WranglerJson`
+  doesn't exist in alchemy 2.0.0-beta.72).
+  **Proof**: the dev harness (`Test.make({ dev: true, sidecar: false })`)
+  deploys the stack to real workerd and the 4-test integration suite
+  (`packages/deploy/test/deploy.test.ts`) drives it over the real wire: a
+  console creates a thread, prompts through the hub DO → thread DO → real
+  SessionHost → the env daemon, and reads the run back from DO storage;
+  idle-stop fires through the DO alarm (env `stopped` → resume on the next
+  prompt); the relay registers/attaches/execs through the hub DO; and
+  `delete_thread` tears down record + worker storage. Harness notes: the
+  alchemy dev sidecar's `Layer.build`/`Effect.provide` call shapes broke
+  against effect beta.106, so `sidecar: false` runs the providers
+  in-process; per-test wire clients live inside the harness effect (a
+  one-shot `runPromise` kills the actor fiber).
 
 ## 9. Deferred
 
@@ -167,14 +198,45 @@ program). Box API key + LLM provider keys are deployment secrets.
   single domain.
 - M3 hosts the idle-stop timer in the hub (armed on idle worker reports, reset by
   activity); the worker DO alarm of M4 replaces the timer, same semantics — the
-  ADR's "the worker arms, the hub pulls" is preserved.
+  ADR's "the worker arms, the hub pulls" is preserved. Landed in the thread DO:
+  `alarm()` fires on the hub's `/arm-idle` window; `/disarm-idle` clears it;
+  the fired alarm pushes `idleStopFired` to the hub over `/push`.
 - Local threads still use the in-process `LocalEnv` in the transitional daemon;
   the relayed local env (a cloud worker driving the user's machine through the
   hub) is exercised by tests and lands with the DO worker in M4.
+- M4's integration suite deploys the stack with `SAKU_ENV_PROVISIONER=static` —
+  one env daemon at a configured URL is the env (dev/celld shape); the Box
+  provisioner stays the production default and is covered by its M3 suite.
+- The celld twin is hand-maintained (`packages/deploy/celld/wrangler.jsonc` + a
+  re-export `index.ts`): alchemy's docs describe a `WranglerJson` resource that
+  does not exist in 2.0.0-beta.72, so the wrangler model celld executes is
+  written by hand — vars mirror the stack's bindings (`DEPLOYMENT_SECRET`,
+  `SAKU_ENV_*`, `BOX_API_KEY`), classes carry the two DO namespaces with
+  `new_sqlite_classes` migrations.
 
 ## 11. Verification items (not blockers)
 
-- celld DO → host-loopback reachability for `mode: local` when the hub runs on celld.
-- alchemy's celld target maturity.
-- Box `host --private` URL stability across stop/resume.
-- Cloudflare DO namespace deletion behavior for thread husks.
+- celld DO → host-loopback reachability for `mode: local` when the hub runs on
+  celld. **M4 status**: the in-workerd loopback is proven (the integration
+  suite's relay test runs the full register/attach/exec path inside the
+  workerd hub DO against a node daemon); a real celld deployment (needs an
+  S3-compatible bucket) remains a user-runnable check.
+- alchemy's celld target maturity. **M4 status**: resolved positively for the
+  celld path — the entry code is plain workerd classes + the hand-written
+  wrangler.jsonc is exactly the model celld executes; alchemy is used only in
+  `alchemy.run.ts` for the Cloudflare deploy + dev harness.
+- Box `host --private` URL stability across stop/resume. **M3 status**: the
+  provisioner re-reads `host.url` on resume (the daemon's URL is re-probed
+  before `ready`), covered by the resume test.
+- Cloudflare DO namespace deletion behavior for thread husks. **Documented**: a
+  deleted thread's DO lingers as a husk (no public namespace delete); the hub
+  calls `deleteAll()` on its storage and drops its alarm, so a husk costs
+  storage only.
+
+## 12. Deploying
+
+Cloudflare (production): `bun alchemy deploy` in `packages/deploy` with the
+secrets as env vars (`BOX_API_KEY`, the LLM provider keys, `SAKU_ENV_*` for the
+static-provisioner shape). celld (development/self-hosted): `celld deploy
+packages/deploy/celld --bucket <s3-bucket>` with esbuild on PATH — the twin
+mirrors the same bindings; see `packages/deploy/celld/README.md`.

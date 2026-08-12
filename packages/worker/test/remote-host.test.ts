@@ -17,8 +17,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect, Exit, FileSystem, Scope } from "effect";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import type { StreamFn } from "@earendil-works/pi-ai";
-import { makeEnvDaemon, RemoteEnv, type EnvDaemonShape } from "@saku/env";
+import type { StreamFn } from "@earendil-works/pi-agent-core";
+import { makeEnvDaemon, nodeSocket, RemoteEnv, type EnvDaemonShape } from "@saku/env";
+import { fileKv } from "@saku/store";
 
 import { SessionHost, type HostEventSink } from "../src/session-host.ts";
 import { assistantMessage, fakeCatalog, FakeRegistry } from "./fakes.ts";
@@ -26,10 +27,15 @@ import { assistantMessage, fakeCatalog, FakeRegistry } from "./fakes.ts";
 const THREAD_ID = "0123456789abcdef0123456789abcdef";
 const ENV_TOKEN = "remote-host-token";
 
+// The per-test trail/workspace dir (set in beforeEach, before record()).
+let workdir: string;
+
 const record = () => ({
   id: THREAD_ID,
   name: "remote thread",
-  cwd: null,
+  // The trail/workspace cwd: the RemoteEnv is built per-test with the
+  // fresh workdir, and the record's cwd mirrors it.
+  cwd: workdir,
   mode: "sandbox" as const,
   createdAt: Date.now(),
   sessionId: null,
@@ -47,7 +53,7 @@ const toolThenDoneStream = (doneText: string): StreamFn => {
     const stream = createAssistantMessageEventStream();
     if (phase === 0) {
       phase = 1;
-      const message = assistantMessage("Let me run a command.", "tool_use");
+      const message = assistantMessage("Let me run a command.", "toolUse");
       stream.end({
         ...message,
         content: [
@@ -67,7 +73,6 @@ const toolThenDoneStream = (doneText: string): StreamFn => {
 };
 
 describe("SessionHost over RemoteEnv", () => {
-  let workdir: string;
   let daemon: EnvDaemonShape;
   let env: RemoteEnv;
   let scope: Scope.Scope;
@@ -90,13 +95,14 @@ describe("SessionHost over RemoteEnv", () => {
       }).pipe(Effect.provide(NodeFileSystem.layer)),
     );
     daemon = built.daemon;
-    env = new RemoteEnv({ url: daemon.url, token: ENV_TOKEN, cwd: workdir });
+    env = new RemoteEnv({ url: daemon.url, token: ENV_TOKEN, cwd: workdir, socket: nodeSocket, });
     await env.connect();
     host = await Effect.runPromise(
       SessionHost.create({
         threadId: THREAD_ID,
         record: record(),
-        fs: built.fs,
+        // The trail lives under the workdir (the remote env's workspace).
+        kv: fileKv(built.fs, join(workdir, "trail")),
         catalog: fakeCatalog(),
         registry,
         sink,

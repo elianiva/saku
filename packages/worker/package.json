@@ -11,6 +11,10 @@
       "types": "./src/index.ts",
       "import": "./src/index.ts"
     },
+    "./isolate": {
+      "types": "./src/isolate.ts",
+      "import": "./src/isolate.ts"
+    },
     "./daemon": {
       "types": "./src/daemon-entry.ts",
       "import": "./src/daemon-entry.ts"

@@ -7,7 +7,6 @@
  * additive later.
  */
 
-import { randomUUID } from "node:crypto";
 import { Effect, Ref } from "effect";
 import type { SkillInfo, SkillScope } from "@saku/wire";
 
@@ -74,7 +73,7 @@ export const makeSkillsStore = (kv: KvStore): Effect.Effect<SkillsStoreShape, Hu
       import: (input) =>
         Effect.gen(function* () {
           const skill: SkillInfo = {
-            id: randomUUID().replaceAll("-", ""),
+            id: crypto.randomUUID().replaceAll("-", ""),
             name: skillNameFromSource(input.source),
             scope: input.scope ?? "personal",
             source: input.source,

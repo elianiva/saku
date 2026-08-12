@@ -18,7 +18,6 @@
  * be assigned in log order.
  */
 
-import { randomUUID } from "node:crypto";
 import {
   Session,
   SessionError,
@@ -338,7 +337,7 @@ export class DoSessionRepo implements SessionRepo<DoSessionMetadata> {
   }
 
   async create(options: SessionCreateOptions = {}): Promise<Session<DoSessionMetadata>> {
-    const id = options.id ?? randomUUID().replaceAll("-", "");
+    const id = options.id ?? crypto.randomUUID().replaceAll("-", "");
     validateSessionId(id);
     const prefix = sessionPrefix(id);
     if ((await this.kv.get(`${prefix}meta`)) !== undefined) {
@@ -389,7 +388,7 @@ export class DoSessionRepo implements SessionRepo<DoSessionMetadata> {
       prefixedKv(this.kv, sessionPrefix(source.id)),
       source.id,
     );
-    const childId = options.id ?? randomUUID().replaceAll("-", "");
+    const childId = options.id ?? crypto.randomUUID().replaceAll("-", "");
     validateSessionId(childId);
     const childPrefix = sessionPrefix(childId);
     if ((await this.kv.get(`${childPrefix}meta`)) !== undefined) {

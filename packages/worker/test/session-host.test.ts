@@ -11,7 +11,7 @@ import type { AssistantMessage, TextContent } from "@earendil-works/pi-ai";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 import type { Entry } from "@earendil-works/pi-agent-core";
 import type { ThreadRecord } from "../src/registry.ts";
-import { RegistryError } from "../src/registry.ts";
+import { RegistryError } from "../src/registry-error.ts";
 import {
   SessionHost,
   SessionHostError,
@@ -126,12 +126,15 @@ const makeHost = (
     const host = yield* SessionHost.create({
       threadId: THREAD_ID,
       record: yield* registry.get(THREAD_ID).pipe(Effect.map(Option.getOrThrow)),
-      fs,
+      // The test trail is file-backed under the thread's directory.
+      kv: fileKv(fs, getThreadTrailRoot(THREAD_ID)),
       catalog: fakeCatalog({ completions: options.completions }),
       registry,
       sink,
       ...(options.streamFn === undefined ? {} : { streamFn: options.streamFn }),
-      ...(options.env === undefined ? {} : { env: options.env }),
+      ...(options.env === undefined
+        ? { env: new StubEnv("/work") }
+        : { env: options.env }),
     });
     return { host, registry, events, fs, kvRoot: getThreadTrailRoot(THREAD_ID) };
   });
@@ -407,10 +410,11 @@ describe("SessionHost", () => {
             return yield* SessionHost.create({
               threadId: THREAD_ID,
               record: yield* registry.get(THREAD_ID).pipe(Effect.map(Option.getOrThrow)),
-              fs,
+              kv: fileKv(fs, getThreadTrailRoot(THREAD_ID)),
               catalog: fakeCatalog(),
               registry,
               sink: () => {},
+              env: new StubEnv("/work"),
             });
           }).pipe(Effect.provide(NodeFileSystem.layer)),
         );

@@ -28,12 +28,15 @@
  * box to `ready` — systemd brings the daemon back during resume.
  */
 
-import { randomBytes } from "node:crypto";
 import { Effect, Option, Result } from "effect";
-import { RemoteEnv, type EnvHandle } from "@saku/env";
+import { RemoteEnv, nodeSocket, type EnvHandle } from "@saku/env";
 
 /** A fresh env protocol token (the daemon's credential). */
-const randomToken = (): string => randomBytes(32).toString("hex");
+const randomToken = (): string => {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+};
 
 import { HubError } from "./hub-error.ts";
 import type { HubRecord } from "./registry.ts";
@@ -138,7 +141,7 @@ const probeDaemon = (
   token: string,
 ): Effect.Effect<void, HubError, never> =>
   Effect.gen(function* () {
-    const env = new RemoteEnv({ url, token });
+    const env = new RemoteEnv({ url, token, socket: nodeSocket });
     const outcome = yield* Effect.tryPromise({
       try: () => env.connect().then(() => env.close()),
       catch: (error) => error as Error,
