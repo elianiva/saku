@@ -34,7 +34,7 @@ import { getApiProvider, registerBuiltInApiProviders } from "@earendil-works/pi-
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import type { WireModelInfo } from "@saku/wire";
 
-import { isNotFound } from "./fs.ts";
+import { isNotFound } from "@saku/store";
 import { getAuthJsonPath, getModelsJsonPath } from "./paths.ts";
 import {
   getMissingConfigValueEnvVarNames,
@@ -88,7 +88,10 @@ class AuthJsonCredentialStore implements CredentialStore {
   }
 
   async list(): Promise<readonly CredentialInfo[]> {
-    return Object.entries(this.data).map(([providerId, credential]) => ({ providerId, type: credential.type }));
+    return Object.entries(this.data).map(([providerId, credential]) => ({
+      providerId,
+      type: credential.type,
+    }));
   }
 
   async modify(
@@ -111,7 +114,13 @@ class AuthJsonCredentialStore implements CredentialStore {
     await Effect.runPromise(
       this.fs
         .makeDirectory(dirname(this.path), { recursive: true })
-        .pipe(Effect.andThen(this.fs.writeFileString(this.path, `${JSON.stringify(this.data, null, 2)}\n`, { mode: AUTH_JSON_FILE_MODE })))
+        .pipe(
+          Effect.andThen(
+            this.fs.writeFileString(this.path, `${JSON.stringify(this.data, null, 2)}\n`, {
+              mode: AUTH_JSON_FILE_MODE,
+            }),
+          ),
+        )
         .pipe(Effect.andThen(this.fs.chmod(this.path, AUTH_JSON_FILE_MODE))),
     );
   }
@@ -178,7 +187,9 @@ const modelFromJson = (
     contextWindow: definition.contextWindow ?? 128_000,
     maxTokens: definition.maxTokens ?? 16_384,
     ...(headers === undefined ? {} : { headers }),
-    ...(definition.samplingParams === undefined ? {} : { samplingParams: definition.samplingParams }),
+    ...(definition.samplingParams === undefined
+      ? {}
+      : { samplingParams: definition.samplingParams }),
   };
 };
 
@@ -188,7 +199,9 @@ const streamsFor = (models: readonly Model<Api>[]): Partial<Record<Api, Provider
     if (streams[model.api] !== undefined) continue;
     const implementation = getApiProvider(model.api);
     if (implementation === undefined) {
-      throw new Error(`Provider ${model.provider}, model ${model.id}: no stream implementation for api "${model.api}".`);
+      throw new Error(
+        `Provider ${model.provider}, model ${model.id}: no stream implementation for api "${model.api}".`,
+      );
     }
     streams[model.api] = {
       stream: implementation.stream as ProviderStreams["stream"],
@@ -203,7 +216,11 @@ const streamsFor = (models: readonly Model<Api>[]): Partial<Record<Api, Provider
  * otherwise the configured value resolves against the daemon's environment
  * (`$VAR` interpolation, `!command` execution — see config-value.ts).
  */
-const apiKeyAuthFor = (providerId: string, config: ModelsJsonProviderConfig, env: Record<string, string>): ApiKeyAuth => {
+const apiKeyAuthFor = (
+  providerId: string,
+  config: ModelsJsonProviderConfig,
+  env: Record<string, string>,
+): ApiKeyAuth => {
   const rawKey = config.apiKey;
   return {
     name: "API key",
@@ -216,7 +233,8 @@ const apiKeyAuthFor = (providerId: string, config: ModelsJsonProviderConfig, env
       if (rawKey !== undefined) {
         // Commands are not executed during checks (listing must stay
         // side-effect free); a configured command counts as configured.
-        if (isCommandConfigValue(rawKey)) return { type: "api_key" as const, source: "configured API key" };
+        if (isCommandConfigValue(rawKey))
+          return { type: "api_key" as const, source: "configured API key" };
         if (getMissingConfigValueEnvVarNames(rawKey, env).length === 0) {
           return { type: "api_key" as const, source: "configured API key" };
         }
@@ -260,10 +278,14 @@ export interface ModelCatalogShape {
 }
 
 /** The threads' shared model runtime: builtins + models.json, auth-aware. */
-export class ModelCatalog extends Context.Service<ModelCatalog, ModelCatalogShape>()("ModelCatalog") {}
+export class ModelCatalog extends Context.Service<ModelCatalog, ModelCatalogShape>()(
+  "ModelCatalog",
+) {}
 
 /** Build the catalog from auth.json, models.json, and pi's builtin providers. */
-export const ModelCatalogLive = (options: CatalogOptions = {}): Layer.Layer<ModelCatalog, never, FileSystem.FileSystem> =>
+export const ModelCatalogLive = (
+  options: CatalogOptions = {},
+): Layer.Layer<ModelCatalog, never, FileSystem.FileSystem> =>
   Layer.effect(
     ModelCatalog,
     Effect.gen(function* () {
@@ -291,7 +313,9 @@ export const ModelCatalogLive = (options: CatalogOptions = {}): Layer.Layer<Mode
             if (replacement !== undefined) models.setProvider(replacement);
           }
         } catch (error) {
-          yield* Effect.logWarning(`models.json: skipping provider "${providerId}": ${String(error)}`);
+          yield* Effect.logWarning(
+            `models.json: skipping provider "${providerId}": ${String(error)}`,
+          );
         }
       }
 
@@ -313,13 +337,18 @@ export const ModelCatalogLive = (options: CatalogOptions = {}): Layer.Layer<Mode
     }),
   );
 
-const loadModelsJsonFrom = (fs: FileSystem.FileSystem, path: string): Effect.Effect<ModelsJson, never, never> =>
+const loadModelsJsonFrom = (
+  fs: FileSystem.FileSystem,
+  path: string,
+): Effect.Effect<ModelsJson, never, never> =>
   Effect.gen(function* () {
     const raw = yield* fs.readFileString(path).pipe(
       Effect.catch((error) => {
         // No models.json is the default install; anything else is worth knowing.
         if (isNotFound(error)) return Effect.succeed("");
-        return Effect.logWarning(`failed to read models.json: ${String(error)}`).pipe(Effect.as(""));
+        return Effect.logWarning(`failed to read models.json: ${String(error)}`).pipe(
+          Effect.as(""),
+        );
       }),
     );
     const parsed = Result.try(() => JSON.parse(raw) as unknown);
@@ -341,7 +370,9 @@ const buildCustomProvider = (
   config: ModelsJsonProviderConfig,
   env: Record<string, string>,
 ): Provider => {
-  const models = (config.models ?? []).map((definition) => modelFromJson(providerId, definition, config, env));
+  const models = (config.models ?? []).map((definition) =>
+    modelFromJson(providerId, definition, config, env),
+  );
   if (models.length === 0) {
     throw new Error("no models defined");
   }

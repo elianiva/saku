@@ -12,9 +12,23 @@
 
 import { Effect, Option, Result } from "effect";
 
-import { makeWireClient, WireError, shortThreadId, resolveThread, type ThreadMode, type WireClient } from "@saku/wire";
+import {
+  makeWireClient,
+  WireError,
+  shortThreadId,
+  resolveThread,
+  type ThreadMode,
+  type WireClient,
+} from "@saku/wire";
 
-import { daemonStatus, ensureDaemon, readWorkerToken, readWorkerUrl, spawnDaemon, stopDaemon } from "./daemon.ts";
+import {
+  daemonStatus,
+  ensureDaemon,
+  readWorkerToken,
+  readWorkerUrl,
+  spawnDaemon,
+  stopDaemon,
+} from "./daemon.ts";
 
 // ---------------------------------------------------------------------------
 // Console plumbing
@@ -50,7 +64,10 @@ const fail = (error: unknown): never => {
 };
 
 /** Give connection-refused errors a steer, keep everything else as-is. */
-const run = <T>(effect: Effect.Effect<T, WireError, never>, label: string): Effect.Effect<T, WireError, never> =>
+const run = <T>(
+  effect: Effect.Effect<T, WireError, never>,
+  label: string,
+): Effect.Effect<T, WireError, never> =>
   effect.pipe(
     Effect.catchIf(
       (error): error is WireError => error instanceof WireError && error.code === "refused",
@@ -79,7 +96,9 @@ const cmdList = (): Effect.Effect<void, WireError | Error, never> =>
       yield* client.disconnect();
       return;
     }
-    console.log(pad("ID", 10) + pad("NAME", 28) + pad("MODE", 10) + pad("STATE", 12) + pad("ENV", 12) + "CWD");
+    console.log(
+      pad("ID", 10) + pad("NAME", 28) + pad("MODE", 10) + pad("STATE", 12) + pad("ENV", 12) + "CWD",
+    );
     for (const thread of threads) {
       console.log(
         pad(shortThreadId(thread.id), 10) +
@@ -93,14 +112,22 @@ const cmdList = (): Effect.Effect<void, WireError | Error, never> =>
     yield* client.disconnect();
   });
 
-const cmdNew = (name: string | undefined, cwd: string, mode: ThreadMode | undefined): Effect.Effect<void, WireError | Error, never> =>
+const cmdNew = (
+  name: string | undefined,
+  cwd: string,
+  mode: ThreadMode | undefined,
+): Effect.Effect<void, WireError | Error, never> =>
   Effect.gen(function* () {
     if (name === undefined || name.length === 0) {
-      return yield* Effect.fail(new Error("saku new requires a name: saku new <name> [--cwd <dir>]"));
+      return yield* Effect.fail(
+        new Error("saku new requires a name: saku new <name> [--cwd <dir>]"),
+      );
     }
     const client = yield* connect();
     const thread = yield* run(
-      mode === undefined ? client.createThread(name, { cwd }) : client.createThread(name, { cwd, mode }),
+      mode === undefined
+        ? client.createThread(name, { cwd })
+        : client.createThread(name, { cwd, mode }),
       "create thread",
     );
     console.log(shortThreadId(thread.id));
@@ -138,7 +165,12 @@ const cmdDaemon = (sub: string | undefined): Effect.Effect<void, Error, never> =
       }
       case "stop": {
         const pid = yield* stopDaemon();
-        console.log(Option.match(pid, { onNone: () => "not running", onSome: (value) => `stopped (pid ${value})` }));
+        console.log(
+          Option.match(pid, {
+            onNone: () => "not running",
+            onSome: (value) => `stopped (pid ${value})`,
+          }),
+        );
         return;
       }
       case "status": {

@@ -13,13 +13,14 @@ The managed-agents shape: a **hub** (Cloudflare Workers, or celld locally) hosts
 
 ## 1. Packages
 
-| Package | Role |
-|---------|------|
-| `packages/wire` | Rework: the protocol — JSONL over WebSocket, hello/version handshake, thread/session/skills commands, typed `WireClient` (browser-compatible; the client is an `effect-machine` actor — connection lifecycle as a schema-first state machine). Zero pi imports at runtime for framing; pi's public types cross verbatim. |
-| `packages/hub` | New: the control-plane DO — registry, Box provisioning (owns Box keys), skills store, auth (deployment secret), WS routing, event fan-out. |
-| `packages/worker` | Rework: the thread DO — `SessionHost` ported onto a DO-storage `SessionRepo`, env data-plane client, idle-stop alarm, event projection. |
-| `packages/env` | New: the hands daemon — pi tool surface (`read`/`bash`/`edit`/`write`) over a streaming protocol; local host (relay registration) and Box host (`host --private`). |
-| `packages/cli` | Slim: `saku env start|stop|status` only (local daemon management). |
+| Package           | Role                                                                                                                                                                                                                                                                                                                     |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `packages/wire`   | Rework: the protocol — JSONL over WebSocket, hello/version handshake, thread/session/skills commands, typed `WireClient` (browser-compatible; the client is an `effect-machine` actor — connection lifecycle as a schema-first state machine). Zero pi imports at runtime for framing; pi's public types cross verbatim. |
+| `packages/store`  | The durability seam: `KvStore` (the Durable Object storage contract — `get`/`put`/`delete`/`list`) with its memory and file implementations, plus the shared `isNotFound` helper. Used by the hub (registry, skills store) and the worker (session trail); DO adapters implement it trivially.                           |
+| `packages/hub`    | New: the control-plane DO — registry, Box provisioning (owns Box keys), skills store, auth (deployment secret), WS routing, event fan-out.                                                                                                                                                                               |
+| `packages/worker` | Rework: the thread DO — `SessionHost` ported onto a DO-storage `SessionRepo`, env data-plane client, idle-stop alarm, event projection.                                                                                                                                                                                  |
+| `packages/env`    | New: the hands daemon — pi tool surface (`read`/`bash`/`edit`/`write`) over a streaming protocol; local host (relay registration) and Box host (`host --private`).                                                                                                                                                       |
+| `packages/cli`    | Slim: `saku env start                                                                                                                                                                                                                                                                                                    | stop | status` only (local daemon management). |
 
 Deleted: `tui`, `foldtui`, `demo`, `scripts/pty-drive.py`, foldkit patch. Root scripts
 keep `typecheck`/`test`/`build`; `saku` remains the CLI entry.
@@ -112,8 +113,18 @@ program). Box API key + LLM provider keys are deployment secrets.
   (create → set_model → get_state/get_entries → rename → delete, and
   restart persistence). The env data plane stays a seam: `ExecutionEnv`
   (LocalEnv locally, the remote client in M3).
-- **M2 — hub**: registry, routing, fan-out, auth; integration tests over the wire
-  (the user's call: tests, not a CLI smoke).
+- **M2 — hub** ✅: `packages/hub` — the control-plane core (`makeHub`:
+  durable registry over the `KvStore` seam with the persisted env axis,
+  worker seam (`ThreadWorkerRef` — create/delete/command/close, events and
+  reports pushed back through the `HubEventSink`), env provisioner seam
+  (`localOnlyProvisioner` for M2 — sandbox provisioning lands with M3),
+  hub-hosted skills store, read-only commands bypassing the env gate), the
+  wire server (`makeHubServer`: hello/version auth, stateless routing,
+  fan-out), and 34 tests: core suites with a scripted worker, full wire
+  integration over real WebSockets with multiple consoles, and the
+  real-SessionHost stack (in-process worker ref wrapping the actual
+  `SessionHost` — lazy sessions, streamed runs, sessionId back-fill,
+  auto-title reporting, trail deletion).
 - **M3 — env daemon**: local host + relay registration; Box bootstrap via the one-shot
   API; idle-stop end to end.
 - **M4 — deploy + docs**: alchemy program on celld, README, polish.

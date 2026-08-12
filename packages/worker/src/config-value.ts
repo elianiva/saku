@@ -18,7 +18,9 @@ import { Result } from "effect";
 const ENV_VAR_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 const ENV_VAR_NAME_PREFIX_RE = /^[A-Za-z_][A-Za-z0-9_]*/u;
 
-type TemplatePart = { readonly type: "literal"; readonly value: string } | { readonly type: "env"; readonly name: string };
+type TemplatePart =
+  | { readonly type: "literal"; readonly value: string }
+  | { readonly type: "env"; readonly name: string };
 
 const appendLiteral = (parts: TemplatePart[], value: string): void => {
   if (value.length === 0) return;
@@ -70,7 +72,10 @@ const parseTemplate = (config: string): TemplatePart[] => {
   return parts;
 };
 
-const resolveTemplate = (parts: readonly TemplatePart[], env: Record<string, string>): string | undefined => {
+const resolveTemplate = (
+  parts: readonly TemplatePart[],
+  env: Record<string, string>,
+): string | undefined => {
   let resolved = "";
   for (const part of parts) {
     if (part.type === "literal") {
@@ -115,12 +120,19 @@ export const getConfigValueEnvVarNames = (config: string): string[] => {
 };
 
 /** Env var names referenced by the value that are not set in `env`. */
-export const getMissingConfigValueEnvVarNames = (config: string, env: Record<string, string>): string[] =>
-  getConfigValueEnvVarNames(config).filter((name) => env[name] === undefined);
+export const getMissingConfigValueEnvVarNames = (
+  config: string,
+  env: Record<string, string>,
+): string[] => getConfigValueEnvVarNames(config).filter((name) => env[name] === undefined);
 
 /** Resolve a config value to its actual value; undefined when a reference cannot be resolved. */
-export const resolveConfigValue = (config: string, env: Record<string, string>): string | undefined =>
-  isCommandConfigValue(config) ? executeCommand(config) : resolveTemplate(parseTemplate(config), env);
+export const resolveConfigValue = (
+  config: string,
+  env: Record<string, string>,
+): string | undefined =>
+  isCommandConfigValue(config)
+    ? executeCommand(config)
+    : resolveTemplate(parseTemplate(config), env);
 
 /** Resolve every header value (missing references drop the header, pi's rule). */
 export const resolveHeaders = (

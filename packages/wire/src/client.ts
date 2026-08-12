@@ -35,7 +35,13 @@ import { ConsoleRole, Hello, HelloOk } from "./hello.ts";
 import { WireCommand, WireEvent } from "./envelope.ts";
 import { decodeFrame, parseFrame, serializeFrame } from "./transport.ts";
 import { ThreadCommand, ThreadInfo, type ThreadMode } from "./thread.ts";
-import { CreateThreadCommand, DeleteThreadCommand, GetThreadCommand, ListThreadsCommand, RenameThreadCommand } from "./thread.ts";
+import {
+  CreateThreadCommand,
+  DeleteThreadCommand,
+  GetThreadCommand,
+  ListThreadsCommand,
+  RenameThreadCommand,
+} from "./thread.ts";
 import {
   AbortCommand,
   BranchCommand,
@@ -188,7 +194,11 @@ const settleConnect = (
     ),
   );
 
-const emit = (deps: ClientDeps, kind: ClientEventKind, payload: ClientEvents[ClientEventKind]): Effect.Effect<void, never, never> =>
+const emit = (
+  deps: ClientDeps,
+  kind: ClientEventKind,
+  payload: ClientEvents[ClientEventKind],
+): Effect.Effect<void, never, never> =>
   Effect.sync(() => {
     const set = deps.listeners.get(kind);
     if (set === undefined) return;
@@ -266,7 +276,9 @@ const makeMachine = (
         if (Result.isFailure(sent)) {
           yield* settleConnect(
             deps,
-            Result.fail(new WireError({ code: "disconnected", message: "socket closed before hello" })),
+            Result.fail(
+              new WireError({ code: "disconnected", message: "socket closed before hello" }),
+            ),
           );
           return ClientState.Disconnected;
         }
@@ -277,7 +289,9 @@ const makeMachine = (
       Effect.gen(function* () {
         yield* settleConnect(
           deps,
-          Result.fail(new WireError({ code: "refused", message: "connection to the server failed" })),
+          Result.fail(
+            new WireError({ code: "refused", message: "connection to the server failed" }),
+          ),
         );
         // The close event follows and moves the machine to Disconnected.
         return ClientState.Connecting;
@@ -287,7 +301,9 @@ const makeMachine = (
       Effect.gen(function* () {
         yield* settleConnect(
           deps,
-          Result.fail(new WireError({ code: "disconnected", message: "connection closed before open" })),
+          Result.fail(
+            new WireError({ code: "disconnected", message: "connection closed before open" }),
+          ),
         );
         return ClientState.Disconnected;
       }),
@@ -315,7 +331,9 @@ const makeMachine = (
       Effect.gen(function* () {
         yield* settleConnect(
           deps,
-          Result.fail(new WireError({ code: "disconnected", message: "connection closed during handshake" })),
+          Result.fail(
+            new WireError({ code: "disconnected", message: "connection closed during handshake" }),
+          ),
         );
         return ClientState.Disconnected;
       }),
@@ -331,7 +349,10 @@ const makeMachine = (
     )
     .on(ClientState.Connected, ClientEvent.Closed, () =>
       Effect.gen(function* () {
-        yield* failAllPending(deps, new WireError({ code: "disconnected", message: "connection closed" }));
+        yield* failAllPending(
+          deps,
+          new WireError({ code: "disconnected", message: "connection closed" }),
+        );
         yield* emit(deps, "close", undefined);
         return ClientState.Disconnected;
       }),
@@ -406,7 +427,10 @@ const handleFrame = (deps: ClientDeps, frame: WireEvent): Effect.Effect<void, ne
         // The envelope's event payload is opaque JSON by design (ADR 0005:
         // pi's event vocabulary crosses the wire unvalidated); the console
         // narrows it to the projected `SessionWireEvent` at this boundary.
-        yield* emit(deps, "event", { threadId: frame.threadId, event: frame.event as SessionWireEvent });
+        yield* emit(deps, "event", {
+          threadId: frame.threadId,
+          event: frame.event as SessionWireEvent,
+        });
         return;
       case "thread_changed":
         yield* emit(deps, "thread_changed", frame.thread);
@@ -421,7 +445,10 @@ const handleFrame = (deps: ClientDeps, frame: WireEvent): Effect.Effect<void, ne
   });
 
 /** Decode one frame line, or surface the failure as an error event. */
-const decodeFrameLine = (deps: ClientDeps, line: string): Effect.Effect<WireEvent, WireError, never> =>
+const decodeFrameLine = (
+  deps: ClientDeps,
+  line: string,
+): Effect.Effect<WireEvent, WireError, never> =>
   Effect.gen(function* () {
     const parsed = Result.try(() => parseFrame(line));
     if (Result.isFailure(parsed)) {
@@ -451,7 +478,10 @@ export interface WireClient {
   readonly start: () => Effect.Effect<void, WireError, never>;
   /** Close the connection; pending commands fail with `disconnected`. */
   readonly disconnect: () => Effect.Effect<void, never>;
-  readonly on: <K extends ClientEventKind>(kind: K, listener: (payload: ClientEvents[K]) => void) => () => void;
+  readonly on: <K extends ClientEventKind>(
+    kind: K,
+    listener: (payload: ClientEvents[K]) => void,
+  ) => () => void;
   // -- threads
   readonly listThreads: () => Effect.Effect<ThreadInfo[], WireError, never>;
   readonly createThread: (
@@ -459,37 +489,82 @@ export interface WireClient {
     options?: { readonly cwd?: string; readonly mode?: ThreadMode; readonly autoName?: boolean },
   ) => Effect.Effect<ThreadInfo, WireError, never>;
   readonly getThread: (threadId: string) => Effect.Effect<ThreadInfo, WireError, never>;
-  readonly renameThread: (threadId: string, name: string) => Effect.Effect<ThreadInfo, WireError, never>;
+  readonly renameThread: (
+    threadId: string,
+    name: string,
+  ) => Effect.Effect<ThreadInfo, WireError, never>;
   readonly deleteThread: (threadId: string) => Effect.Effect<void, WireError, never>;
   // -- session
-  readonly prompt: (threadId: string, text: string, images?: ReadonlyArray<unknown>) => Effect.Effect<void, WireError, never>;
+  readonly prompt: (
+    threadId: string,
+    text: string,
+    images?: ReadonlyArray<unknown>,
+  ) => Effect.Effect<void, WireError, never>;
   readonly steer: (threadId: string, text: string) => Effect.Effect<void, WireError, never>;
   readonly followUp: (threadId: string, text: string) => Effect.Effect<void, WireError, never>;
   readonly abort: (threadId: string) => Effect.Effect<void, WireError, never>;
-  readonly setSteeringMode: (threadId: string, mode: "all" | "one-at-a-time") => Effect.Effect<void, WireError, never>;
-  readonly setFollowUpMode: (threadId: string, mode: "all" | "one-at-a-time") => Effect.Effect<void, WireError, never>;
-  readonly compact: (threadId: string, customInstructions?: string) => Effect.Effect<CompactResult, WireError, never>;
-  readonly setAutoCompaction: (threadId: string, enabled: boolean) => Effect.Effect<void, WireError, never>;
-  readonly getAvailableModels: (threadId: string) => Effect.Effect<WireModelInfo[], WireError, never>;
-  readonly setModel: (threadId: string, provider: string, modelId: string) => Effect.Effect<WireModelInfo | null, WireError, never>;
-  readonly getAvailableThinkingLevels: (threadId: string) => Effect.Effect<ThinkingLevel[], WireError, never>;
-  readonly setThinkingLevel: (threadId: string, level: ThinkingLevel) => Effect.Effect<ThinkingLevel, WireError, never>;
+  readonly setSteeringMode: (
+    threadId: string,
+    mode: "all" | "one-at-a-time",
+  ) => Effect.Effect<void, WireError, never>;
+  readonly setFollowUpMode: (
+    threadId: string,
+    mode: "all" | "one-at-a-time",
+  ) => Effect.Effect<void, WireError, never>;
+  readonly compact: (
+    threadId: string,
+    customInstructions?: string,
+  ) => Effect.Effect<CompactResult, WireError, never>;
+  readonly setAutoCompaction: (
+    threadId: string,
+    enabled: boolean,
+  ) => Effect.Effect<void, WireError, never>;
+  readonly getAvailableModels: (
+    threadId: string,
+  ) => Effect.Effect<WireModelInfo[], WireError, never>;
+  readonly setModel: (
+    threadId: string,
+    provider: string,
+    modelId: string,
+  ) => Effect.Effect<WireModelInfo | null, WireError, never>;
+  readonly getAvailableThinkingLevels: (
+    threadId: string,
+  ) => Effect.Effect<ThinkingLevel[], WireError, never>;
+  readonly setThinkingLevel: (
+    threadId: string,
+    level: ThinkingLevel,
+  ) => Effect.Effect<ThinkingLevel, WireError, never>;
   readonly getEntries: (
     threadId: string,
     sinceSeq?: number,
-  ) => Effect.Effect<{ entries: Entry[]; tailSeq: number; leafId: string | null }, WireError, never>;
-  readonly branch: (threadId: string, entryId: string) => Effect.Effect<string | null, WireError, never>;
+  ) => Effect.Effect<
+    { entries: Entry[]; tailSeq: number; leafId: string | null },
+    WireError,
+    never
+  >;
+  readonly branch: (
+    threadId: string,
+    entryId: string,
+  ) => Effect.Effect<string | null, WireError, never>;
   readonly getSessionStats: (threadId: string) => Effect.Effect<SessionStats, WireError, never>;
-  readonly setSessionName: (threadId: string, name: string) => Effect.Effect<void, WireError, never>;
+  readonly setSessionName: (
+    threadId: string,
+    name: string,
+  ) => Effect.Effect<void, WireError, never>;
   readonly getState: (threadId: string) => Effect.Effect<ThreadSessionState, WireError, never>;
   // -- skills
   readonly listSkills: () => Effect.Effect<SkillInfo[], WireError, never>;
-  readonly importSkill: (source: string, scope?: SkillScope) => Effect.Effect<SkillInfo, WireError, never>;
+  readonly importSkill: (
+    source: string,
+    scope?: SkillScope,
+  ) => Effect.Effect<SkillInfo, WireError, never>;
   readonly deleteSkill: (id: string) => Effect.Effect<void, WireError, never>;
 }
 
 /** Spawn the client's actor and return the client value. */
-export const makeWireClient = (options: WorkerClientOptions): Effect.Effect<WireClient, never, never> =>
+export const makeWireClient = (
+  options: WorkerClientOptions,
+): Effect.Effect<WireClient, never, never> =>
   Effect.gen(function* () {
     const pendingRef = yield* Ref.make<Pending>(new Map());
     const connectRef = yield* Ref.make<Option.Option<ConnectDeferred>>(Option.none());
@@ -525,9 +600,13 @@ export const makeWireClient = (options: WorkerClientOptions): Effect.Effect<Wire
       });
 
     const waitForClose = (): Effect.Effect<void, WireError, never> =>
-      actor.waitFor((state) => !ClientState.$is("Connected")(state)).pipe(
-        Effect.flatMap(() => Effect.fail(new WireError({ code: "disconnected", message: "connection closed" }))),
-      );
+      actor
+        .waitFor((state) => !ClientState.$is("Connected")(state))
+        .pipe(
+          Effect.flatMap(() =>
+            Effect.fail(new WireError({ code: "disconnected", message: "connection closed" })),
+          ),
+        );
 
     const start = (): Effect.Effect<void, WireError, never> => {
       const attempt = (): Effect.Effect<void, WireError, never> =>
@@ -545,14 +624,20 @@ export const makeWireClient = (options: WorkerClientOptions): Effect.Effect<Wire
 
     const disconnect = (): Effect.Effect<void, never, never> =>
       Effect.gen(function* () {
-        yield* failAllPending(deps, new WireError({ code: "disconnected", message: "client disconnected" }));
+        yield* failAllPending(
+          deps,
+          new WireError({ code: "disconnected", message: "client disconnected" }),
+        );
         yield* actor.send(ClientEvent.DisconnectRequested);
         // Drain: the machine closes the socket (DisconnectRequested), then
         // the actor stops after the queue is empty.
         yield* actor.drain;
       });
 
-    const on = <K extends ClientEventKind>(kind: K, listener: (payload: ClientEvents[K]) => void): (() => void) => {
+    const on = <K extends ClientEventKind>(
+      kind: K,
+      listener: (payload: ClientEvents[K]) => void,
+    ): (() => void) => {
       let set = listeners.get(kind);
       if (set === undefined) {
         set = new Set();
@@ -576,7 +661,9 @@ export const makeWireClient = (options: WorkerClientOptions): Effect.Effect<Wire
       Effect.gen(function* () {
         const state = yield* actor.snapshot;
         if (!ClientState.$is("Connected")(state)) {
-          return yield* Effect.fail(new WireError({ code: "disconnected", message: "not connected" }));
+          return yield* Effect.fail(
+            new WireError({ code: "disconnected", message: "not connected" }),
+          );
         }
         const id = yield* nextRequestId();
         const frame: WireCommand = {
@@ -619,63 +706,92 @@ export const makeWireClient = (options: WorkerClientOptions): Effect.Effect<Wire
       on,
       // -- thread commands
       listThreads: () =>
-        request<SessionResponse<"list_threads">>(ListThreadsCommand.make({})).pipe(Effect.map((p) => [...p.threads])),
+        request<SessionResponse<"list_threads">>(ListThreadsCommand.make({})).pipe(
+          Effect.map((p) => [...p.threads]),
+        ),
       createThread: (name, options) =>
-        request<SessionResponse<"create_thread">>(CreateThreadCommand.make({ name, ...options })).pipe(
-          Effect.map((p) => p.thread),
-        ),
+        request<SessionResponse<"create_thread">>(
+          CreateThreadCommand.make({ name, ...options }),
+        ).pipe(Effect.map((p) => p.thread)),
       getThread: (threadId) =>
-        request<SessionResponse<"get_thread">>(GetThreadCommand.make({ threadId })).pipe(Effect.map((p) => p.thread)),
-      renameThread: (threadId, name) =>
-        request<SessionResponse<"rename_thread">>(RenameThreadCommand.make({ threadId, name })).pipe(
+        request<SessionResponse<"get_thread">>(GetThreadCommand.make({ threadId })).pipe(
           Effect.map((p) => p.thread),
         ),
-      deleteThread: (threadId) => request(DeleteThreadCommand.make({ threadId })).pipe(Effect.asVoid),
+      renameThread: (threadId, name) =>
+        request<SessionResponse<"rename_thread">>(
+          RenameThreadCommand.make({ threadId, name }),
+        ).pipe(Effect.map((p) => p.thread)),
+      deleteThread: (threadId) =>
+        request(DeleteThreadCommand.make({ threadId })).pipe(Effect.asVoid),
       // -- session commands
-      prompt: (threadId, text, images) => request(PromptCommand.make({ text, images }), threadId).pipe(Effect.asVoid),
+      prompt: (threadId, text, images) =>
+        request(PromptCommand.make({ text, images }), threadId).pipe(Effect.asVoid),
       steer: (threadId, text) => request(SteerCommand.make({ text }), threadId).pipe(Effect.asVoid),
-      followUp: (threadId, text) => request(FollowUpCommand.make({ text }), threadId).pipe(Effect.asVoid),
+      followUp: (threadId, text) =>
+        request(FollowUpCommand.make({ text }), threadId).pipe(Effect.asVoid),
       abort: (threadId) => request(AbortCommand.make({}), threadId).pipe(Effect.asVoid),
-      setSteeringMode: (threadId, mode) => request(SetSteeringModeCommand.make({ mode }), threadId).pipe(Effect.asVoid),
-      setFollowUpMode: (threadId, mode) => request(SetFollowUpModeCommand.make({ mode }), threadId).pipe(Effect.asVoid),
+      setSteeringMode: (threadId, mode) =>
+        request(SetSteeringModeCommand.make({ mode }), threadId).pipe(Effect.asVoid),
+      setFollowUpMode: (threadId, mode) =>
+        request(SetFollowUpModeCommand.make({ mode }), threadId).pipe(Effect.asVoid),
       compact: (threadId, customInstructions) =>
-        request<SessionResponse<"compact">>(CompactCommand.make({ customInstructions }), threadId).pipe(
-          Effect.map((p) => p.result as CompactResult),
-        ),
+        request<SessionResponse<"compact">>(
+          CompactCommand.make({ customInstructions }),
+          threadId,
+        ).pipe(Effect.map((p) => p.result as CompactResult)),
       setAutoCompaction: (threadId, enabled) =>
         request(SetAutoCompactionCommand.make({ enabled }), threadId).pipe(Effect.asVoid),
       getAvailableModels: (threadId) =>
-        request<SessionResponse<"get_available_models">>(GetAvailableModelsCommand.make({}), threadId).pipe(
-          Effect.map((p) => [...p.models]),
-        ),
+        request<SessionResponse<"get_available_models">>(
+          GetAvailableModelsCommand.make({}),
+          threadId,
+        ).pipe(Effect.map((p) => [...p.models])),
       setModel: (threadId, provider, modelId) =>
-        request<SessionResponse<"set_model">>(SetModelCommand.make({ provider, modelId }), threadId).pipe(
-          Effect.map((p) => p.model),
-        ),
+        request<SessionResponse<"set_model">>(
+          SetModelCommand.make({ provider, modelId }),
+          threadId,
+        ).pipe(Effect.map((p) => p.model)),
       getAvailableThinkingLevels: (threadId) =>
-        request<SessionResponse<"get_available_thinking_levels">>(GetAvailableThinkingLevelsCommand.make({}), threadId).pipe(
-          Effect.map((p) => [...p.levels]),
-        ),
+        request<SessionResponse<"get_available_thinking_levels">>(
+          GetAvailableThinkingLevelsCommand.make({}),
+          threadId,
+        ).pipe(Effect.map((p) => [...p.levels])),
       setThinkingLevel: (threadId, level) =>
-        request<SessionResponse<"set_thinking_level">>(SetThinkingLevelCommand.make({ level }), threadId).pipe(
-          Effect.map((p) => p.level),
-        ),
+        request<SessionResponse<"set_thinking_level">>(
+          SetThinkingLevelCommand.make({ level }),
+          threadId,
+        ).pipe(Effect.map((p) => p.level)),
       getEntries: (threadId, sinceSeq) =>
-        request<SessionResponse<"get_entries">>(GetEntriesCommand.make({ sinceSeq }), threadId).pipe(
-          Effect.map((p) => ({ entries: [...p.entries] as Entry[], tailSeq: p.tailSeq, leafId: p.leafId })),
+        request<SessionResponse<"get_entries">>(
+          GetEntriesCommand.make({ sinceSeq }),
+          threadId,
+        ).pipe(
+          Effect.map((p) => ({
+            entries: [...p.entries] as Entry[],
+            tailSeq: p.tailSeq,
+            leafId: p.leafId,
+          })),
         ),
       branch: (threadId, entryId) =>
-        request<SessionResponse<"branch">>(BranchCommand.make({ entryId }), threadId).pipe(Effect.map((p) => p.leafId)),
-      getSessionStats: (threadId) =>
-        request<SessionResponse<"get_session_stats">>(GetSessionStatsCommand.make({}), threadId).pipe(
-          Effect.map((p) => p.stats as SessionStats),
+        request<SessionResponse<"branch">>(BranchCommand.make({ entryId }), threadId).pipe(
+          Effect.map((p) => p.leafId),
         ),
-      setSessionName: (threadId, name) => request(SetSessionNameCommand.make({ name }), threadId).pipe(Effect.asVoid),
+      getSessionStats: (threadId) =>
+        request<SessionResponse<"get_session_stats">>(
+          GetSessionStatsCommand.make({}),
+          threadId,
+        ).pipe(Effect.map((p) => p.stats as SessionStats)),
+      setSessionName: (threadId, name) =>
+        request(SetSessionNameCommand.make({ name }), threadId).pipe(Effect.asVoid),
       getState: (threadId) =>
-        request<SessionResponse<"get_state">>(GetStateCommand.make({}), threadId).pipe(Effect.map((p) => p.state)),
+        request<SessionResponse<"get_state">>(GetStateCommand.make({}), threadId).pipe(
+          Effect.map((p) => p.state),
+        ),
       // -- skills commands
       listSkills: () =>
-        request<SessionResponse<"list_skills">>(ListSkillsCommand.make({})).pipe(Effect.map((p) => [...p.skills])),
+        request<SessionResponse<"list_skills">>(ListSkillsCommand.make({})).pipe(
+          Effect.map((p) => [...p.skills]),
+        ),
       importSkill: (source, scope) =>
         request<SessionResponse<"import_skill">>(ImportSkillCommand.make({ source, scope })).pipe(
           Effect.map((p) => p.skill),

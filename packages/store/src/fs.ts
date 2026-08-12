@@ -3,7 +3,7 @@
  *
  * Effect code never imports node:fs: layers `yield* FileSystem.FileSystem`
  * (the service tag from `effect`) and compose `NodeFileSystem.layer` at the
- * daemon root. Pi's promise-based adapters (`LocalEnv`, credential stores)
+ * process root. Pi's promise-based adapters (`LocalEnv`, credential stores)
  * cannot yield services, so they hold the service shape directly and run its
  * methods with `Effect.runPromise` at their own method boundary.
  */

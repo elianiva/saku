@@ -17,11 +17,15 @@ import { Effect, FileSystem, PlatformError } from "effect";
 import { getAuthPath, getSakuDir } from "./paths.ts";
 
 /** Ensure the saku home directory exists. */
-export const ensureSakuDirs = (fs: FileSystem.FileSystem): Effect.Effect<void, PlatformError.PlatformError, never> =>
+export const ensureSakuDirs = (
+  fs: FileSystem.FileSystem,
+): Effect.Effect<void, PlatformError.PlatformError, never> =>
   fs.makeDirectory(getSakuDir(), { recursive: true, mode: 0o700 });
 
 /** Read the token without creating anything. Absent/unreadable/empty → undefined. */
-export const readAuthToken = (fs: FileSystem.FileSystem): Effect.Effect<string | undefined, never, never> =>
+export const readAuthToken = (
+  fs: FileSystem.FileSystem,
+): Effect.Effect<string | undefined, never, never> =>
   fs.readFileString(getAuthPath()).pipe(
     Effect.map((content) => {
       const token = content.trim();
@@ -31,7 +35,9 @@ export const readAuthToken = (fs: FileSystem.FileSystem): Effect.Effect<string |
   );
 
 /** Read the token, creating it (and its directory) when absent. */
-export const ensureAuthToken = (fs: FileSystem.FileSystem): Effect.Effect<string, PlatformError.PlatformError, never> =>
+export const ensureAuthToken = (
+  fs: FileSystem.FileSystem,
+): Effect.Effect<string, PlatformError.PlatformError, never> =>
   Effect.gen(function* () {
     const existing = yield* readAuthToken(fs);
     if (existing !== undefined) return existing;

@@ -31,7 +31,11 @@ import {
 /** Dig a node errno code out of a PlatformError (or a raw ErrnoException). */
 const errnoCode = (error: unknown): string | undefined => {
   if (typeof error !== "object" || error === null) return undefined;
-  const e = error as { _tag?: string; reason?: { _tag?: string; cause?: unknown }; cause?: { code?: string } };
+  const e = error as {
+    _tag?: string;
+    reason?: { _tag?: string; cause?: unknown };
+    cause?: { code?: string };
+  };
   if (e._tag === "PlatformError" && e.reason !== undefined) {
     switch (e.reason._tag) {
       case "NotFound":
@@ -48,7 +52,9 @@ const errnoCode = (error: unknown): string | undefined => {
   }
   if (e._tag === "NotFound") return "ENOENT";
   if (e._tag === "PermissionDenied") return "EACCES";
-  return (error as NodeJS.ErrnoException).code ?? (e.cause as NodeJS.ErrnoException | undefined)?.code;
+  return (
+    (error as NodeJS.ErrnoException).code ?? (e.cause as NodeJS.ErrnoException | undefined)?.code
+  );
 };
 
 const mapFileError = (path: string, error: unknown): FileError => {
@@ -85,9 +91,13 @@ const toBytes = (content: string | Uint8Array): Uint8Array =>
  */
 const describeEntry = async (fs: FileSystem.FileSystem, path: string): Promise<FileInfo> => {
   const isLink = await Effect.runPromise(Effect.isSuccess(fs.readLink(path)));
-  if (isLink) return { name: path.split(sep).pop() ?? path, path, kind: "symlink", size: 0, mtimeMs: 0 };
-  const info = await Effect.runPromise(fs.stat(path).pipe(Effect.catch(() => Effect.succeed(undefined))));
-  if (info === undefined) return { name: path.split(sep).pop() ?? path, path, kind: "file", size: 0, mtimeMs: 0 };
+  if (isLink)
+    return { name: path.split(sep).pop() ?? path, path, kind: "symlink", size: 0, mtimeMs: 0 };
+  const info = await Effect.runPromise(
+    fs.stat(path).pipe(Effect.catch(() => Effect.succeed(undefined))),
+  );
+  if (info === undefined)
+    return { name: path.split(sep).pop() ?? path, path, kind: "file", size: 0, mtimeMs: 0 };
   return {
     name: path.split(sep).pop() ?? path,
     path,
@@ -119,15 +129,21 @@ export class LocalEnv implements ExecutionEnv {
   }
 
   async readTextFile(path: string): Promise<PiResult<string, FileError>> {
-    const outcome = await Effect.runPromise(this.fs.readFileString(absolute(path)).pipe(Effect.result));
-    return Result.isSuccess(outcome) ? ok(outcome.success) : err(mapFileError(path, outcome.failure));
+    const outcome = await Effect.runPromise(
+      this.fs.readFileString(absolute(path)).pipe(Effect.result),
+    );
+    return Result.isSuccess(outcome)
+      ? ok(outcome.success)
+      : err(mapFileError(path, outcome.failure));
   }
 
   async readTextLines(
     path: string,
     options?: { maxLines?: number; abortSignal?: AbortSignal },
   ): Promise<PiResult<string[], FileError>> {
-    const outcome = await Effect.runPromise(this.fs.readFileString(absolute(path)).pipe(Effect.result));
+    const outcome = await Effect.runPromise(
+      this.fs.readFileString(absolute(path)).pipe(Effect.result),
+    );
     if (Result.isFailure(outcome)) {
       if (options?.abortSignal?.aborted) {
         return err(new FileError("aborted", `aborted reading ${path}`, path));
@@ -138,7 +154,10 @@ export class LocalEnv implements ExecutionEnv {
     return ok(options?.maxLines === undefined ? lines : lines.slice(0, options.maxLines));
   }
 
-  async readBinaryFile(path: string, signal?: AbortSignal): Promise<PiResult<Uint8Array, FileError>> {
+  async readBinaryFile(
+    path: string,
+    signal?: AbortSignal,
+  ): Promise<PiResult<Uint8Array, FileError>> {
     const outcome = await Effect.runPromise(this.fs.readFile(absolute(path)).pipe(Effect.result));
     if (Result.isFailure(outcome)) {
       if (signal?.aborted) {
@@ -152,7 +171,8 @@ export class LocalEnv implements ExecutionEnv {
   async writeFile(path: string, content: string | Uint8Array): Promise<PiResult<void, FileError>> {
     const target = absolute(path);
     const outcome = await Effect.runPromise(
-      this.fs.makeDirectory(dirname(target), { recursive: true })
+      this.fs
+        .makeDirectory(dirname(target), { recursive: true })
         .pipe(
           Effect.andThen(
             typeof content === "string"
@@ -178,14 +198,25 @@ export class LocalEnv implements ExecutionEnv {
     return Result.isSuccess(outcome) ? ok(undefined) : err(mapFileError(path, outcome.failure));
   }
 
-  async renameFile(sourcePath: string, destinationPath: string): Promise<PiResult<void, FileError>> {
-    const outcome = await Effect.runPromise(this.fs.rename(absolute(sourcePath), absolute(destinationPath)).pipe(Effect.result));
-    return Result.isSuccess(outcome) ? ok(undefined) : err(mapFileError(sourcePath, outcome.failure));
+  async renameFile(
+    sourcePath: string,
+    destinationPath: string,
+  ): Promise<PiResult<void, FileError>> {
+    const outcome = await Effect.runPromise(
+      this.fs.rename(absolute(sourcePath), absolute(destinationPath)).pipe(Effect.result),
+    );
+    return Result.isSuccess(outcome)
+      ? ok(undefined)
+      : err(mapFileError(sourcePath, outcome.failure));
   }
 
   async fileInfo(path: string): Promise<PiResult<FileInfo, FileError>> {
-    const outcome = await Effect.runPromise(Effect.promise(() => describeEntry(this.fs, absolute(path))).pipe(Effect.result));
-    return Result.isSuccess(outcome) ? ok(outcome.success) : err(mapFileError(path, outcome.failure));
+    const outcome = await Effect.runPromise(
+      Effect.promise(() => describeEntry(this.fs, absolute(path))).pipe(Effect.result),
+    );
+    return Result.isSuccess(outcome)
+      ? ok(outcome.success)
+      : err(mapFileError(path, outcome.failure));
   }
 
   async listDir(path: string, signal?: AbortSignal): Promise<PiResult<FileInfo[], FileError>> {
@@ -209,12 +240,16 @@ export class LocalEnv implements ExecutionEnv {
 
   async canonicalPath(path: string): Promise<PiResult<string, FileError>> {
     const outcome = await Effect.runPromise(this.fs.realPath(absolute(path)).pipe(Effect.result));
-    return Result.isSuccess(outcome) ? ok(outcome.success) : err(mapFileError(path, outcome.failure));
+    return Result.isSuccess(outcome)
+      ? ok(outcome.success)
+      : err(mapFileError(path, outcome.failure));
   }
 
   async exists(path: string): Promise<PiResult<boolean, FileError>> {
     const outcome = await Effect.runPromise(this.fs.exists(absolute(path)).pipe(Effect.result));
-    return Result.isSuccess(outcome) ? ok(outcome.success) : err(mapFileError(path, outcome.failure));
+    return Result.isSuccess(outcome)
+      ? ok(outcome.success)
+      : err(mapFileError(path, outcome.failure));
   }
 
   async createDir(
@@ -222,7 +257,9 @@ export class LocalEnv implements ExecutionEnv {
     options?: { recursive?: boolean; abortSignal?: AbortSignal },
   ): Promise<PiResult<void, FileError>> {
     const outcome = await Effect.runPromise(
-      this.fs.makeDirectory(absolute(path), { recursive: options?.recursive ?? true }).pipe(Effect.result),
+      this.fs
+        .makeDirectory(absolute(path), { recursive: options?.recursive ?? true })
+        .pipe(Effect.result),
     );
     return Result.isSuccess(outcome) ? ok(undefined) : err(mapFileError(path, outcome.failure));
   }
@@ -232,28 +269,37 @@ export class LocalEnv implements ExecutionEnv {
     options?: { recursive?: boolean; force?: boolean; abortSignal?: AbortSignal },
   ): Promise<PiResult<void, FileError>> {
     const outcome = await Effect.runPromise(
-      this.fs.remove(absolute(path), {
-        recursive: options?.recursive ?? false,
-        force: options?.force ?? false,
-      }).pipe(Effect.result),
+      this.fs
+        .remove(absolute(path), {
+          recursive: options?.recursive ?? false,
+          force: options?.force ?? false,
+        })
+        .pipe(Effect.result),
     );
     return Result.isSuccess(outcome) ? ok(undefined) : err(mapFileError(path, outcome.failure));
   }
 
   async createTempDir(prefix = "tmp-"): Promise<PiResult<string, FileError>> {
-    const outcome = await Effect.runPromise(this.fs.makeTempDirectory({ directory: tmpdir(), prefix }).pipe(Effect.result));
+    const outcome = await Effect.runPromise(
+      this.fs.makeTempDirectory({ directory: tmpdir(), prefix }).pipe(Effect.result),
+    );
     return Result.isSuccess(outcome)
       ? ok(outcome.success)
       : err(new FileError("unknown", `failed to create temp dir: ${String(outcome.failure)}`));
   }
 
-  async createTempFile(options?: { prefix?: string; suffix?: string }): Promise<PiResult<string, FileError>> {
+  async createTempFile(options?: {
+    prefix?: string;
+    suffix?: string;
+  }): Promise<PiResult<string, FileError>> {
     const outcome = await Effect.runPromise(
-      this.fs.makeTempFile({
-        directory: tmpdir(),
-        ...(options?.prefix === undefined ? {} : { prefix: options.prefix }),
-        ...(options?.suffix === undefined ? {} : { suffix: options.suffix }),
-      }).pipe(Effect.result),
+      this.fs
+        .makeTempFile({
+          directory: tmpdir(),
+          ...(options?.prefix === undefined ? {} : { prefix: options.prefix }),
+          ...(options?.suffix === undefined ? {} : { suffix: options.suffix }),
+        })
+        .pipe(Effect.result),
     );
     return Result.isSuccess(outcome)
       ? ok(outcome.success)
@@ -266,13 +312,25 @@ export class LocalEnv implements ExecutionEnv {
 
   // -- Shell ----------------------------------------------------------------
 
-  async exec(command: string, options?: ShellExecOptions): Promise<PiResult<{
-    stdout: string;
-    stderr: string;
-    exitCode: number;
-  }, ExecutionError>> {
+  async exec(
+    command: string,
+    options?: ShellExecOptions,
+  ): Promise<
+    PiResult<
+      {
+        stdout: string;
+        stderr: string;
+        exitCode: number;
+      },
+      ExecutionError
+    >
+  > {
     const cwd =
-      options?.cwd === undefined ? this.cwd : isAbsolute(options.cwd) ? options.cwd : resolve(this.cwd, options.cwd);
+      options?.cwd === undefined
+        ? this.cwd
+        : isAbsolute(options.cwd)
+          ? options.cwd
+          : resolve(this.cwd, options.cwd);
     const env = {
       ...(options?.inheritEnv === false ? {} : process.env),
       ...this.extraEnv,
@@ -282,67 +340,73 @@ export class LocalEnv implements ExecutionEnv {
     const shellArgs = process.platform === "win32" ? ["/d", "/s", "/c", command] : ["-c", command];
 
     const child = spawn(shell, shellArgs, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
-    return new Promise<PiResult<{ stdout: string; stderr: string; exitCode: number }, ExecutionError>>(
-      (resolveResult) => {
-        let stdout = "";
-        let stderr = "";
-        let timedOut = false;
-        const timeoutMs = options?.timeout === undefined ? undefined : options.timeout * 1000;
-        const timer =
-          timeoutMs === undefined
-            ? undefined
-            : setTimeout(() => {
-                timedOut = true;
-                child.kill("SIGTERM");
-              }, timeoutMs);
-        const onAbort = (): void => {
-          child.kill("SIGTERM");
-        };
-        options?.abortSignal?.addEventListener("abort", onAbort, { once: true });
+    return new Promise<
+      PiResult<{ stdout: string; stderr: string; exitCode: number }, ExecutionError>
+    >((resolveResult) => {
+      let stdout = "";
+      let stderr = "";
+      let timedOut = false;
+      const timeoutMs = options?.timeout === undefined ? undefined : options.timeout * 1000;
+      const timer =
+        timeoutMs === undefined
+          ? undefined
+          : setTimeout(() => {
+              timedOut = true;
+              child.kill("SIGTERM");
+            }, timeoutMs);
+      const onAbort = (): void => {
+        child.kill("SIGTERM");
+      };
+      options?.abortSignal?.addEventListener("abort", onAbort, { once: true });
 
-        const fail = (error: ExecutionError): void => {
-          if (timer !== undefined) clearTimeout(timer);
-          options?.abortSignal?.removeEventListener("abort", onAbort);
-          resolveResult(err(error));
-        };
+      const fail = (error: ExecutionError): void => {
+        if (timer !== undefined) clearTimeout(timer);
+        options?.abortSignal?.removeEventListener("abort", onAbort);
+        resolveResult(err(error));
+      };
 
-        child.stdout?.on("data", (chunk: Buffer) => {
-          const text = chunk.toString("utf8");
-          stdout += text;
-          const invoked = Result.try(() => options?.onStdout?.(text));
-          if (Result.isFailure(invoked)) {
-            fail(new ExecutionError("callback_error", `onStdout failed: ${String(invoked.failure)}`));
-          }
-        });
-        child.stderr?.on("data", (chunk: Buffer) => {
-          const text = chunk.toString("utf8");
-          stderr += text;
-          const invoked = Result.try(() => options?.onStderr?.(text));
-          if (Result.isFailure(invoked)) {
-            fail(new ExecutionError("callback_error", `onStderr failed: ${String(invoked.failure)}`));
-          }
-        });
-        child.on("error", (error) => {
-          fail(new ExecutionError("spawn_error", `failed to spawn ${shell}: ${error.message}`, error));
-        });
-        child.on("close", (code, signal) => {
-          if (timer !== undefined) clearTimeout(timer);
-          options?.abortSignal?.removeEventListener("abort", onAbort);
-          if (timedOut) {
-            resolveResult(err(new ExecutionError("timeout", `command timed out after ${options?.timeout}s`)));
-            return;
-          }
-          if (options?.abortSignal?.aborted) {
-            resolveResult(err(new ExecutionError("aborted", "command aborted")));
-            return;
-          }
-          if (signal !== null && signal !== undefined && code === null) {
-            resolveResult(err(new ExecutionError("aborted", `command terminated by signal ${signal}`)));
-            return;
-          }
-          resolveResult(ok({ stdout, stderr, exitCode: code ?? -1 }));
-        });
-      },
-    );
+      child.stdout?.on("data", (chunk: Buffer) => {
+        const text = chunk.toString("utf8");
+        stdout += text;
+        const invoked = Result.try(() => options?.onStdout?.(text));
+        if (Result.isFailure(invoked)) {
+          fail(new ExecutionError("callback_error", `onStdout failed: ${String(invoked.failure)}`));
+        }
+      });
+      child.stderr?.on("data", (chunk: Buffer) => {
+        const text = chunk.toString("utf8");
+        stderr += text;
+        const invoked = Result.try(() => options?.onStderr?.(text));
+        if (Result.isFailure(invoked)) {
+          fail(new ExecutionError("callback_error", `onStderr failed: ${String(invoked.failure)}`));
+        }
+      });
+      child.on("error", (error) => {
+        fail(
+          new ExecutionError("spawn_error", `failed to spawn ${shell}: ${error.message}`, error),
+        );
+      });
+      child.on("close", (code, signal) => {
+        if (timer !== undefined) clearTimeout(timer);
+        options?.abortSignal?.removeEventListener("abort", onAbort);
+        if (timedOut) {
+          resolveResult(
+            err(new ExecutionError("timeout", `command timed out after ${options?.timeout}s`)),
+          );
+          return;
+        }
+        if (options?.abortSignal?.aborted) {
+          resolveResult(err(new ExecutionError("aborted", "command aborted")));
+          return;
+        }
+        if (signal !== null && signal !== undefined && code === null) {
+          resolveResult(
+            err(new ExecutionError("aborted", `command terminated by signal ${signal}`)),
+          );
+          return;
+        }
+        resolveResult(ok({ stdout, stderr, exitCode: code ?? -1 }));
+      });
+    });
   }
 }

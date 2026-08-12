@@ -22,22 +22,23 @@ approval gates; hub-hosted skills).
 
 ## Layout
 
-| Package | Role |
-| ------- | ---- |
-| `packages/wire` | the wire protocol: JSONL over WebSocket, hello/version, thread + session + skills commands, typed `WireClient` (an effect-machine actor) |
-| `packages/hub` | the control-plane DO: registry, Box provisioning, skills store, auth, routing, fan-out |
-| `packages/worker` | the thread DO: pi-agent-core `Agent` + `Session` over DO storage, env client, idle-stop |
-| `packages/env` | the hands daemon: pi tool surface over a streaming protocol, local and in-Box |
-| `packages/cli` | local daemon management: `saku env start\|stop\|status` |
+| Package           | Role                                                                                                                                     |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `packages/wire`   | the wire protocol: JSONL over WebSocket, hello/version, thread + session + skills commands, typed `WireClient` (an effect-machine actor) |
+| `packages/store`  | the durability seam: `KvStore` (the Durable Object storage contract) with memory and file backends                                       |
+| `packages/hub`    | the control-plane DO: registry, Box provisioning, skills store, auth, routing, fan-out                                                   |
+| `packages/worker` | the thread DO: pi-agent-core `Agent` + `Session` over DO storage, env client, idle-stop                                                  |
+| `packages/env`    | the hands daemon: pi tool surface over a streaming protocol, local and in-Box                                                            |
+| `packages/cli`    | local daemon management: `saku env start\|stop\|status`                                                                                  |
 
 ## Status
 
-The rework is underway: the wire (M0) and the worker on DO storage (M1) are
-landed — the local daemon serves the trimmed wire protocol from a per-thread
-KvStore trail (`session/<id>/` under `threads/<id>/trail/`), the session host is
-an effect-machine actor, and pi's own session-backend conformance suite passes
-against both KvStore backends. The hub (M2) and the env daemon (M3) are the
-current build targets — see the plan's milestones.
+The wire (M0), the worker on DO storage (M1), and the hub (M2) are built and
+tested: the full stack is proven end to end — a wire client drives the real
+`SessionHost` through the hub over WebSockets (lazy sessions, streamed runs,
+working → idle broadcasts, auto-title, thread deletion). The durable spine's
+remaining milestones: the env daemon (M3) and the alchemy deployment on celld
+(M4) — see the plan.
 
 ## Prerequisites
 

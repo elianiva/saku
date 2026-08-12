@@ -29,6 +29,7 @@ import {
   WireCommand,
   type ResponsePayload,
   type SkillInfo,
+  type ThinkingLevel,
   type ThreadInfo,
   type ThreadMode,
   type WireEvent,
@@ -51,7 +52,7 @@ interface MockThread {
   autoName: boolean;
   sessionId: string | null;
   state: "idle" | "working";
-  thinkingLevel: string;
+  thinkingLevel: ThinkingLevel;
   nextSeq: number;
   entries: Array<{ seq: number; type: string; id: string }>;
   nameSet: string | null;
@@ -147,7 +148,10 @@ export const startMockHub = (): Promise<MockHub> =>
       const { id, command } = frame;
       switch (command._tag) {
         case "list_threads":
-          respond(socket, id, { _tag: "list_threads", threads: [...threads.values()].map(threadInfo) });
+          respond(socket, id, {
+            _tag: "list_threads",
+            threads: [...threads.values()].map(threadInfo),
+          });
           return;
         case "create_thread": {
           const thread = newThread(command);
@@ -187,7 +191,11 @@ export const startMockHub = (): Promise<MockHub> =>
         case "import_skill": {
           const skill: SkillInfo = {
             id: randomUUID().replaceAll("-", ""),
-            name: command.source.split("/").pop()?.replace(/\.git$/u, "") ?? "skill",
+            name:
+              command.source
+                .split("/")
+                .pop()
+                ?.replace(/\.git$/u, "") ?? "skill",
             scope: command.scope ?? "personal",
             source: command.source,
             version: null,
@@ -253,8 +261,12 @@ export const startMockHub = (): Promise<MockHub> =>
           return;
         }
         case "compact": {
-          if (thread.state === "working") return fail(socket, id, "cannot compact while the agent is working");
-          respond(socket, id, { _tag: "compact", result: { ok: true, summary: "mock", retainedTail: [], tokensBefore: 0 } });
+          if (thread.state === "working")
+            return fail(socket, id, "cannot compact while the agent is working");
+          respond(socket, id, {
+            _tag: "compact",
+            result: { ok: true, summary: "mock", retainedTail: [], tokensBefore: 0 },
+          });
           return;
         }
         case "set_auto_compaction":
@@ -280,13 +292,18 @@ export const startMockHub = (): Promise<MockHub> =>
           thread.thinkingLevel = command.level;
           respond(socket, id, { _tag: "set_thinking_level", level: command.level });
           return;
+        case "set_steering_mode":
+        case "set_follow_up_mode":
+          respond(socket, id, { _tag: command._tag });
+          return;
         case "get_entries": {
           const since = command.sinceSeq ?? 0;
           respond(socket, id, {
             _tag: "get_entries",
             entries: thread.entries.filter((e) => e.seq > since),
             tailSeq: thread.nextSeq - 1,
-            leafId: thread.entries.length === 0 ? null : thread.entries[thread.entries.length - 1]!.id,
+            leafId:
+              thread.entries.length === 0 ? null : thread.entries[thread.entries.length - 1]!.id,
           });
           return;
         }
@@ -316,21 +333,11 @@ export const startMockHub = (): Promise<MockHub> =>
             },
           });
           return;
-        case "list_threads":
-        case "create_thread":
-        case "get_thread":
-        case "rename_thread":
-        case "delete_thread":
-        case "list_skills":
-        case "import_skill":
-        case "delete_skill":
-          // Handled above; unreachable here (exhaustiveness).
-          fail(socket, id, "internal: command routed to the wrong handler");
-          return;
         default: {
+          // Exhaustiveness: every SessionCommand tag is handled above.
           const exhaustive: never = command;
           void exhaustive;
-          fail(socket, id, `unknown command: ${String((command as { _tag: string })._tag)}`);
+          fail(socket, id, "internal: unknown session command");
         }
       }
     };
@@ -354,7 +361,10 @@ export const startMockHub = (): Promise<MockHub> =>
         }
         if (decoded.success._tag === "hello") {
           if (decoded.success.version !== WIRE_VERSION) {
-            send(socket, ErrorEvent.make({ message: `version mismatch: expected ${WIRE_VERSION}` }));
+            send(
+              socket,
+              ErrorEvent.make({ message: `version mismatch: expected ${WIRE_VERSION}` }),
+            );
             socket.close();
             return;
           }

@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect, FileSystem } from "effect";
 
-import { fileKv, memoryKv } from "../src/kv.ts";
+import { fileKv, memoryKv } from "../src/index.ts";
 
 const encode = (text: string): Uint8Array => new TextEncoder().encode(text);
 const decode = (value: Uint8Array): string => new TextDecoder().decode(value);
@@ -37,18 +37,24 @@ describe("memoryKv", () => {
 
 describe("fileKv", () => {
   it("round-trips through the filesystem (survives a restart)", async () => {
-    const fs = await Effect.runPromise(Effect.provide(NodeFileSystem.layer)(Effect.gen(function* () {
-      return yield* FileSystem.FileSystem;
-    })));
+    const fs = await Effect.runPromise(
+      Effect.provide(NodeFileSystem.layer)(
+        Effect.gen(function* () {
+          return yield* FileSystem.FileSystem;
+        }),
+      ),
+    );
     const root = await Effect.runPromise(
-      Effect.provide(NodeFileSystem.layer)(Effect.gen(function* () {
-        const fsService = yield* FileSystem.FileSystem;
-        return yield* fsService.makeTempDirectory({ prefix: "saku-kv-" });
-      })),
+      Effect.provide(NodeFileSystem.layer)(
+        Effect.gen(function* () {
+          const fsService = yield* FileSystem.FileSystem;
+          return yield* fsService.makeTempDirectory({ prefix: "saku-kv-" });
+        }),
+      ),
     );
     const first = fileKv(fs, root);
     await first.put("meta", encode("persisted"));
-    await first.put("log/0001", encode("{\"kind\":\"lane\"}"));
+    await first.put("log/0001", encode('{"kind":"lane"}'));
     // A fresh store over the same root sees the writes.
     const second = fileKv(fs, root);
     expect(decode((await second.get("meta"))!)).toBe("persisted");

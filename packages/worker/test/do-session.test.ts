@@ -7,10 +7,13 @@
 import { describe, expect, it } from "vitest";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect, FileSystem } from "effect";
-import { createSessionBackendConformance, type SessionBackendFixture } from "@earendil-works/pi-agent-core/session/testing";
+import {
+  createSessionBackendConformance,
+  type SessionBackendFixture,
+} from "@earendil-works/pi-agent-core/session/testing";
 
 import { DoSessionRepo, DoSessionStorage } from "../src/do-session.ts";
-import { fileKv, memoryKv, type KvStore } from "../src/kv.ts";
+import { fileKv, memoryKv, type KvStore } from "@saku/store";
 
 /** Run pi's conformance cases as vitest cases. */
 const runConformance = (label: string, factory: () => Promise<SessionBackendFixture>): void => {
@@ -41,7 +44,9 @@ const fileFixtureFactory = await Effect.runPromise(
       return {
         repository: new DoSessionRepo(kv),
         [Symbol.asyncDispose]: async () => {
-          await Effect.runPromise(fs.remove(root, { recursive: true, force: true }).pipe(Effect.catch(() => Effect.void)));
+          await Effect.runPromise(
+            fs.remove(root, { recursive: true, force: true }).pipe(Effect.catch(() => Effect.void)),
+          );
         },
       };
     };
@@ -57,7 +62,9 @@ describe("durability", () => {
         const fs = yield* FileSystem.FileSystem;
         const root = yield* fs.makeTempDirectory({ prefix: "saku-durability-" });
         const result = yield* Effect.tryPromise(() => run(fileKv(fs, root), fs)).pipe(
-          Effect.ensuring(fs.remove(root, { recursive: true, force: true }).pipe(Effect.catch(() => Effect.void))),
+          Effect.ensuring(
+            fs.remove(root, { recursive: true, force: true }).pipe(Effect.catch(() => Effect.void)),
+          ),
         );
         return result;
       }).pipe(Effect.provide(NodeFileSystem.layer)),
@@ -67,14 +74,20 @@ describe("durability", () => {
     await withFileKv(async (kv) => {
       const first = new DoSessionRepo(kv);
       const session = await first.create({ id: "restart-me" });
-      await session.appendMessage({ role: "user", content: [{ type: "text", text: "hello" }], timestamp: Date.now() });
+      await session.appendMessage({
+        role: "user",
+        content: [{ type: "text", text: "hello" }],
+        timestamp: Date.now(),
+      });
 
       const second = new DoSessionRepo(kv);
       const [metadata] = await second.list();
       expect(metadata.id).toBe("restart-me");
       const reopened = await second.open(metadata);
       const log = await reopened.getLog();
-      expect(log.filter((item) => item.kind === "entry" && item.entry.type === "message")).toHaveLength(1);
+      expect(
+        log.filter((item) => item.kind === "entry" && item.entry.type === "message"),
+      ).toHaveLength(1);
     });
   });
 
@@ -82,7 +95,11 @@ describe("durability", () => {
     await withFileKv(async (kv) => {
       const first = new DoSessionRepo(kv);
       const session = await first.create({ id: "interrupted-me" });
-      await session.appendMessage({ role: "user", content: [{ type: "text", text: "hi" }], timestamp: Date.now() });
+      await session.appendMessage({
+        role: "user",
+        content: [{ type: "text", text: "hi" }],
+        timestamp: Date.now(),
+      });
       // The agent's own operation record, as if the process died mid-run.
       const started = await session.appendRecord({
         type: "operation_started",
@@ -104,7 +121,11 @@ describe("durability", () => {
     const kv = memoryKv();
     const repo = new DoSessionRepo(kv);
     const session = await repo.create({ id: "delete-me" });
-    await session.appendMessage({ role: "user", content: [{ type: "text", text: "x" }], timestamp: Date.now() });
+    await session.appendMessage({
+      role: "user",
+      content: [{ type: "text", text: "x" }],
+      timestamp: Date.now(),
+    });
     const [metadata] = await repo.list();
     await repo.delete(metadata);
     expect(await repo.list()).toEqual([]);
@@ -117,16 +138,26 @@ describe("durability", () => {
     const kv = memoryKv();
     const repo = new DoSessionRepo(kv);
     const session = await repo.create({ id: "atomic" });
-    await session.appendMessage({ role: "user", content: [{ type: "text", text: "one" }], timestamp: Date.now() });
-    await session.appendMessage({ role: "user", content: [{ type: "text", text: "two" }], timestamp: Date.now() });
+    await session.appendMessage({
+      role: "user",
+      content: [{ type: "text", text: "one" }],
+      timestamp: Date.now(),
+    });
+    await session.appendMessage({
+      role: "user",
+      content: [{ type: "text", text: "two" }],
+      timestamp: Date.now(),
+    });
     // A crash between mutations leaves a prefix: simulate by deleting the tail.
-    const keys = await kv.list({ prefix: "session/atomic/log/" });
+    const keys = [...(await kv.list({ prefix: "session/atomic/log/" }))];
     const last = keys.sort((a, b) => a.key.localeCompare(b.key)).at(-1)!;
     await kv.delete(last.key);
     const [metadata] = await repo.list();
     // Replay must still load the remaining prefix.
     const reopened = await repo.open(metadata);
     const log = await reopened.getLog();
-    expect(log.filter((item) => item.kind === "entry" && item.entry.type === "message")).toHaveLength(1);
+    expect(
+      log.filter((item) => item.kind === "entry" && item.entry.type === "message"),
+    ).toHaveLength(1);
   });
 });

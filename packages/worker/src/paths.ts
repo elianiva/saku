@@ -28,9 +28,11 @@ export const getThreadsDir = (): string => join(getSakuDir(), "threads");
 
 /** Per-thread directory. */
 export const getThreadDir = (threadId: string): string => join(getThreadsDir(), threadId);
-export const getThreadFile = (threadId: string): string => join(getThreadDir(threadId), "thread.json");
+export const getThreadFile = (threadId: string): string =>
+  join(getThreadDir(threadId), "thread.json");
 /** The thread session's KvStore root (meta + log/* under it, see do-session.ts). */
-export const getThreadTrailRoot = (threadId: string): string => join(getThreadDir(threadId), "trail");
+export const getThreadTrailRoot = (threadId: string): string =>
+  join(getThreadDir(threadId), "trail");
 
 /** pi's agent dir: ~/.pi/agent, overridable via PI_CODING_AGENT_DIR. */
 export const getAgentDir = (): string =>

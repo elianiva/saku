@@ -25,7 +25,18 @@
 
 import { WebSocketServer, type WebSocket } from "ws";
 import { NodeFileSystem } from "@effect/platform-node";
-import { Context, Effect, FileSystem, Layer, Option, Ref, Result, Schema, Scope, Semaphore } from "effect";
+import {
+  Context,
+  Effect,
+  FileSystem,
+  Layer,
+  Option,
+  Ref,
+  Result,
+  Schema,
+  Scope,
+  Semaphore,
+} from "effect";
 
 import {
   AbortResponse,
@@ -89,8 +100,9 @@ import { SessionHost, SessionHostError } from "./session-host.ts";
 const DECODE_COMMAND = Schema.decodeUnknownSync(Schema.Union([Hello, WireCommand]));
 
 /** Whether a decoded command is thread-scoped (session vocabulary vs. hub-level). */
-const isSessionCommand = (c: SessionCommandType | ThreadCommand | SkillCommand): c is SessionCommandType =>
-  Schema.is(SessionCommand)(c);
+const isSessionCommand = (
+  c: SessionCommandType | ThreadCommand | SkillCommand,
+): c is SessionCommandType => Schema.is(SessionCommand)(c);
 
 interface Client {
   readonly socket: WebSocket;
@@ -176,15 +188,19 @@ export const makeSakuDaemon = (options: {
           Effect.forEach(
             clients,
             (client) =>
-              Ref.get(client.authed).pipe(Effect.flatMap((authed) => (authed ? send(client, event) : Effect.void))),
+              Ref.get(client.authed).pipe(
+                Effect.flatMap((authed) => (authed ? send(client, event) : Effect.void)),
+              ),
             { discard: true },
           ),
         ),
       );
 
     /** All consoles see every session event (stateless routing). */
-    const emitSessionEvent = (threadId: string, event: SessionWireEvent): Effect.Effect<void, never> =>
-      broadcast(EventFrame.make({ threadId, event }));
+    const emitSessionEvent = (
+      threadId: string,
+      event: SessionWireEvent,
+    ): Effect.Effect<void, never> => broadcast(EventFrame.make({ threadId, event }));
 
     const emitThreadChanged = (thread: ThreadInfo): Effect.Effect<void, never> =>
       broadcast(ThreadChanged.make({ thread }));
@@ -211,7 +227,9 @@ export const makeSakuDaemon = (options: {
       });
 
     /** Resolve a user-supplied thread id/name/prefix against the registry. */
-    const resolveThreadId = (input: string): Effect.Effect<string, DaemonError | RegistryError, never> =>
+    const resolveThreadId = (
+      input: string,
+    ): Effect.Effect<string, DaemonError | RegistryError, never> =>
       Effect.gen(function* () {
         const threads = yield* registry.list();
         const resolved = resolveThread(threads, input);
@@ -259,13 +277,21 @@ export const makeSakuDaemon = (options: {
         yield* Effect.catch(run, (error) => respondCommandFailure(client, id, error));
       });
 
-    const respondCommandFailure = (client: Client, id: string | undefined, error: unknown): Effect.Effect<void, never> => {
+    const respondCommandFailure = (
+      client: Client,
+      id: string | undefined,
+      error: unknown,
+    ): Effect.Effect<void, never> => {
       const message = error instanceof Error ? error.message : String(error);
       if (id === undefined) return send(client, ErrorEvent.make({ message }));
       return send(client, ResponseError.make({ id, ok: false, error: message }));
     };
 
-    const respond = (client: Client, id: string | undefined, payload: ResponsePayload): Effect.Effect<void, never> => {
+    const respond = (
+      client: Client,
+      id: string | undefined,
+      payload: ResponsePayload,
+    ): Effect.Effect<void, never> => {
       if (id === undefined) return Effect.void;
       return send(client, ResponseOk.make({ id, ok: true, payload }));
     };
@@ -280,7 +306,9 @@ export const makeSakuDaemon = (options: {
         yield* respond(client, id, payload);
       });
 
-    const runHubCommand = (command: ThreadCommand | SkillCommand): Effect.Effect<ResponsePayload, CommandError, never> =>
+    const runHubCommand = (
+      command: ThreadCommand | SkillCommand,
+    ): Effect.Effect<ResponsePayload, CommandError, never> =>
       Effect.gen(function* () {
         switch (command._tag) {
           case "list_threads": {
@@ -389,7 +417,13 @@ export const makeSakuDaemon = (options: {
             const readOnly = yield* readOnlyHost(threadId);
             if (Option.isNone(readOnly)) {
               return GetStateResponse.make({
-                state: { sessionId: null, state: "idle", tailSeq: 0, model: null, thinkingLevel: "off" },
+                state: {
+                  sessionId: null,
+                  state: "idle",
+                  tailSeq: 0,
+                  model: null,
+                  thinkingLevel: "off",
+                },
               });
             }
             const state = yield* readOnly.value.getState();
@@ -397,12 +431,15 @@ export const makeSakuDaemon = (options: {
           }
           case "get_available_models": {
             const models = yield* catalog.available();
-            return GetAvailableModelsResponse.make({ models: models.map((m) => catalog.toWireInfo(m)) });
+            return GetAvailableModelsResponse.make({
+              models: models.map((m) => catalog.toWireInfo(m)),
+            });
           }
           case "get_available_thinking_levels": {
             const readOnly = yield* readOnlyHost(threadId);
-            const levels =
-              Option.isNone(readOnly) ? [...THINKING_LEVELS] : yield* readOnly.value.getAvailableThinkingLevels();
+            const levels = Option.isNone(readOnly)
+              ? [...THINKING_LEVELS]
+              : yield* readOnly.value.getAvailableThinkingLevels();
             return GetAvailableThinkingLevelsResponse.make({ levels });
           }
 
@@ -482,7 +519,9 @@ export const makeSakuDaemon = (options: {
       });
 
     /** The live host only when the thread's session has already started; none otherwise. */
-    const readOnlyHost = (threadId: string): Effect.Effect<Option.Option<SessionHost>, CommandError, never> =>
+    const readOnlyHost = (
+      threadId: string,
+    ): Effect.Effect<Option.Option<SessionHost>, CommandError, never> =>
       Effect.gen(function* () {
         const live = yield* Ref.get(hostsRef);
         const existing = live.get(threadId);
@@ -512,7 +551,9 @@ export const makeSakuDaemon = (options: {
           }
           const record = yield* registry.get(threadId);
           if (Option.isNone(record)) {
-            return yield* Effect.fail(new SessionHostError({ message: `unknown thread: ${threadId}` }));
+            return yield* Effect.fail(
+              new SessionHostError({ message: `unknown thread: ${threadId}` }),
+            );
           }
           const host = yield* SessionHost.create({
             threadId,
@@ -593,7 +634,9 @@ export const makeSakuDaemon = (options: {
         if (closed) return;
         yield* Ref.set(closedRef, true);
         const clients = yield* Ref.get(clientsRef);
-        yield* Effect.forEach(clients, (client) => Effect.sync(() => client.socket.close()), { discard: true });
+        yield* Effect.forEach(clients, (client) => Effect.sync(() => client.socket.close()), {
+          discard: true,
+        });
         yield* Ref.set(clientsRef, new Set());
         const hosts = yield* Ref.get(hostsRef);
         yield* Effect.forEach([...hosts.values()], (host) => host.dispose(), { discard: true });
@@ -628,9 +671,13 @@ export const makeSakuDaemon = (options: {
         }
         const url = `ws://127.0.0.1:${address.port}`;
         void Effect.runFork(
-          fs.writeFileString(urlPath, `${url}\n`).pipe(
-            Effect.catch((error) => Effect.sync(() => log(`failed to write ${urlPath}: ${error.message}`))),
-          ),
+          fs
+            .writeFileString(urlPath, `${url}\n`)
+            .pipe(
+              Effect.catch((error) =>
+                Effect.sync(() => log(`failed to write ${urlPath}: ${error.message}`)),
+              ),
+            ),
         );
         log(`listening on ${url}`);
         resume(Effect.succeed(server));
@@ -642,7 +689,8 @@ export const makeSakuDaemon = (options: {
     yield* Ref.set(serverRef, Option.some(server));
     yield* Effect.addFinalizer(() => close());
     const address = server.address();
-    const url = address !== null && typeof address !== "string" ? `ws://127.0.0.1:${address.port}` : "";
+    const url =
+      address !== null && typeof address !== "string" ? `ws://127.0.0.1:${address.port}` : "";
     return { url, close };
   });
 

@@ -8,10 +8,17 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Effect } from "effect";
 
-import { WIRE_VERSION, makeWireClient, WireError, type WireClient, type WorkerClientOptions } from "../src/index.ts";
+import {
+  WIRE_VERSION,
+  makeWireClient,
+  WireError,
+  type WireClient,
+  type WorkerClientOptions,
+} from "../src/index.ts";
 import { MOCK_MODEL, startMockHub, TEST_TOKEN, type MockHub } from "./mock-hub.ts";
 
-const run = <T, E extends WireError>(effect: Effect.Effect<T, E, never>): Promise<T> => Effect.runPromise(effect);
+const run = <T, E extends WireError>(effect: Effect.Effect<T, E, never>): Promise<T> =>
+  Effect.runPromise(effect);
 
 let hub: MockHub;
 let seq = 0;
@@ -44,7 +51,10 @@ describe("handshake", () => {
 
   it("rejects a bad token", async () => {
     const client = await connect({ token: "wrong" });
-    await expect(run(client.connect())).rejects.toMatchObject({ code: "handshake", message: "invalid token" });
+    await expect(run(client.connect())).rejects.toMatchObject({
+      code: "handshake",
+      message: "invalid token",
+    });
   });
 
   it("rejects a version mismatch before anything else", async () => {
@@ -69,7 +79,12 @@ describe("thread lifecycle", () => {
 
     const threads = await run(client.listThreads());
     expect(threads).toHaveLength(1);
-    expect(threads[0]).toMatchObject({ name: "alpha", cwd: "/tmp/work", state: "idle", env: "ready" });
+    expect(threads[0]).toMatchObject({
+      name: "alpha",
+      cwd: "/tmp/work",
+      state: "idle",
+      env: "ready",
+    });
 
     const got = await run(client.getThread(id));
     expect(got.id).toBe(id);
@@ -153,7 +168,9 @@ describe("session commands", () => {
 
     await run(client.setModel(id, "mock", "m1"));
     await run(client.setThinkingLevel(id, "high"));
-    await expect(run(client.setModel(id, "mock", "nope"))).rejects.toMatchObject({ code: "command_failed" });
+    await expect(run(client.setModel(id, "mock", "nope"))).rejects.toMatchObject({
+      code: "command_failed",
+    });
 
     const stats = await run(client.getSessionStats(id));
     expect(stats).toBeDefined();
@@ -205,9 +222,15 @@ describe("skills", () => {
     await run(client.connect());
 
     const skill = await run(client.importSkill("git@github.com:acme/dotfiles.git"));
-    expect(skill).toMatchObject({ name: "dotfiles", scope: "personal", source: "git@github.com:acme/dotfiles.git" });
+    expect(skill).toMatchObject({
+      name: "dotfiles",
+      scope: "personal",
+      source: "git@github.com:acme/dotfiles.git",
+    });
 
-    const workspace = await run(client.importSkill("https://github.com/acme/team-skills", "workspace"));
+    const workspace = await run(
+      client.importSkill("https://github.com/acme/team-skills", "workspace"),
+    );
     expect(workspace.scope).toBe("workspace");
 
     const skills = await run(client.listSkills());
@@ -216,7 +239,9 @@ describe("skills", () => {
     await run(client.deleteSkill(skill.id));
     expect(await run(client.listSkills())).toHaveLength(1);
 
-    await expect(run(client.deleteSkill(skill.id))).rejects.toMatchObject({ code: "command_failed" });
+    await expect(run(client.deleteSkill(skill.id))).rejects.toMatchObject({
+      code: "command_failed",
+    });
     client.disconnect();
   });
 });

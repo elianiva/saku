@@ -11,6 +11,7 @@
 
 import { Effect, Option } from "effect";
 import type {
+  Api,
   AssistantMessage,
   Model,
   MutableModels,
@@ -26,7 +27,7 @@ export const TEST_PROVIDER = "test-provider";
 export const TEST_MODEL = "test-model";
 
 /** A minimal pi `Model` (the shape the host's catalog lookups need). */
-export const testModel = (): Model => ({
+export const testModel = (): Model<Api> => ({
   id: TEST_MODEL,
   name: "Test Model",
   api: "test-api",
@@ -48,7 +49,10 @@ export const testModel = (): Model => ({
 });
 
 /** A complete `AssistantMessage` for scripted streams and fake completions. */
-export const assistantMessage = (text: string, stopReason: AssistantMessage["stopReason"] = "stop"): AssistantMessage => ({
+export const assistantMessage = (
+  text: string,
+  stopReason: AssistantMessage["stopReason"] = "stop",
+): AssistantMessage => ({
   role: "assistant",
   content: [{ type: "text", text }],
   api: "test-api",
@@ -67,7 +71,9 @@ export const assistantMessage = (text: string, stopReason: AssistantMessage["sto
 });
 
 const unimplemented = (name: string): never => {
-  throw new Error(`fake models: ${name} is not implemented — the host should not call it in these tests`);
+  throw new Error(
+    `fake models: ${name} is not implemented — the host should not call it in these tests`,
+  );
 };
 
 /**
@@ -96,7 +102,11 @@ export const fakeCatalog = (options: { completions?: string[] } = {}): ModelCata
     streamSimple: () => {
       throw new Error("fake streamSimple");
     },
-    completeSimple: async (_model: Model, _context: PiContext, _options?: SimpleStreamOptions): Promise<AssistantMessage> => {
+    completeSimple: async (
+      _model: Model<Api>,
+      _context: PiContext,
+      _options?: SimpleStreamOptions,
+    ): Promise<AssistantMessage> => {
       const text = completions.shift() ?? "a canned completion";
       return assistantMessage(text);
     },
@@ -105,7 +115,7 @@ export const fakeCatalog = (options: { completions?: string[] } = {}): ModelCata
     setProvider: (_provider: Provider) => {},
     deleteProvider: (_id: string) => {},
     clearProviders: () => {},
-  } as MutableModels;
+  } as unknown as MutableModels;
 
   return {
     models,
@@ -143,7 +153,12 @@ export class FakeRegistry implements ThreadRegistryShape {
     return Effect.succeed(this.record.id === threadId ? Option.some(this.record) : Option.none());
   }
 
-  create(input: { name: string; cwd?: string; mode?: ThreadMode; autoName?: boolean }): Effect.Effect<ThreadRecord, never> {
+  create(input: {
+    name: string;
+    cwd?: string;
+    mode?: ThreadMode;
+    autoName?: boolean;
+  }): Effect.Effect<ThreadRecord, never> {
     this.record = {
       id: "fake-thread",
       name: input.name,
@@ -156,7 +171,10 @@ export class FakeRegistry implements ThreadRegistryShape {
     return Effect.succeed(this.record);
   }
 
-  update(threadId: string, patch: Partial<Pick<ThreadRecord, "name" | "sessionId" | "nameAuto">>): Effect.Effect<Option.Option<ThreadRecord>, never> {
+  update(
+    threadId: string,
+    patch: Partial<Pick<ThreadRecord, "name" | "sessionId" | "nameAuto">>,
+  ): Effect.Effect<Option.Option<ThreadRecord>, never> {
     if (this.record.id !== threadId) return Effect.succeed(Option.none());
     this.record = { ...this.record, ...patch };
     return Effect.succeed(Option.some(this.record));

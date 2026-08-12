@@ -54,12 +54,24 @@ import {
   type StreamFn,
   type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
-import type { Api, AssistantMessage, ImageContent, Model, UserMessage } from "@earendil-works/pi-ai";
+import type {
+  Api,
+  AssistantMessage,
+  ImageContent,
+  Model,
+  UserMessage,
+} from "@earendil-works/pi-ai";
 import { clampThinkingLevel, getSupportedThinkingLevels } from "@earendil-works/pi-ai";
-import { THINKING_LEVELS, ThinkingLevelSchema, type SessionWireEvent, type ThreadState, WireModelInfo } from "@saku/wire";
+import {
+  THINKING_LEVELS,
+  ThinkingLevelSchema,
+  type SessionWireEvent,
+  type ThreadState,
+  WireModelInfo,
+} from "@saku/wire";
 
 import { DoSessionRepo } from "./do-session.ts";
-import { fileKv } from "./kv.ts";
+import { fileKv } from "@saku/store";
 import { LocalEnv } from "./local-env.ts";
 import type { ModelCatalogShape } from "./model-catalog.ts";
 import { buildTools } from "./tools.ts";
@@ -87,7 +99,8 @@ const toSessionHostError = (error: unknown): SessionHostError =>
         cause: error,
       });
 
-const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+const messageOf = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
 
 // ---------------------------------------------------------------------------
 // The machine's state and events
@@ -122,7 +135,10 @@ const failReply = (message: string): HostReplyV => ({ ok: false, message });
 
 /** Everything the machine reacts to: commands (reply-bearing) and run/compaction lifecycle events. */
 const HostEvent = Event({
-  PromptRequested: Event.reply({ text: Schema.String, images: Schema.optional(Schema.Array(Schema.Unknown)) }, HostReply),
+  PromptRequested: Event.reply(
+    { text: Schema.String, images: Schema.optional(Schema.Array(Schema.Unknown)) },
+    HostReply,
+  ),
   SteerRequested: Event.reply({ text: Schema.String }, HostReply),
   FollowUpRequested: Event.reply({ text: Schema.String }, HostReply),
   AbortRequested: Event.reply({}, HostReply),
@@ -140,7 +156,18 @@ const HostEvent = Event({
 type HostEventV = Schema.Schema.Type<typeof HostEvent>;
 type HostCommandEvent = Extract<
   HostEventV,
-  { readonly _tag: "PromptRequested" | "SteerRequested" | "FollowUpRequested" | "AbortRequested" | "CompactRequested" | "SetAutoCompactionRequested" | "SetModelRequested" | "SetThinkingLevelRequested" | "SetSessionNameRequested" }
+  {
+    readonly _tag:
+      | "PromptRequested"
+      | "SteerRequested"
+      | "FollowUpRequested"
+      | "AbortRequested"
+      | "CompactRequested"
+      | "SetAutoCompactionRequested"
+      | "SetModelRequested"
+      | "SetThinkingLevelRequested"
+      | "SetSessionNameRequested";
+  }
 >;
 /** The wire-visible state of a machine state (crashed and compacting look idle). */
 const wireStateOf = (state: HostStateV): ThreadState => {
@@ -191,17 +218,25 @@ const AUTO_TITLE_PROMPT = (text: string): string =>
 
 /** The entry portion of a session log, in sequence order. */
 const entriesFromLog = (log: readonly LogItem[]): Entry[] =>
-  log.filter((item): item is Extract<LogItem, { kind: "entry" }> => item.kind === "entry").map((item) => item.entry);
+  log
+    .filter((item): item is Extract<LogItem, { kind: "entry" }> => item.kind === "entry")
+    .map((item) => item.entry);
 
 // ---------------------------------------------------------------------------
 // Shared session operations (used by transition handlers and state effects)
 // ---------------------------------------------------------------------------
 
 /** Apply a thinking level with model clamping; appends the trail entry. */
-const applyThinkingLevel = (deps: HostDeps, level: ThinkingLevel): Effect.Effect<ThinkingLevel, SessionHostError, never> =>
+const applyThinkingLevel = (
+  deps: HostDeps,
+  level: ThinkingLevel,
+): Effect.Effect<ThinkingLevel, SessionHostError, never> =>
   Effect.gen(function* () {
     const model = yield* Ref.get(deps.modelRef);
-    const available = model === null ? [...THINKING_LEVELS] : (getSupportedThinkingLevels(model) as ThinkingLevel[]);
+    const available =
+      model === null
+        ? [...THINKING_LEVELS]
+        : (getSupportedThinkingLevels(model) as ThinkingLevel[]);
     let effective = level;
     if (!available.includes(level) && model !== null) {
       effective = clampThinkingLevel(model, level) as ThinkingLevel;
@@ -213,7 +248,11 @@ const applyThinkingLevel = (deps: HostDeps, level: ThinkingLevel): Effect.Effect
     const entry = yield* Effect.tryPromise({
       try: () =>
         deps.session.appendEntry(
-          { id: deps.session.idGenerator.next(), type: "thinking_level_change", thinkingLevel: effective },
+          {
+            id: deps.session.idGenerator.next(),
+            type: "thinking_level_change",
+            thinkingLevel: effective,
+          },
           LANE,
         ),
       catch: toSessionHostError,
@@ -231,16 +270,23 @@ const applyModel = (
   Effect.gen(function* () {
     const model = deps.catalog.getModel(provider, modelId);
     if (model === undefined) {
-      return yield* Effect.fail(new SessionHostError({ message: `unknown model: ${provider}/${modelId}` }));
+      return yield* Effect.fail(
+        new SessionHostError({ message: `unknown model: ${provider}/${modelId}` }),
+      );
     }
     if (!(yield* deps.catalog.hasAuth(provider))) {
-      return yield* Effect.fail(new SessionHostError({ message: `no API key configured for ${provider}` }));
+      return yield* Effect.fail(
+        new SessionHostError({ message: `no API key configured for ${provider}` }),
+      );
     }
     yield* Ref.set(deps.modelRef, model);
     deps.agent.state.model = model;
     const entry = yield* Effect.tryPromise({
       try: () =>
-        deps.session.appendEntry({ id: deps.session.idGenerator.next(), type: "model_change", provider, modelId }, LANE),
+        deps.session.appendEntry(
+          { id: deps.session.idGenerator.next(), type: "model_change", provider, modelId },
+          LANE,
+        ),
       catch: toSessionHostError,
     });
     deps.sink({ type: "entry_appended", entry });
@@ -254,7 +300,9 @@ const runCommand = (
   working: Extract<HostStateV, { readonly _tag: "Working" }>,
 ): Effect.Effect<void, SessionHostError, never> =>
   Effect.gen(function* () {
-    const content: Array<{ type: "text"; text: string } | ImageContent> = [{ type: "text", text: working.text }];
+    const content: Array<{ type: "text"; text: string } | ImageContent> = [
+      { type: "text", text: working.text },
+    ];
     if (working.images !== undefined && working.images.length > 0) {
       content.push(...(working.images as ImageContent[]));
     }
@@ -274,7 +322,10 @@ const maybeAutoCompact = (deps: HostDeps): Effect.Effect<void, SessionHostError,
     const model = yield* Ref.get(deps.modelRef);
     if (assistant === undefined || model === null) return;
     if (assistant.stopReason === "aborted" || assistant.stopReason === "error") return;
-    const log = yield* Effect.tryPromise({ try: () => deps.session.getLog(), catch: toSessionHostError });
+    const log = yield* Effect.tryPromise({
+      try: () => deps.session.getLog(),
+      catch: toSessionHostError,
+    });
     const context = buildSessionContext(entriesFromLog(log));
     const estimate = estimateContextTokens(context.messages);
     if (shouldCompact(estimate.tokens, model.contextWindow, settings)) {
@@ -294,10 +345,15 @@ const runCompaction = (
   Effect.gen(function* () {
     const model = yield* Ref.get(deps.modelRef);
     if (model === null) {
-      return yield* Effect.fail(new SessionHostError({ message: "no model selected for this thread" }));
+      return yield* Effect.fail(
+        new SessionHostError({ message: "no model selected for this thread" }),
+      );
     }
     const settings = yield* Ref.get(deps.compactionSettingsRef);
-    const log = yield* Effect.tryPromise({ try: () => deps.session.getLog(), catch: toSessionHostError });
+    const log = yield* Effect.tryPromise({
+      try: () => deps.session.getLog(),
+      catch: toSessionHostError,
+    });
     const preparation = prepareCompaction(entriesFromLog(log), settings);
     if (!preparation.ok) {
       return yield* Effect.fail(toSessionHostError(preparation.error));
@@ -315,7 +371,14 @@ const runCompaction = (
       Effect.gen(function* () {
         const result = yield* Effect.tryPromise({
           try: () =>
-            compact(prepared, deps.catalog.models, model, customInstructions, abortController.signal, thinkingLevel),
+            compact(
+              prepared,
+              deps.catalog.models,
+              model,
+              customInstructions,
+              abortController.signal,
+              thinkingLevel,
+            ),
           catch: toSessionHostError,
         });
         if (!result.ok) {
@@ -339,7 +402,10 @@ const runCompaction = (
         });
         deps.sink({ type: "entry_appended", entry: compacted });
         // Rebuild the live context from the compacted trail.
-        const newLog = yield* Effect.tryPromise({ try: () => deps.session.getLog(), catch: toSessionHostError });
+        const newLog = yield* Effect.tryPromise({
+          try: () => deps.session.getLog(),
+          catch: toSessionHostError,
+        });
         deps.agent.state.messages = buildSessionContext(entriesFromLog(newLog)).messages;
         deps.sink({ type: "compaction_end", reason, result: result.value, aborted: false });
         return result.value;
@@ -363,7 +429,9 @@ const runCompaction = (
   });
 
 /** Auto-title: name quick-started threads after their first settled run. */
-const maybeAutoTitle = (deps: HostDeps): Effect.Effect<void, SessionHostError | RegistryError, never> =>
+const maybeAutoTitle = (
+  deps: HostDeps,
+): Effect.Effect<void, SessionHostError | RegistryError, never> =>
   Effect.gen(function* () {
     const record = yield* deps.registry.get(deps.threadId);
     if (Option.isNone(record) || record.value.nameAuto !== true) return;
@@ -414,141 +482,199 @@ const makeHostMachine = (deps: HostDeps): HostMachine => {
   // -- runs: idle/interrupted start one; busy states reject ------------------
   // effect-machine registers one event per transition, so the three run
   // commands are spelled out over the four state groups.
-  return machine
-    .on([HostState.Idle, HostState.Interrupted], HostEvent.PromptRequested, ({ state, event }) =>
-      startRun(deps, state, HostState.Working({ text: event.text, images: event.images })),
-    )
-    .on(HostState.Working, HostEvent.PromptRequested, ({ state }) =>
-      Machine.reply(state, failReply("agent is already processing")),
-    )
-    .on(HostState.Compacting, HostEvent.PromptRequested, ({ state }) =>
-      Machine.reply(state, failReply("cannot start a run while compacting")),
-    )
-    .on(HostState.Crashed, HostEvent.PromptRequested, ({ state }) =>
-      Machine.reply(state, failReply("host crashed; retry")),
-    )
-    .on([HostState.Idle, HostState.Interrupted], HostEvent.SteerRequested, ({ state, event }) =>
-      startRun(deps, state, HostState.Working({ text: event.text })),
-    )
-    .on(HostState.Working, HostEvent.SteerRequested, ({ state }) =>
-      Machine.reply(state, failReply("agent is already processing")),
-    )
-    .on(HostState.Compacting, HostEvent.SteerRequested, ({ state }) =>
-      Machine.reply(state, failReply("cannot start a run while compacting")),
-    )
-    .on(HostState.Crashed, HostEvent.SteerRequested, ({ state }) =>
-      Machine.reply(state, failReply("host crashed; retry")),
-    )
-    .on([HostState.Idle, HostState.Interrupted], HostEvent.FollowUpRequested, ({ state, event }) =>
-      startRun(deps, state, HostState.Working({ text: event.text })),
-    )
-    .on(HostState.Working, HostEvent.FollowUpRequested, ({ state }) =>
-      Machine.reply(state, failReply("agent is already processing")),
-    )
-    .on(HostState.Compacting, HostEvent.FollowUpRequested, ({ state }) =>
-      Machine.reply(state, failReply("cannot start a run while compacting")),
-    )
-    .on(HostState.Crashed, HostEvent.FollowUpRequested, ({ state }) =>
-      Machine.reply(state, failReply("host crashed; retry")),
-    )
-    // -- abort: settle the in-flight run; elsewhere it is a no-op --------------
-    .on(HostState.Working, HostEvent.AbortRequested, ({ state }) =>
-      Effect.gen(function* () {
-        const compactionAbort = yield* Ref.get(deps.compactionAbortRef);
-        if (Option.isSome(compactionAbort)) compactionAbort.value.abort();
-        deps.agent.abort();
-        return Machine.reply(state, okReply());
-      }),
-    )
-    .on([HostState.Idle, HostState.Interrupted, HostState.Compacting, HostState.Crashed], HostEvent.AbortRequested, ({ state }) =>
-      Machine.reply(state, okReply()),
-    )
-    // -- manual compaction -----------------------------------------------------
-    .on([HostState.Idle, HostState.Interrupted], HostEvent.CompactRequested, ({ event }) =>
-      Machine.deferReply(HostState.Compacting({ customInstructions: event.customInstructions })),
-    )
-    .on(HostState.Working, HostEvent.CompactRequested, ({ state }) =>
-      Machine.reply(state, failReply("cannot compact while the agent is working")),
-    )
-    .on(HostState.Compacting, HostEvent.CompactRequested, ({ state }) =>
-      Machine.reply(state, failReply("already compacting")),
-    )
-    .on(HostState.Crashed, HostEvent.CompactRequested, ({ state }) =>
-      Machine.reply(state, failReply("host crashed; retry")),
-    )
-    // -- config commands: valid in every state (the trail is the source of truth)
-    .on([HostState.Idle, HostState.Interrupted, HostState.Working, HostState.Compacting, HostState.Crashed], HostEvent.SetAutoCompactionRequested, ({ state, event }) =>
-      Effect.gen(function* () {
-        yield* Ref.update(deps.compactionSettingsRef, (settings) => ({ ...settings, enabled: event.enabled }));
-        return Machine.reply(state, okReply());
-      }),
-    )
-    .on([HostState.Idle, HostState.Interrupted, HostState.Working, HostState.Compacting, HostState.Crashed], HostEvent.SetSessionNameRequested, ({ state, event }) =>
-      safeReply(state, Effect.tryPromise({ try: () => deps.session.setName(event.name), catch: toSessionHostError }).pipe(Effect.map(() => okReply()))),
-    )
-    .on([HostState.Idle, HostState.Interrupted, HostState.Working, HostState.Compacting, HostState.Crashed], HostEvent.SetModelRequested, ({ state, event }) =>
-      safeReply(
-        state,
-        applyModel(deps, event.provider, event.modelId).pipe(Effect.map((model) => okReply({ model: model === null ? null : deps.catalog.toWireInfo(model) }))),
-      ),
-    )
-    .on([HostState.Idle, HostState.Interrupted, HostState.Working, HostState.Compacting, HostState.Crashed], HostEvent.SetThinkingLevelRequested, ({ state, event }) =>
-      safeReply(state, applyThinkingLevel(deps, event.level).pipe(Effect.map((level) => okReply({ level })))),
-    )
-    // -- run lifecycle: the state-scoped effects settle their own replies -------
-    .on(HostState.Working, HostEvent.RunFinished, () =>
-      Effect.gen(function* () {
-        yield* deps.pushState("idle");
-        return HostState.Idle;
-      }),
-    )
-    .on(HostState.Working, HostEvent.RunFailed, ({ event }) =>
-      Effect.gen(function* () {
-        yield* deps.pushState("idle");
-        return HostState.Crashed({ message: event.message });
-      }),
-    )
-    .on(HostState.Compacting, HostEvent.CompactFinished, () =>
-      Effect.gen(function* () {
-        yield* deps.pushState("idle");
-        return HostState.Idle;
-      }),
-    )
-    .on(HostState.Compacting, HostEvent.CompactFailed, () =>
-      Effect.gen(function* () {
-        yield* deps.pushState("idle");
-        return HostState.Idle;
-      }),
-    )
-    // -- the run: entered only via a run command; the entry event carries it ----
-    .spawn(HostState.Working, ({ self, state }) =>
-      Effect.gen(function* () {
-        yield* runCommand(deps, state);
-        yield* self.reply(okReply());
-        yield* self.send(HostEvent.RunFinished);
-      }).pipe(
-        Effect.catch((error) =>
+  return (
+    machine
+      .on([HostState.Idle, HostState.Interrupted], HostEvent.PromptRequested, ({ state, event }) =>
+        startRun(deps, state, HostState.Working({ text: event.text, images: event.images })),
+      )
+      .on(HostState.Working, HostEvent.PromptRequested, ({ state }) =>
+        Machine.reply(state, failReply("agent is already processing")),
+      )
+      .on(HostState.Compacting, HostEvent.PromptRequested, ({ state }) =>
+        Machine.reply(state, failReply("cannot start a run while compacting")),
+      )
+      .on(HostState.Crashed, HostEvent.PromptRequested, ({ state }) =>
+        Machine.reply(state, failReply("host crashed; retry")),
+      )
+      .on([HostState.Idle, HostState.Interrupted], HostEvent.SteerRequested, ({ state, event }) =>
+        startRun(deps, state, HostState.Working({ text: event.text })),
+      )
+      .on(HostState.Working, HostEvent.SteerRequested, ({ state }) =>
+        Machine.reply(state, failReply("agent is already processing")),
+      )
+      .on(HostState.Compacting, HostEvent.SteerRequested, ({ state }) =>
+        Machine.reply(state, failReply("cannot start a run while compacting")),
+      )
+      .on(HostState.Crashed, HostEvent.SteerRequested, ({ state }) =>
+        Machine.reply(state, failReply("host crashed; retry")),
+      )
+      .on(
+        [HostState.Idle, HostState.Interrupted],
+        HostEvent.FollowUpRequested,
+        ({ state, event }) => startRun(deps, state, HostState.Working({ text: event.text })),
+      )
+      .on(HostState.Working, HostEvent.FollowUpRequested, ({ state }) =>
+        Machine.reply(state, failReply("agent is already processing")),
+      )
+      .on(HostState.Compacting, HostEvent.FollowUpRequested, ({ state }) =>
+        Machine.reply(state, failReply("cannot start a run while compacting")),
+      )
+      .on(HostState.Crashed, HostEvent.FollowUpRequested, ({ state }) =>
+        Machine.reply(state, failReply("host crashed; retry")),
+      )
+      // -- abort: settle the in-flight run; elsewhere it is a no-op --------------
+      .on(HostState.Working, HostEvent.AbortRequested, ({ state }) =>
+        Effect.gen(function* () {
+          const compactionAbort = yield* Ref.get(deps.compactionAbortRef);
+          if (Option.isSome(compactionAbort)) compactionAbort.value.abort();
+          deps.agent.abort();
+          return Machine.reply(state, okReply());
+        }),
+      )
+      .on(
+        [HostState.Idle, HostState.Interrupted, HostState.Compacting, HostState.Crashed],
+        HostEvent.AbortRequested,
+        ({ state }) => Machine.reply(state, okReply()),
+      )
+      // -- manual compaction -----------------------------------------------------
+      .on([HostState.Idle, HostState.Interrupted], HostEvent.CompactRequested, ({ event }) =>
+        Machine.deferReply(HostState.Compacting({ customInstructions: event.customInstructions })),
+      )
+      .on(HostState.Working, HostEvent.CompactRequested, ({ state }) =>
+        Machine.reply(state, failReply("cannot compact while the agent is working")),
+      )
+      .on(HostState.Compacting, HostEvent.CompactRequested, ({ state }) =>
+        Machine.reply(state, failReply("already compacting")),
+      )
+      .on(HostState.Crashed, HostEvent.CompactRequested, ({ state }) =>
+        Machine.reply(state, failReply("host crashed; retry")),
+      )
+      // -- config commands: valid in every state (the trail is the source of truth)
+      .on(
+        [
+          HostState.Idle,
+          HostState.Interrupted,
+          HostState.Working,
+          HostState.Compacting,
+          HostState.Crashed,
+        ],
+        HostEvent.SetAutoCompactionRequested,
+        ({ state, event }) =>
           Effect.gen(function* () {
-            yield* self.reply(failReply(messageOf(error)));
-            yield* self.send(HostEvent.RunFailed({ message: messageOf(error) }));
+            yield* Ref.update(deps.compactionSettingsRef, (settings) => ({
+              ...settings,
+              enabled: event.enabled,
+            }));
+            return Machine.reply(state, okReply());
           }),
+      )
+      .on(
+        [
+          HostState.Idle,
+          HostState.Interrupted,
+          HostState.Working,
+          HostState.Compacting,
+          HostState.Crashed,
+        ],
+        HostEvent.SetSessionNameRequested,
+        ({ state, event }) =>
+          safeReply(
+            state,
+            Effect.tryPromise({
+              try: () => deps.session.setName(event.name),
+              catch: toSessionHostError,
+            }).pipe(Effect.map(() => okReply())),
+          ),
+      )
+      .on(
+        [
+          HostState.Idle,
+          HostState.Interrupted,
+          HostState.Working,
+          HostState.Compacting,
+          HostState.Crashed,
+        ],
+        HostEvent.SetModelRequested,
+        ({ state, event }) =>
+          safeReply(
+            state,
+            applyModel(deps, event.provider, event.modelId).pipe(
+              Effect.map((model) =>
+                okReply({ model: model === null ? null : deps.catalog.toWireInfo(model) }),
+              ),
+            ),
+          ),
+      )
+      .on(
+        [
+          HostState.Idle,
+          HostState.Interrupted,
+          HostState.Working,
+          HostState.Compacting,
+          HostState.Crashed,
+        ],
+        HostEvent.SetThinkingLevelRequested,
+        ({ state, event }) =>
+          safeReply(
+            state,
+            applyThinkingLevel(deps, event.level).pipe(Effect.map((level) => okReply({ level }))),
+          ),
+      )
+      // -- run lifecycle: the state-scoped effects settle their own replies -------
+      .on(HostState.Working, HostEvent.RunFinished, () =>
+        Effect.gen(function* () {
+          yield* deps.pushState("idle");
+          return HostState.Idle;
+        }),
+      )
+      .on(HostState.Working, HostEvent.RunFailed, ({ event }) =>
+        Effect.gen(function* () {
+          yield* deps.pushState("idle");
+          return HostState.Crashed({ message: event.message });
+        }),
+      )
+      .on(HostState.Compacting, HostEvent.CompactFinished, () =>
+        Effect.gen(function* () {
+          yield* deps.pushState("idle");
+          return HostState.Idle;
+        }),
+      )
+      .on(HostState.Compacting, HostEvent.CompactFailed, () =>
+        Effect.gen(function* () {
+          yield* deps.pushState("idle");
+          return HostState.Idle;
+        }),
+      )
+      // -- the run: entered only via a run command; the entry event carries it ----
+      .spawn(HostState.Working, ({ self, state }) =>
+        Effect.gen(function* () {
+          yield* runCommand(deps, state);
+          yield* self.reply(okReply());
+          yield* self.send(HostEvent.RunFinished);
+        }).pipe(
+          Effect.catch((error) =>
+            Effect.gen(function* () {
+              yield* self.reply(failReply(messageOf(error)));
+              yield* self.send(HostEvent.RunFailed({ message: messageOf(error) }));
+            }),
+          ),
         ),
-      ),
-    )
-    .spawn(HostState.Compacting, ({ self, state }) =>
-      Effect.gen(function* () {
-        const result = yield* runCompaction(deps, "manual", state.customInstructions);
-        yield* self.reply(okReply({ result }));
-        yield* self.send(HostEvent.CompactFinished({ result }));
-      }).pipe(
-        Effect.catch((error) =>
-          Effect.gen(function* () {
-            yield* self.reply(failReply(messageOf(error)));
-            yield* self.send(HostEvent.CompactFailed({ message: messageOf(error) }));
-          }),
+      )
+      .spawn(HostState.Compacting, ({ self, state }) =>
+        Effect.gen(function* () {
+          const result = yield* runCompaction(deps, "manual", state.customInstructions);
+          yield* self.reply(okReply({ result }));
+          yield* self.send(HostEvent.CompactFinished({ result }));
+        }).pipe(
+          Effect.catch((error) =>
+            Effect.gen(function* () {
+              yield* self.reply(failReply(messageOf(error)));
+              yield* self.send(HostEvent.CompactFailed({ message: messageOf(error) }));
+            }),
+          ),
         ),
-      ),
-    );
+      )
+  );
 };
 
 /** Start a run from idle/interrupted: model check, then defer the reply to the run. */
@@ -564,7 +690,10 @@ const startRun = <S extends HostStateV>(
   Effect.gen(function* () {
     const model = yield* Ref.get(deps.modelRef);
     if (model === null) {
-      return Machine.reply(state, failReply("no model selected for this thread; use set_model first"));
+      return Machine.reply(
+        state,
+        failReply("no model selected for this thread; use set_model first"),
+      );
     }
     yield* deps.pushState("working");
     return Machine.deferReply(working);
@@ -602,21 +731,33 @@ export interface SessionHost {
     SessionHostError,
     never
   >;
-  readonly getEntries: (sinceSeq?: number) => Effect.Effect<
+  readonly getEntries: (
+    sinceSeq?: number,
+  ) => Effect.Effect<
     { entries: Entry[]; tailSeq: number; leafId: string | null },
     SessionHostError,
     never
   >;
   readonly getSessionStats: () => Effect.Effect<SessionStats, SessionHostError, never>;
   readonly getAvailableThinkingLevels: () => Effect.Effect<ThinkingLevel[], never>;
-  readonly prompt: (text: string, images?: ReadonlyArray<unknown>) => Effect.Effect<void, SessionHostError, never>;
+  readonly prompt: (
+    text: string,
+    images?: ReadonlyArray<unknown>,
+  ) => Effect.Effect<void, SessionHostError, never>;
   readonly steer: (text: string) => Effect.Effect<void, SessionHostError, never>;
   readonly followUp: (text: string) => Effect.Effect<void, SessionHostError, never>;
   readonly abort: () => Effect.Effect<void, SessionHostError, never>;
-  readonly compact: (customInstructions?: string) => Effect.Effect<unknown, SessionHostError, never>;
+  readonly compact: (
+    customInstructions?: string,
+  ) => Effect.Effect<unknown, SessionHostError, never>;
   readonly setAutoCompaction: (enabled: boolean) => Effect.Effect<void, SessionHostError, never>;
-  readonly setModel: (provider: string, modelId: string) => Effect.Effect<WireModelInfo | null, SessionHostError, never>;
-  readonly setThinkingLevel: (level: ThinkingLevel) => Effect.Effect<ThinkingLevel, SessionHostError, never>;
+  readonly setModel: (
+    provider: string,
+    modelId: string,
+  ) => Effect.Effect<WireModelInfo | null, SessionHostError, never>;
+  readonly setThinkingLevel: (
+    level: ThinkingLevel,
+  ) => Effect.Effect<ThinkingLevel, SessionHostError, never>;
   readonly setSessionName: (name: string) => Effect.Effect<void, SessionHostError, never>;
   /** Move the lane leaf to a past entry (fork-on-next-prompt). Idle threads only. */
   readonly branch: (entryId: string) => Effect.Effect<string | null, SessionHostError, never>;
@@ -643,23 +784,31 @@ export interface SessionHostOptions {
 
 /** Create the host for a thread: open/create the DO session, recover, spawn. */
 export const SessionHost = {
-  create(options: SessionHostOptions): Effect.Effect<SessionHost, SessionHostError | RegistryError, never> {
+  create(
+    options: SessionHostOptions,
+  ): Effect.Effect<SessionHost, SessionHostError | RegistryError, never> {
     return Effect.gen(function* () {
       const { threadId, record, fs, catalog, registry } = options;
       const env = options.env ?? new LocalEnv(record.cwd, fs);
       // The trail: the session's mutations on DO storage (file-backed here).
       const repo = new DoSessionRepo(fileKv(fs, getThreadTrailRoot(threadId)));
-      const found = (yield* Effect.tryPromise({ try: () => repo.list(), catch: toSessionHostError })).find(
-        (metadata) => metadata.id === threadId,
-      );
+      const found = (yield* Effect.tryPromise({
+        try: () => repo.list(),
+        catch: toSessionHostError,
+      })).find((metadata) => metadata.id === threadId);
       const session =
         found === undefined
-          ? yield* Effect.tryPromise({ try: () => repo.create({ id: threadId }), catch: toSessionHostError })
+          ? yield* Effect.tryPromise({
+              try: () => repo.create({ id: threadId }),
+              catch: toSessionHostError,
+            })
           : yield* Effect.tryPromise({ try: () => repo.open(found), catch: toSessionHostError });
       if (record.sessionId === null) {
         // First touch (or a crash between repo creation and the registry update
         // on a previous boot): back-fill the stable session id.
-        yield* registry.update(threadId, { sessionId: threadId }).pipe(Effect.mapError(toSessionHostError));
+        yield* registry
+          .update(threadId, { sessionId: threadId })
+          .pipe(Effect.mapError(toSessionHostError));
       }
 
       const entries = entriesFromLog(
@@ -681,7 +830,10 @@ export const SessionHost = {
         }
       }
       if (model === null) {
-        const available = yield* Effect.tryPromise({ try: () => catalog.models.getAvailable(), catch: toSessionHostError });
+        const available = yield* Effect.tryPromise({
+          try: () => catalog.models.getAvailable(),
+          catch: toSessionHostError,
+        });
         model = available[0] ?? null;
       }
 
@@ -690,7 +842,8 @@ export const SessionHost = {
         try: () => session.findOpenOperations(LANE, { limit: 1 }),
         catch: toSessionHostError,
       });
-      const initialState: HostStateV = openOperations.length > 0 ? HostState.Interrupted : HostState.Idle;
+      const initialState: HostStateV =
+        openOperations.length > 0 ? HostState.Interrupted : HostState.Idle;
 
       const agent = new Agent({
         initialState: {
@@ -717,7 +870,12 @@ export const SessionHost = {
           yield* Effect.tryPromise({
             try: () =>
               session.appendEntry(
-                { id: session.idGenerator.next(), type: "model_change", provider: model.provider, modelId: model.id },
+                {
+                  id: session.idGenerator.next(),
+                  type: "model_change",
+                  provider: model.provider,
+                  modelId: model.id,
+                },
                 LANE,
               ),
             catch: toSessionHostError,
@@ -737,7 +895,9 @@ export const SessionHost = {
       // values live in the trail).
       const modelRef = yield* Ref.make<Model<Api> | null>(model);
       const thinkingLevelRef = yield* Ref.make<ThinkingLevel>(thinkingLevel);
-      const compactionSettingsRef = yield* Ref.make<CompactionSettings>({ ...DEFAULT_COMPACTION_SETTINGS });
+      const compactionSettingsRef = yield* Ref.make<CompactionSettings>({
+        ...DEFAULT_COMPACTION_SETTINGS,
+      });
       const lastAssistantRef = yield* Ref.make<AssistantMessage | undefined>(undefined);
       const compactionAbortRef = yield* Ref.make<Option.Option<AbortController>>(Option.none());
 
@@ -758,35 +918,46 @@ export const SessionHost = {
         pushState: (state) => registry.setState(threadId, state),
       };
 
-      const unsubscribeAgent = agent.subscribe((event: AgentEvent, _signal: AbortSignal): Promise<void> =>
-        Effect.runPromise(handleAgentEvent(deps, event)),
+      const unsubscribeAgent = agent.subscribe(
+        (event: AgentEvent, _signal: AbortSignal): Promise<void> =>
+          Effect.runPromise(handleAgentEvent(deps, event)),
       );
 
       const actor = yield* Machine.spawn(makeHostMachine(deps));
       yield* actor.start;
 
-      const command = (event: HostCommandEvent): Effect.Effect<HostReplyV, SessionHostError, never> =>
+      const command = (
+        event: HostCommandEvent,
+      ): Effect.Effect<HostReplyV, SessionHostError, never> =>
         actor.ask(event).pipe(
           Effect.flatMap((reply) =>
-            reply.ok ? Effect.succeed(reply) : Effect.fail(new SessionHostError({ message: reply.message ?? "command failed" })),
+            reply.ok
+              ? Effect.succeed(reply)
+              : Effect.fail(new SessionHostError({ message: reply.message ?? "command failed" })),
           ),
           Effect.mapError((error) => toSessionHostError(error)),
         );
 
-      const getEntries = (sinceSeq?: number): Effect.Effect<
+      const getEntries = (
+        sinceSeq?: number,
+      ): Effect.Effect<
         { entries: Entry[]; tailSeq: number; leafId: string | null },
         SessionHostError,
         never
       > =>
         Effect.gen(function* () {
           const log = yield* Effect.tryPromise({
-            try: () => session.getLog({ ...(sinceSeq === undefined ? {} : { afterSeq: sinceSeq }) }),
+            try: () =>
+              session.getLog({ ...(sinceSeq === undefined ? {} : { afterSeq: sinceSeq }) }),
             catch: toSessionHostError,
           });
           const entries = entriesFromLog(log);
           const last = log[log.length - 1];
           const tailSeq = last === undefined ? (sinceSeq ?? 0) : last.seq;
-          const leafId = yield* Effect.tryPromise({ try: () => session.getLeafId(), catch: toSessionHostError });
+          const leafId = yield* Effect.tryPromise({
+            try: () => session.getLeafId(),
+            catch: toSessionHostError,
+          });
           return { entries, tailSeq, leafId };
         });
 
@@ -811,13 +982,15 @@ export const SessionHost = {
         },
         getState: () =>
           Effect.gen(function* () {
-            const [name, { tailSeq }, snapshot, modelValue, thinkingLevelValue] = yield* Effect.all([
-              Effect.tryPromise({ try: () => session.getName(), catch: toSessionHostError }),
-              getEntries(),
-              actor.snapshot,
-              Ref.get(modelRef),
-              Ref.get(thinkingLevelRef),
-            ]);
+            const [name, { tailSeq }, snapshot, modelValue, thinkingLevelValue] = yield* Effect.all(
+              [
+                Effect.tryPromise({ try: () => session.getName(), catch: toSessionHostError }),
+                getEntries(),
+                actor.snapshot,
+                Ref.get(modelRef),
+                Ref.get(thinkingLevelRef),
+              ],
+            );
             return {
               sessionId: agent.sessionId ?? null,
               ...(name === undefined ? {} : { name }),
@@ -833,33 +1006,53 @@ export const SessionHost = {
         getAvailableThinkingLevels: () =>
           Ref.get(modelRef).pipe(
             Effect.map((modelValue) =>
-              modelValue === null ? [...THINKING_LEVELS] : (getSupportedThinkingLevels(modelValue) as ThinkingLevel[]),
+              modelValue === null
+                ? [...THINKING_LEVELS]
+                : (getSupportedThinkingLevels(modelValue) as ThinkingLevel[]),
             ),
           ),
-        prompt: (text, images) => command(HostEvent.PromptRequested({ text, images })).pipe(Effect.asVoid),
+        prompt: (text, images) =>
+          command(HostEvent.PromptRequested({ text, images })).pipe(Effect.asVoid),
         steer: (text) => command(HostEvent.SteerRequested({ text })).pipe(Effect.asVoid),
         followUp: (text) => command(HostEvent.FollowUpRequested({ text })).pipe(Effect.asVoid),
         abort: () => command(HostEvent.AbortRequested).pipe(Effect.asVoid),
         compact: (customInstructions) =>
-          command(HostEvent.CompactRequested({ customInstructions })).pipe(Effect.map((reply) => reply.result)),
+          command(HostEvent.CompactRequested({ customInstructions })).pipe(
+            Effect.map((reply) => reply.result),
+          ),
         setAutoCompaction: (enabled) =>
           command(HostEvent.SetAutoCompactionRequested({ enabled })).pipe(Effect.asVoid),
         setModel: (provider, modelId) =>
-          command(HostEvent.SetModelRequested({ provider, modelId })).pipe(Effect.map((reply) => reply.model ?? null)),
+          command(HostEvent.SetModelRequested({ provider, modelId })).pipe(
+            Effect.map((reply) => reply.model ?? null),
+          ),
         setThinkingLevel: (level) =>
-          command(HostEvent.SetThinkingLevelRequested({ level })).pipe(Effect.map((reply) => reply.level ?? level)),
-        setSessionName: (name) => command(HostEvent.SetSessionNameRequested({ name })).pipe(Effect.asVoid),
+          command(HostEvent.SetThinkingLevelRequested({ level })).pipe(
+            Effect.map((reply) => reply.level ?? level),
+          ),
+        setSessionName: (name) =>
+          command(HostEvent.SetSessionNameRequested({ name })).pipe(Effect.asVoid),
         branch: (entryId) =>
           Effect.gen(function* () {
             const snapshot = yield* actor.snapshot;
             if (snapshot._tag === "Working" || snapshot._tag === "Compacting") {
-              return yield* Effect.fail(new SessionHostError({ message: "cannot branch while the agent is working" }));
+              return yield* Effect.fail(
+                new SessionHostError({ message: "cannot branch while the agent is working" }),
+              );
             }
-            const entry = yield* Effect.tryPromise({ try: () => session.getEntry(entryId), catch: toSessionHostError });
+            const entry = yield* Effect.tryPromise({
+              try: () => session.getEntry(entryId),
+              catch: toSessionHostError,
+            });
             if (entry === undefined) {
-              return yield* Effect.fail(new SessionHostError({ message: `unknown entry: ${entryId}` }));
+              return yield* Effect.fail(
+                new SessionHostError({ message: `unknown entry: ${entryId}` }),
+              );
             }
-            yield* Effect.tryPromise({ try: () => session.moveLane(LANE, entryId), catch: toSessionHostError });
+            yield* Effect.tryPromise({
+              try: () => session.moveLane(LANE, entryId),
+              catch: toSessionHostError,
+            });
             return entryId;
           }),
         setSteeringMode: (mode) =>
@@ -877,11 +1070,18 @@ export const SessionHost = {
 };
 
 /** Pi's agent events: durable appends on message_end, then wire projection. */
-const handleAgentEvent = (deps: HostDeps, event: AgentEvent): Effect.Effect<void, SessionHostError, never> =>
+const handleAgentEvent = (
+  deps: HostDeps,
+  event: AgentEvent,
+): Effect.Effect<void, SessionHostError, never> =>
   Effect.gen(function* () {
     if (event.type === "message_end") {
       const message = event.message;
-      if (message.role === "user" || message.role === "assistant" || message.role === "toolResult") {
+      if (
+        message.role === "user" ||
+        message.role === "assistant" ||
+        message.role === "toolResult"
+      ) {
         const entryId = yield* Effect.tryPromise({
           try: () => deps.session.appendMessage(message),
           catch: toSessionHostError,

@@ -39,5 +39,9 @@ export const ListSkillsResponse = S.TaggedStruct("list_skills", { skills: S.Arra
 export const ImportSkillResponse = S.TaggedStruct("import_skill", { skill: SkillInfo });
 export const DeleteSkillResponse = S.TaggedStruct("delete_skill", {});
 
-export const SkillResponse = S.Union([ListSkillsResponse, ImportSkillResponse, DeleteSkillResponse]);
+export const SkillResponse = S.Union([
+  ListSkillsResponse,
+  ImportSkillResponse,
+  DeleteSkillResponse,
+]);
 export type SkillResponse = S.Schema.Type<typeof SkillResponse>;

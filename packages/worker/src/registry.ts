@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import { Context, Effect, FileSystem, Layer, Option, Ref, Schema } from "effect";
 import type { ThreadInfo, ThreadMode, ThreadState } from "@saku/wire";
 
-import { isNotFound } from "./fs.ts";
+import { isNotFound } from "@saku/store";
 import { getThreadDir, getThreadFile } from "./paths.ts";
 
 export interface ThreadRecord {
@@ -55,19 +55,29 @@ export interface ThreadRegistryShape {
   /** Delete the record AND the thread's directory (sessions included). */
   readonly delete: (threadId: string) => Effect.Effect<boolean, RegistryError>;
   /** Wire projection: registry view + derived state. */
-  readonly toInfo: (threadId: string, tailSeq: number) => Effect.Effect<Option.Option<ThreadInfo>, never>;
+  readonly toInfo: (
+    threadId: string,
+    tailSeq: number,
+  ) => Effect.Effect<Option.Option<ThreadInfo>, never>;
 }
 
 /** The durable thread index. Consoles only ever see it through the wire. */
-export class ThreadRegistry extends Context.Service<ThreadRegistry, ThreadRegistryShape>()("ThreadRegistry") {}
+export class ThreadRegistry extends Context.Service<ThreadRegistry, ThreadRegistryShape>()(
+  "ThreadRegistry",
+) {}
 
 const THREAD_DIR_RE = /^[0-9a-f]{32}$/u;
 
-const toRegistryError = (message: string) => (error: unknown): RegistryError =>
-  new RegistryError({ message, cause: error });
+const toRegistryError =
+  (message: string) =>
+  (error: unknown): RegistryError =>
+    new RegistryError({ message, cause: error });
 
 /** Write one record atomically (temp file + rename). */
-const persist = (fs: FileSystem.FileSystem, record: ThreadRecord): Effect.Effect<void, RegistryError> =>
+const persist = (
+  fs: FileSystem.FileSystem,
+  record: ThreadRecord,
+): Effect.Effect<void, RegistryError> =>
   Effect.gen(function* () {
     yield* fs
       .makeDirectory(getThreadDir(record.id), { recursive: true })
@@ -77,7 +87,9 @@ const persist = (fs: FileSystem.FileSystem, record: ThreadRecord): Effect.Effect
     yield* fs
       .writeFileString(tmp, `${JSON.stringify(record, null, 2)}\n`)
       .pipe(Effect.mapError(toRegistryError(`failed to persist thread ${record.id}`)));
-    yield* fs.rename(tmp, path).pipe(Effect.mapError(toRegistryError(`failed to persist thread ${record.id}`)));
+    yield* fs
+      .rename(tmp, path)
+      .pipe(Effect.mapError(toRegistryError(`failed to persist thread ${record.id}`)));
   });
 
 /**
@@ -89,25 +101,32 @@ const loadRecords = (
 ): Effect.Effect<readonly (ThreadRecord | undefined)[], RegistryError> =>
   Effect.gen(function* () {
     const names = yield* fs.readDirectory(getThreadDir("")).pipe(
-      Effect.catchEager((error) => (isNotFound(error) ? Effect.succeed([] as string[]) : Effect.fail(error))),
+      Effect.catchEager((error) =>
+        isNotFound(error) ? Effect.succeed([] as string[]) : Effect.fail(error),
+      ),
       Effect.mapError(toRegistryError("failed to list the threads directory")),
     );
-    return yield* Effect.forEach(names, (name): Effect.Effect<ThreadRecord | undefined, RegistryError> => {
-      if (!THREAD_DIR_RE.test(name)) return Effect.succeed(undefined);
-      return Effect.gen(function* () {
-        const content = yield* fs
-          .readFileString(getThreadFile(name))
-          .pipe(Effect.catchEager(() => Effect.succeed("")));
-        return yield* Effect.try({
-          try: () => JSON.parse(content) as ThreadRecord,
-          catch: toRegistryError(`failed to read thread record ${name}`),
-        }).pipe(Effect.catchEager(() => Effect.succeed(undefined)));
-      });
-    });
+    return yield* Effect.forEach(
+      names,
+      (name): Effect.Effect<ThreadRecord | undefined, RegistryError> => {
+        if (!THREAD_DIR_RE.test(name)) return Effect.succeed(undefined);
+        return Effect.gen(function* () {
+          const content = yield* fs
+            .readFileString(getThreadFile(name))
+            .pipe(Effect.catchEager(() => Effect.succeed("")));
+          return yield* Effect.try({
+            try: () => JSON.parse(content) as ThreadRecord,
+            catch: toRegistryError(`failed to read thread record ${name}`),
+          }).pipe(Effect.catchEager(() => Effect.succeed(undefined)));
+        });
+      },
+    );
   });
 
 /** Index loaded records; every thread starts idle (hosts derive the rest on touch). */
-const indexLoaded = (loaded: readonly (ThreadRecord | undefined)[]): {
+const indexLoaded = (
+  loaded: readonly (ThreadRecord | undefined)[],
+): {
   records: Map<string, ThreadRecord>;
   states: Map<string, ThreadState>;
 } => {
@@ -127,82 +146,97 @@ const indexLoaded = (loaded: readonly (ThreadRecord | undefined)[]): {
  * mutation persists before it is visible, so a crash never leaves a record
  * that is not on disk.
  */
-export const ThreadRegistryLive: Layer.Layer<ThreadRegistry, RegistryError, FileSystem.FileSystem> = Layer.effect(
-  ThreadRegistry,
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const { records, states } = indexLoaded(yield* loadRecords(fs));
-    const recordsRef = yield* Ref.make<ReadonlyMap<string, ThreadRecord>>(records);
-    const statesRef = yield* Ref.make<ReadonlyMap<string, ThreadState>>(states);
+export const ThreadRegistryLive: Layer.Layer<ThreadRegistry, RegistryError, FileSystem.FileSystem> =
+  Layer.effect(
+    ThreadRegistry,
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const { records, states } = indexLoaded(yield* loadRecords(fs));
+      const recordsRef = yield* Ref.make<ReadonlyMap<string, ThreadRecord>>(records);
+      const statesRef = yield* Ref.make<ReadonlyMap<string, ThreadState>>(states);
 
-    return ThreadRegistry.of({
-      list: () =>
-        Ref.get(recordsRef).pipe(Effect.map((records) => [...records.values()].sort((a, b) => a.createdAt - b.createdAt))),
-      get: (threadId) => Ref.get(recordsRef).pipe(Effect.map((records) => Option.fromNullishOr(records.get(threadId)))),
-      create: (input) =>
-        Effect.gen(function* () {
-          const record: ThreadRecord = {
-            id: randomUUID().replaceAll("-", ""),
-            name: input.name,
-            cwd: input.cwd ?? process.cwd(),
-            mode: input.mode ?? "local",
-            createdAt: Date.now(),
-            sessionId: null,
-            nameAuto: input.autoName === true,
-          };
-          yield* persist(fs, record);
-          yield* Ref.update(recordsRef, (records) => new Map(records).set(record.id, record));
-          yield* Ref.update(statesRef, (states) => new Map(states).set(record.id, "idle"));
-          return record;
-        }),
-      update: (threadId, patch) =>
-        Effect.gen(function* () {
-          const record = yield* Ref.get(recordsRef).pipe(Effect.map((records) => records.get(threadId)));
-          if (record === undefined) return Option.none();
-          const next: ThreadRecord = { ...record, ...patch };
-          yield* persist(fs, next);
-          yield* Ref.update(recordsRef, (records) => new Map(records).set(threadId, next));
-          return Option.some(next);
-        }),
-      setState: (threadId, state) => Ref.update(statesRef, (states) => new Map(states).set(threadId, state)),
-      delete: (threadId) =>
-        Effect.gen(function* () {
-          const records = yield* Ref.get(recordsRef);
-          if (!records.has(threadId)) return false;
-          yield* Ref.update(recordsRef, (records) => {
-            const next = new Map(records);
-            next.delete(threadId);
-            return next;
-          });
-          yield* Ref.update(statesRef, (states) => {
-            const next = new Map(states);
-            next.delete(threadId);
-            return next;
-          });
-          // Best-effort removal; the registry entry is gone either way.
-          yield* fs
-            .remove(getThreadDir(threadId), { recursive: true, force: true })
-            .pipe(Effect.catchEager(() => Effect.void));
-          return true;
-        }),
-      toInfo: (threadId, tailSeq) =>
-        Effect.gen(function* () {
-          const record = yield* Ref.get(recordsRef).pipe(Effect.map((records) => records.get(threadId)));
-          if (record === undefined) return Option.none();
-          const state = yield* Ref.get(statesRef).pipe(Effect.map((states) => states.get(threadId) ?? "idle"));
-          return Option.some({
-            id: record.id,
-            name: record.name,
-            cwd: record.cwd,
-            mode: record.mode,
-            state,
-            // The local daemon is the env for local threads; the hub derives
-            // the real env states (stopped/provisioning/ready/error) for Boxes.
-            env: "ready",
-            sessionId: record.sessionId,
-            tailSeq,
-          });
-        }),
-    });
-  }),
-);
+      return ThreadRegistry.of({
+        list: () =>
+          Ref.get(recordsRef).pipe(
+            Effect.map((records) =>
+              [...records.values()].sort((a, b) => a.createdAt - b.createdAt),
+            ),
+          ),
+        get: (threadId) =>
+          Ref.get(recordsRef).pipe(
+            Effect.map((records) => Option.fromNullishOr(records.get(threadId))),
+          ),
+        create: (input) =>
+          Effect.gen(function* () {
+            const record: ThreadRecord = {
+              id: randomUUID().replaceAll("-", ""),
+              name: input.name,
+              cwd: input.cwd ?? process.cwd(),
+              mode: input.mode ?? "local",
+              createdAt: Date.now(),
+              sessionId: null,
+              nameAuto: input.autoName === true,
+            };
+            yield* persist(fs, record);
+            yield* Ref.update(recordsRef, (records) => new Map(records).set(record.id, record));
+            yield* Ref.update(statesRef, (states) => new Map(states).set(record.id, "idle"));
+            return record;
+          }),
+        update: (threadId, patch) =>
+          Effect.gen(function* () {
+            const record = yield* Ref.get(recordsRef).pipe(
+              Effect.map((records) => records.get(threadId)),
+            );
+            if (record === undefined) return Option.none();
+            const next: ThreadRecord = { ...record, ...patch };
+            yield* persist(fs, next);
+            yield* Ref.update(recordsRef, (records) => new Map(records).set(threadId, next));
+            return Option.some(next);
+          }),
+        setState: (threadId, state) =>
+          Ref.update(statesRef, (states) => new Map(states).set(threadId, state)),
+        delete: (threadId) =>
+          Effect.gen(function* () {
+            const records = yield* Ref.get(recordsRef);
+            if (!records.has(threadId)) return false;
+            yield* Ref.update(recordsRef, (records) => {
+              const next = new Map(records);
+              next.delete(threadId);
+              return next;
+            });
+            yield* Ref.update(statesRef, (states) => {
+              const next = new Map(states);
+              next.delete(threadId);
+              return next;
+            });
+            // Best-effort removal; the registry entry is gone either way.
+            yield* fs
+              .remove(getThreadDir(threadId), { recursive: true, force: true })
+              .pipe(Effect.catchEager(() => Effect.void));
+            return true;
+          }),
+        toInfo: (threadId, tailSeq) =>
+          Effect.gen(function* () {
+            const record = yield* Ref.get(recordsRef).pipe(
+              Effect.map((records) => records.get(threadId)),
+            );
+            if (record === undefined) return Option.none();
+            const state = yield* Ref.get(statesRef).pipe(
+              Effect.map((states) => states.get(threadId) ?? "idle"),
+            );
+            return Option.some({
+              id: record.id,
+              name: record.name,
+              cwd: record.cwd,
+              mode: record.mode,
+              state,
+              // The local daemon is the env for local threads; the hub derives
+              // the real env states (stopped/provisioning/ready/error) for Boxes.
+              env: "ready",
+              sessionId: record.sessionId,
+              tailSeq,
+            });
+          }),
+      });
+    }),
+  );

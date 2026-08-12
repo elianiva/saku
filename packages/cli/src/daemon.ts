@@ -16,7 +16,8 @@ import { Effect, Option } from "effect";
 import { makeWireClient } from "@saku/wire";
 import { getAuthPath, getWorkerLogPath, getWorkerUrlPath } from "@saku/worker";
 
-export const resolveDaemonEntry = (): string => fileURLToPath(import.meta.resolve("@saku/worker/daemon"));
+export const resolveDaemonEntry = (): string =>
+  fileURLToPath(import.meta.resolve("@saku/worker/daemon"));
 
 export interface DaemonStatus {
   readonly running: boolean;
@@ -27,14 +28,18 @@ export interface DaemonStatus {
 /** The daemon's published ws URL; none when the daemon has never run. */
 export const readWorkerUrl = (): Effect.Effect<Option.Option<string>, never, never> =>
   Effect.tryPromise(() => readFile(getWorkerUrlPath(), "utf8")).pipe(
-    Effect.map((content) => Option.some(content.trim()).pipe(Option.filter((value) => value.length > 0))),
+    Effect.map((content) =>
+      Option.some(content.trim()).pipe(Option.filter((value) => value.length > 0)),
+    ),
     Effect.catch(() => Effect.succeed(Option.none())),
   );
 
 /** The auth token the daemon enforces; none before first boot. */
 export const readWorkerToken = (): Effect.Effect<Option.Option<string>, never, never> =>
   Effect.tryPromise(() => readFile(getAuthPath(), "utf8")).pipe(
-    Effect.map((content) => Option.some(content.trim()).pipe(Option.filter((value) => value.length > 0))),
+    Effect.map((content) =>
+      Option.some(content.trim()).pipe(Option.filter((value) => value.length > 0)),
+    ),
     Effect.catch(() => Effect.succeed(Option.none())),
   );
 
@@ -61,7 +66,9 @@ export const daemonStatus = (): Effect.Effect<DaemonStatus, never, never> =>
 export const spawnDaemon = (): Effect.Effect<number, Error, never> =>
   Effect.gen(function* () {
     // A fresh home has no ~/.saku yet; the log fd needs the directory.
-    yield* Effect.tryPromise(() => mkdir(dirname(getWorkerLogPath()), { recursive: true, mode: 0o700 }));
+    yield* Effect.tryPromise(() =>
+      mkdir(dirname(getWorkerLogPath()), { recursive: true, mode: 0o700 }),
+    );
     const logFd = yield* Effect.tryPromise(() => open(getWorkerLogPath(), "a"));
     const child = spawn(process.execPath, [resolveDaemonEntry()], {
       detached: true,
@@ -84,7 +91,9 @@ export const ensureDaemon = (): Effect.Effect<number, Error, never> =>
       const now = yield* daemonStatus();
       if (now.running && now.pid !== undefined) return now.pid;
     }
-    return yield* Effect.fail(new Error(`daemon did not come up (spawned pid ${pid}); see ${getWorkerLogPath()}`));
+    return yield* Effect.fail(
+      new Error(`daemon did not come up (spawned pid ${pid}); see ${getWorkerLogPath()}`),
+    );
   });
 
 /** Stop the daemon; returns the pid that was stopped, or none. */

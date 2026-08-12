@@ -1,5 +1,5 @@
 {
-  "name": "@saku/worker",
+  "name": "@saku/hub",
   "version": "0.1.0",
   "private": true,
   "files": [
@@ -10,10 +10,6 @@
     ".": {
       "types": "./src/index.ts",
       "import": "./src/index.ts"
-    },
-    "./daemon": {
-      "types": "./src/daemon-entry.ts",
-      "import": "./src/daemon-entry.ts"
     }
   },
   "scripts": {
@@ -22,16 +18,16 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@earendil-works/pi-agent-core": "^0.84.1",
-    "@earendil-works/pi-ai": "^0.84.1",
-    "@effect/platform-node": "4.0.0-beta.105",
     "@saku/store": "workspace:*",
     "@saku/wire": "workspace:*",
     "effect": "4.0.0-beta.106",
-    "effect-machine": "^0.17.1",
     "ws": "^8.18.0"
   },
   "devDependencies": {
+    "@earendil-works/pi-agent-core": "^0.84.1",
+    "@earendil-works/pi-ai": "^0.84.1",
+    "@effect/platform-node": "4.0.0-beta.105",
+    "@saku/worker": "workspace:*",
     "@types/ws": "^8.18.0",
     "tsdown": "^0.22.12",
     "typescript": "^5.9.0",

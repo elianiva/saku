@@ -1,15 +1,17 @@
 /**
- * Key-value storage (kv.ts): the durability seam between the worker's
- * session trail and whatever host it runs on.
+ * Key-value storage (kv.ts): the durability seam between saku's state —
+ * the hub's registry and skills store, the worker's session trail — and
+ * whatever host it runs on.
  *
  * The interface maps 1:1 onto Cloudflare Durable Object storage (`get`,
- * `put`, `delete`, `list`), so the same worker code runs inside a DO (M2/M4)
- * and inside the local daemon. Implementations:
+ * `put`, `delete`, `list`), so the same code runs inside a DO (hub and
+ * worker in production) and in-process (celld, tests, the local spine).
+ * Implementations:
  *
  * - `memoryKv` — in-memory (tests, in-process daemons)
  * - `fileKv`   — one file per key under a root directory, atomic tmp+rename
- *   writes, so the local daemon's trail survives restarts and a crash never
- *   leaves a torn key
+ *   writes, so local state survives restarts and a crash never leaves a
+ *   torn key
  *
  * Values are opaque byte strings; keys are forward-slash paths ("log/0001").
  * Writes are individually atomic (a crash leaves a prefix of the log, which
@@ -35,8 +37,6 @@ export interface KvStore {
 
 const encode = (value: string | Uint8Array): Uint8Array =>
   typeof value === "string" ? new TextEncoder().encode(value) : value;
-
-const decode = (value: Uint8Array): string => new TextDecoder().decode(value);
 
 /** In-memory KvStore. Each instance is a fresh store. */
 export const memoryKv = (): KvStore => {
@@ -71,7 +71,9 @@ const listFiles = (
   prefix: string,
 ): Effect.Effect<readonly { key: string; path: string }[], never> =>
   Effect.gen(function* () {
-    const names = yield* fs.readDirectory(dir).pipe(Effect.catchEager(() => Effect.succeed([] as string[])));
+    const names = yield* fs
+      .readDirectory(dir)
+      .pipe(Effect.catchEager(() => Effect.succeed([] as string[])));
     const entries: { key: string; path: string }[] = [];
     for (const name of names) {
       const path = `${dir}/${name}`;
@@ -97,7 +99,9 @@ export const fileKv = (fs: FileSystem.FileSystem, root: string): KvStore => ({
     Effect.runPromise(
       fs.readFileString(keyPath(root, key)).pipe(
         Effect.map((text) => encode(text)),
-        Effect.catchEager((error) => (isNotFound(error) ? Effect.succeed(undefined) : Effect.fail(error))),
+        Effect.catchEager((error) =>
+          isNotFound(error) ? Effect.succeed(undefined) : Effect.fail(error),
+        ),
       ),
     ),
   put: (key, value) =>

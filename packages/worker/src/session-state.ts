@@ -54,7 +54,10 @@ const assertValidCursor = (afterSeq: number | undefined): void => {
   }
 };
 
-function* ordered<T>(items: readonly T[], order: "newestFirst" | "oldestFirst" | undefined): Generator<T> {
+function* ordered<T>(
+  items: readonly T[],
+  order: "newestFirst" | "oldestFirst" | undefined,
+): Generator<T> {
   if (order === "oldestFirst") {
     for (const item of items) yield item;
     return;
@@ -120,15 +123,21 @@ export class SessionState {
 
   applyMutation(mutation: SessionMutation): void {
     const seq =
-      mutation.kind === "entry" ? mutation.entry.seq : mutation.kind === "record" ? mutation.record.seq : mutation.seq;
+      mutation.kind === "entry"
+        ? mutation.entry.seq
+        : mutation.kind === "record"
+          ? mutation.record.seq
+          : mutation.seq;
     if (seq !== this.sequence + 1) invalidMutation(`has non-consecutive seq ${seq}`);
     switch (mutation.kind) {
       case "entry": {
-        if (this.usedIds.has(mutation.entry.id)) invalidMutation(`contains duplicate id ${mutation.entry.id}`);
+        if (this.usedIds.has(mutation.entry.id))
+          invalidMutation(`contains duplicate id ${mutation.entry.id}`);
         if (mutation.lane !== undefined) {
           const leafId = this.lanes.get(mutation.lane);
           if (leafId === undefined) invalidMutation(`references missing lane ${mutation.lane}`);
-          if (mutation.entry.parentId !== leafId) invalidMutation("does not chain to the lane leaf");
+          if (mutation.entry.parentId !== leafId)
+            invalidMutation("does not chain to the lane leaf");
         }
         if (mutation.entry.parentId !== null && !this.entriesById.has(mutation.entry.parentId)) {
           invalidMutation(`references missing parent ${mutation.entry.parentId}`);
@@ -143,8 +152,10 @@ export class SessionState {
         break;
       }
       case "record": {
-        if (!this.lanes.has(mutation.record.lane)) invalidMutation(`references missing lane ${mutation.record.lane}`);
-        if (this.usedIds.has(mutation.record.id)) invalidMutation(`contains duplicate id ${mutation.record.id}`);
+        if (!this.lanes.has(mutation.record.lane))
+          invalidMutation(`references missing lane ${mutation.record.lane}`);
+        if (this.usedIds.has(mutation.record.id))
+          invalidMutation(`contains duplicate id ${mutation.record.id}`);
         this.sequence = seq;
         this.usedIds.add(mutation.record.id);
         this.records.push(mutation.record);
@@ -161,7 +172,8 @@ export class SessionState {
         this.log.push({ kind: "record", seq, record: mutation.record });
         if (mutation.record.type === "usage") {
           this.stats.cachedTokens += mutation.record.usage.cacheRead;
-          this.stats.uncachedTokens += mutation.record.usage.input + mutation.record.usage.cacheWrite;
+          this.stats.uncachedTokens +=
+            mutation.record.usage.input + mutation.record.usage.cacheWrite;
           this.stats.totalTokens += mutation.record.usage.totalTokens;
           this.stats.costTotal += mutation.record.usage.cost.total;
         }
@@ -186,7 +198,13 @@ export class SessionState {
         } else {
           if (mutation.label === undefined) this.labels.delete(mutation.targetId);
           else this.labels.set(mutation.targetId, mutation.label);
-          this.log.push({ kind: "fact", seq, fact: "label", targetId: mutation.targetId, label: mutation.label });
+          this.log.push({
+            kind: "fact",
+            seq,
+            fact: "label",
+            targetId: mutation.targetId,
+            label: mutation.label,
+          });
         }
         break;
     }
@@ -283,18 +301,27 @@ export class SessionState {
       if (selectedEntryId !== null) {
         const entry = this.getEntry(selectedEntryId);
         if (entry === undefined || entry.type !== "message") {
-          throw new SessionError("invalid_fork_target", `Fork target is not a message entry: ${selectedEntryId}`);
+          throw new SessionError(
+            "invalid_fork_target",
+            `Fork target is not a message entry: ${selectedEntryId}`,
+          );
         }
         const position = options.position ?? (options.entryId === undefined ? "at" : "before");
         targetId = position === "at" ? entry.id : entry.parentId;
       }
-      copiedEntries = targetId === null ? [] : this.findEntriesOnBranch({ start: targetId, order: "oldestFirst" });
+      copiedEntries =
+        targetId === null
+          ? []
+          : this.findEntriesOnBranch({ start: targetId, order: "oldestFirst" });
       forkLanes = [{ lane: "main", leafId: targetId }];
     }
     const mutations: SessionMutation[] = [];
     let sequence = 1;
     for (const sourceEntry of copiedEntries) {
-      mutations.push({ kind: "entry", entry: { ...structuredClone(sourceEntry), seq: sequence++ } });
+      mutations.push({
+        kind: "entry",
+        entry: { ...structuredClone(sourceEntry), seq: sequence++ },
+      });
     }
     for (const pointer of forkLanes) {
       mutations.push({ kind: "lane", seq: sequence++, lane: pointer.lane, leafId: pointer.leafId });
@@ -324,7 +351,12 @@ export class SessionState {
       }
       visited.add(current.id);
       yield current;
-      if (current.id === bounds?.stopAtId || current.type === bounds?.stopAtType || current.parentId === null) break;
+      if (
+        current.id === bounds?.stopAtId ||
+        current.type === bounds?.stopAtType ||
+        current.parentId === null
+      )
+        break;
       const parentId = current.parentId;
       current = this.entriesById.get(parentId);
       if (current === undefined) {
@@ -336,9 +368,12 @@ export class SessionState {
   private matchesEntryQuery(entry: Entry, query: EntryQuery): boolean {
     return (
       (query.type === undefined || entry.type === query.type) &&
-      (query.customType === undefined || (entry.type === "custom" && entry.customType === query.customType)) &&
+      (query.customType === undefined ||
+        (entry.type === "custom" && entry.customType === query.customType)) &&
       (query.cursor === undefined ||
-        (query.order === "oldestFirst" ? entry.seq > query.cursor.afterSeq : entry.seq < query.cursor.afterSeq))
+        (query.order === "oldestFirst"
+          ? entry.seq > query.cursor.afterSeq
+          : entry.seq < query.cursor.afterSeq))
     );
   }
 
@@ -347,7 +382,9 @@ export class SessionState {
       (query.lane === undefined || record.lane === query.lane) &&
       (query.type === undefined || record.type === query.type) &&
       (query.runId === undefined ||
-        (record.type === "operation_started" ? record.id === query.runId : "runId" in record && record.runId === query.runId)) &&
+        (record.type === "operation_started"
+          ? record.id === query.runId
+          : "runId" in record && record.runId === query.runId)) &&
       (query.operationKind === undefined ||
         (record.type === "operation_started" && record.intent.kind === query.operationKind)) &&
       (query.afterSeq === undefined || record.seq > query.afterSeq)

@@ -20,7 +20,7 @@ export default defineConfig({
     },
     overrides: [
       {
-        files: ["packages/{wire,worker,cli}/**"],
+        files: ["packages/{wire,worker,cli,hub,store}/**"],
         env: { node: true },
       },
       {

@@ -14,7 +14,13 @@
  */
 
 import { Schema as S } from "effect";
-import type { AgentEvent, CompactResult, Entry, SessionStats, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type {
+  AgentEvent,
+  CompactResult,
+  Entry,
+  SessionStats,
+  ThinkingLevel,
+} from "@earendil-works/pi-agent-core";
 
 import { SkillResponse } from "./skills.ts";
 import { ThreadInfo } from "./thread.ts";
@@ -65,12 +71,24 @@ export const SetSteeringModeCommand = S.TaggedStruct("set_steering_mode", {
 export const SetFollowUpModeCommand = S.TaggedStruct("set_follow_up_mode", {
   mode: S.Literals(["all", "one-at-a-time"]),
 });
-export const CompactCommand = S.TaggedStruct("compact", { customInstructions: S.optional(S.String) });
-export const SetAutoCompactionCommand = S.TaggedStruct("set_auto_compaction", { enabled: S.Boolean });
+export const CompactCommand = S.TaggedStruct("compact", {
+  customInstructions: S.optional(S.String),
+});
+export const SetAutoCompactionCommand = S.TaggedStruct("set_auto_compaction", {
+  enabled: S.Boolean,
+});
 export const GetAvailableModelsCommand = S.TaggedStruct("get_available_models", {});
-export const SetModelCommand = S.TaggedStruct("set_model", { provider: S.String, modelId: S.String });
-export const GetAvailableThinkingLevelsCommand = S.TaggedStruct("get_available_thinking_levels", {});
-export const SetThinkingLevelCommand = S.TaggedStruct("set_thinking_level", { level: ThinkingLevelSchema });
+export const SetModelCommand = S.TaggedStruct("set_model", {
+  provider: S.String,
+  modelId: S.String,
+});
+export const GetAvailableThinkingLevelsCommand = S.TaggedStruct(
+  "get_available_thinking_levels",
+  {},
+);
+export const SetThinkingLevelCommand = S.TaggedStruct("set_thinking_level", {
+  level: ThinkingLevelSchema,
+});
 export const GetEntriesCommand = S.TaggedStruct("get_entries", { sinceSeq: S.optional(S.Number) });
 export const BranchCommand = S.TaggedStruct("branch", { entryId: S.String });
 export const GetSessionStatsCommand = S.TaggedStruct("get_session_stats", {});
@@ -113,11 +131,15 @@ export const SetAutoCompactionResponse = S.TaggedStruct("set_auto_compaction", {
 export const GetAvailableModelsResponse = S.TaggedStruct("get_available_models", {
   models: S.Array(WireModelInfo),
 });
-export const SetModelResponse = S.TaggedStruct("set_model", { model: S.Union([S.Null, WireModelInfo]) });
+export const SetModelResponse = S.TaggedStruct("set_model", {
+  model: S.Union([S.Null, WireModelInfo]),
+});
 export const GetAvailableThinkingLevelsResponse = S.TaggedStruct("get_available_thinking_levels", {
   levels: S.Array(ThinkingLevelSchema),
 });
-export const SetThinkingLevelResponse = S.TaggedStruct("set_thinking_level", { level: ThinkingLevelSchema });
+export const SetThinkingLevelResponse = S.TaggedStruct("set_thinking_level", {
+  level: ThinkingLevelSchema,
+});
 export const GetEntriesResponse = S.TaggedStruct("get_entries", {
   entries: S.Array(S.Unknown),
   tailSeq: S.Number,
@@ -161,7 +183,10 @@ export const ResponsePayload = S.Union([
 export type ResponsePayload = S.Schema.Type<typeof ResponsePayload>;
 
 /** The response payload variant for one command kind — derived from the schema. */
-export type SessionResponse<K extends ResponsePayload["_tag"]> = Extract<ResponsePayload, { readonly _tag: K }>;
+export type SessionResponse<K extends ResponsePayload["_tag"]> = Extract<
+  ResponsePayload,
+  { readonly _tag: K }
+>;
 
 // ---------------------------------------------------------------------------
 // Session events (server → console)
@@ -178,12 +203,16 @@ export type SessionWireEvent = SessionEventFromAgent | SessionEventFromSaku;
 
 /** The subset of pi's event vocabulary that reaches consoles. */
 type SessionEventFromAgent = {
-  [K in AgentEvent as K["type"]]: K extends { readonly type: "agent_end" } ? never : StripPartial<K>;
+  [K in AgentEvent as K["type"]]: K extends { readonly type: "agent_end" }
+    ? never
+    : StripPartial<K>;
 }[AgentEvent["type"]];
 
 type StripPartial<T> = T extends { readonly assistantMessageEvent: infer E }
   ? Omit<T, "assistantMessageEvent"> & {
-      readonly assistantMessageEvent: E extends { readonly partial: unknown } ? Omit<E, "partial"> : E;
+      readonly assistantMessageEvent: E extends { readonly partial: unknown }
+        ? Omit<E, "partial">
+        : E;
     }
   : T;
 

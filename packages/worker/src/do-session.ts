@@ -19,9 +19,29 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { Session, SessionError, type BranchBounds, type Entry, type EntryQuery, type ForkOptions, type LanePointer, type LaneRecord, type LogItem, type LogOptions, type NewRecord, type OperationStartedRecord, type ProvisionedEntry, type RecordQuery, type SessionCreateOptions, type SessionMetadata, type SessionRepo, type SessionStats, type SessionStorage } from "@earendil-works/pi-agent-core";
+import {
+  Session,
+  SessionError,
+  type BranchBounds,
+  type Entry,
+  type EntryQuery,
+  type ForkOptions,
+  type LanePointer,
+  type LaneRecord,
+  type LogItem,
+  type LogOptions,
+  type NewRecord,
+  type OperationStartedRecord,
+  type ProvisionedEntry,
+  type RecordQuery,
+  type SessionCreateOptions,
+  type SessionMetadata,
+  type SessionRepo,
+  type SessionStats,
+  type SessionStorage,
+} from "@earendil-works/pi-agent-core";
 
-import type { KvStore } from "./kv.ts";
+import type { KvStore } from "@saku/store";
 import { type SessionMutation, SessionState } from "./session-state.ts";
 
 export interface DoSessionMetadata extends SessionMetadata {
@@ -127,7 +147,12 @@ export class DoSessionStorage implements SessionStorage<DoSessionMetadata> {
     return this.enqueue(async () => {
       this.state.validateNewLane(lane);
       this.state.validateTarget(at);
-      const mutation: SessionMutation = { kind: "lane", seq: this.state.nextSequence, lane, leafId: at };
+      const mutation: SessionMutation = {
+        kind: "lane",
+        seq: this.state.nextSequence,
+        lane,
+        leafId: at,
+      };
       await this.appendMutation(mutation);
       this.state.applyMutation(mutation);
     });
@@ -137,13 +162,21 @@ export class DoSessionStorage implements SessionStorage<DoSessionMetadata> {
     return this.enqueue(async () => {
       this.state.requireLane(lane);
       this.state.validateTarget(to);
-      const mutation: SessionMutation = { kind: "lane", seq: this.state.nextSequence, lane, leafId: to };
+      const mutation: SessionMutation = {
+        kind: "lane",
+        seq: this.state.nextSequence,
+        lane,
+        leafId: to,
+      };
       await this.appendMutation(mutation);
       this.state.applyMutation(mutation);
     });
   }
 
-  appendEntry<TEntry extends Entry>(newEntry: ProvisionedEntry<TEntry>, lane: string): Promise<TEntry> {
+  appendEntry<TEntry extends Entry>(
+    newEntry: ProvisionedEntry<TEntry>,
+    lane: string,
+  ): Promise<TEntry> {
     return this.enqueue(async () => {
       const parentId = this.state.requireLane(lane);
       this.state.validateUnusedId(newEntry.id);
@@ -164,7 +197,8 @@ export class DoSessionStorage implements SessionStorage<DoSessionMetadata> {
     return this.enqueue(async () => {
       this.state.requireLane(newRecord.lane);
       this.state.validateUnusedId(newRecord.id);
-      const currentOpenOperationId = this.state.findOpenOperations(newRecord.lane, { limit: 1 })[0]?.id;
+      const currentOpenOperationId = this.state.findOpenOperations(newRecord.lane, { limit: 1 })[0]
+        ?.id;
       if (newRecord.type === "operation_started" && currentOpenOperationId !== undefined) {
         throw new SessionError(
           "storage",
@@ -192,7 +226,9 @@ export class DoSessionStorage implements SessionStorage<DoSessionMetadata> {
     return structuredClone(this.state.findEntries(query));
   }
 
-  async findEntriesOnBranch(query: EntryQuery & BranchBounds & { start: string }): Promise<Entry[]> {
+  async findEntriesOnBranch(
+    query: EntryQuery & BranchBounds & { start: string },
+  ): Promise<Entry[]> {
     return structuredClone(this.state.findEntriesOnBranch(query));
   }
 
@@ -204,7 +240,10 @@ export class DoSessionStorage implements SessionStorage<DoSessionMetadata> {
     return structuredClone(this.state.findRecords(query));
   }
 
-  async findOpenOperations(lane: string, options?: { limit?: number }): Promise<OperationStartedRecord[]> {
+  async findOpenOperations(
+    lane: string,
+    options?: { limit?: number },
+  ): Promise<OperationStartedRecord[]> {
     return structuredClone(this.state.findOpenOperations(lane, options));
   }
 
@@ -218,7 +257,12 @@ export class DoSessionStorage implements SessionStorage<DoSessionMetadata> {
 
   setName(name: string): Promise<void> {
     return this.enqueue(async () => {
-      const mutation: SessionMutation = { kind: "fact", seq: this.state.nextSequence, fact: "name", name };
+      const mutation: SessionMutation = {
+        kind: "fact",
+        seq: this.state.nextSequence,
+        fact: "name",
+        name,
+      };
       await this.appendMutation(mutation);
       this.state.applyMutation(mutation);
     });
@@ -275,7 +319,11 @@ export class DoSessionStorage implements SessionStorage<DoSessionMetadata> {
 }
 
 const mutationSeq = (mutation: SessionMutation): number =>
-  mutation.kind === "entry" ? mutation.entry.seq : mutation.kind === "record" ? mutation.record.seq : mutation.seq;
+  mutation.kind === "entry"
+    ? mutation.entry.seq
+    : mutation.kind === "record"
+      ? mutation.record.seq
+      : mutation.seq;
 
 /**
  * The repo over one KvStore (one thread's namespace). Sessions live flat
@@ -300,14 +348,18 @@ export class DoSessionRepo implements SessionRepo<DoSessionMetadata> {
       id,
       createdAt: Date.now(),
       cwd: "",
-      ...(options.parentSessionId === undefined ? {} : { parentSessionId: options.parentSessionId }),
+      ...(options.parentSessionId === undefined
+        ? {}
+        : { parentSessionId: options.parentSessionId }),
     };
     const storage = await DoSessionStorage.create(prefixedKv(this.kv, prefix), metadata);
     return new Session(storage);
   }
 
   async open(metadata: DoSessionMetadata): Promise<Session<DoSessionMetadata>> {
-    return new Session(await DoSessionStorage.load(prefixedKv(this.kv, sessionPrefix(metadata.id)), metadata.id));
+    return new Session(
+      await DoSessionStorage.load(prefixedKv(this.kv, sessionPrefix(metadata.id)), metadata.id),
+    );
   }
 
   async list(): Promise<DoSessionMetadata[]> {
@@ -329,8 +381,14 @@ export class DoSessionRepo implements SessionRepo<DoSessionMetadata> {
     }
   }
 
-  async fork(source: DoSessionMetadata, options: ForkOptions & SessionCreateOptions): Promise<Session<DoSessionMetadata>> {
-    const sourceStorage = await DoSessionStorage.load(prefixedKv(this.kv, sessionPrefix(source.id)), source.id);
+  async fork(
+    source: DoSessionMetadata,
+    options: ForkOptions & SessionCreateOptions,
+  ): Promise<Session<DoSessionMetadata>> {
+    const sourceStorage = await DoSessionStorage.load(
+      prefixedKv(this.kv, sessionPrefix(source.id)),
+      source.id,
+    );
     const childId = options.id ?? randomUUID().replaceAll("-", "");
     validateSessionId(childId);
     const childPrefix = sessionPrefix(childId);
@@ -346,7 +404,11 @@ export class DoSessionRepo implements SessionRepo<DoSessionMetadata> {
     };
     await this.kv.put(`${childPrefix}meta`, encode(JSON.stringify(metadata)));
     const mutations = sourceStorage.forkMutations(options);
-    const childStorage = new DoSessionStorage(prefixedKv(this.kv, childPrefix), metadata, new SessionState());
+    const childStorage = new DoSessionStorage(
+      prefixedKv(this.kv, childPrefix),
+      metadata,
+      new SessionState(),
+    );
     for (const mutation of mutations) {
       await childStorage.appendMutation(mutation);
       childStorage.applyMutations([mutation]);
