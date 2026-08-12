@@ -20,17 +20,11 @@ export default defineConfig({
     },
     overrides: [
       {
-        files: ["packages/{wire,worker,cli,tui}/**"],
+        files: ["packages/{wire,worker,cli}/**"],
         env: { node: true },
       },
       {
         files: ["packages/cli/**"],
-        rules: {
-          "no-console": "off",
-        },
-      },
-      {
-        files: ["packages/demo/**", "packages/foldtui/**"],
         rules: {
           "no-console": "off",
         },

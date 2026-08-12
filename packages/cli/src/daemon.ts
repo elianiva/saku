@@ -49,8 +49,10 @@ export const spawnDaemon = async (): Promise<number> => {
   const logFd = await open(getWorkerLogPath(), "a");
   const child = spawn(process.execPath, [entry], {
     detached: true,
-    stdio: ["ignore", logFd, logFd],
+    stdio: ["ignore", logFd.fd, logFd.fd],
   });
+  // The child holds the inherited fd; drop the parent's handle.
+  void logFd.close();
   child.unref();
   return child.pid ?? 0;
 };

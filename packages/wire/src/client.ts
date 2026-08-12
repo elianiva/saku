@@ -88,7 +88,7 @@ export class WireError extends Schema.TaggedError<WireError>()("WireError", {
 export interface WorkerClientOptions {
   readonly socketPath: string;
   readonly token: string;
-  readonly role: "tui" | "cli";
+  readonly role: "cli";
   /** Reconnect with backoff after unexpected disconnects. Default: false. */
   readonly reconnect?: boolean;
   /** Per-command timeout. Default: 30s (pi's RpcClient habit). */
@@ -157,7 +157,7 @@ const connectSocket = (socketPath: string): Effect.Effect<Socket, WireError, nev
  */
 export class WorkerClient {
   readonly socketPath: string;
-  readonly role: "tui" | "cli";
+  readonly role: "cli";
   private readonly token: string;
   private readonly reconnectEnabled: boolean;
   private readonly requestTimeoutMs: number;

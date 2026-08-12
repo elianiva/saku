@@ -10,7 +10,7 @@ import { Schema as S } from "effect";
 
 export const Hello = S.TaggedStruct("hello", {
   token: S.String,
-  role: S.Literals(["tui", "cli"]),
+  role: S.Literals(["cli"]),
 });
 export type Hello = S.Schema.Type<typeof Hello>;
 

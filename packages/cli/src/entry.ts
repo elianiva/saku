@@ -2,19 +2,15 @@
 /**
  * The saku CLI: steward of the local worker and its threads.
  *
- *   saku                           open the TUI (thread list)
  *   saku daemon start|stop|status  worker lifecycle
  *   saku list                      list threads
  *   saku new <name> [--cwd <dir>]  create a thread (--mode local|sandbox|any)
- *   saku open [thread]             launch the TUI (thread-list or a thread)
  *   saku rm <thread>               delete a thread and its session
  *
  * The daemon auto-starts on demand for every command except `daemon stop`.
  */
 
-import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
-import { Effect } from "effect";
+import { Effect, Result } from "effect";
 
 import {
   WorkerClient,
@@ -115,17 +111,6 @@ const cmdNew = async (name: string | undefined, cwd: string, mode: ThreadMode | 
   }
 };
 
-const cmdOpen = async (threadArg: string | undefined): Promise<void> => {
-  await ensureDaemon();
-  const entry = fileURLToPath(import.meta.resolve("@saku/tui/entry"));
-  const args = threadArg === undefined ? [entry] : [entry, threadArg];
-  // OpenTUI's native FFI backend requires --experimental-ffi on Node.
-  const child = spawn(process.execPath, ["--experimental-ffi", ...args], { stdio: "inherit", env: process.env });
-  child.on("exit", (code) => {
-    process.exit(code ?? 0);
-  });
-};
-
 const cmdRm = async (threadArg: string | undefined): Promise<void> => {
   if (threadArg === undefined) {
     fail(new Error("saku rm requires a thread: saku rm <id-or-name>"));
@@ -134,12 +119,11 @@ const cmdRm = async (threadArg: string | undefined): Promise<void> => {
   try {
     const threads = await run(client.listThreads(), "list threads");
     const resolved = resolveThread(threads, threadArg ?? "");
-    if (resolved.ok) {
-      await run(client.deleteThread(resolved.thread.id), "delete thread");
-      console.log(`deleted ${shortThreadId(resolved.thread.id)} (${resolved.thread.name})`);
-      return;
+    if (Result.isFailure(resolved)) {
+      fail(new Error(resolved.failure));
     }
-    fail(new Error(resolved.message));
+    await run(client.deleteThread(resolved.success.id), "delete thread");
+    console.log(`deleted ${shortThreadId(resolved.success.id)} (${resolved.success.name})`);
   } finally {
     client.disconnect();
   }
@@ -181,11 +165,9 @@ const usage = (): void => {
   console.log(`saku — local software factory
 
 usage:
-  saku                      open the TUI
   saku daemon <start|stop|status>
   saku list
   saku new <name> [--cwd <dir>] [--mode local|sandbox|any]
-  saku open [thread]
   saku rm <thread>
 `);
 };
@@ -220,9 +202,6 @@ const main = async (): Promise<void> => {
       await cmdNew(name, cwd, mode);
       return;
     }
-    case "open":
-      await cmdOpen(rest[0]);
-      return;
     case "rm":
     case "remove":
     case "delete":
@@ -232,9 +211,6 @@ const main = async (): Promise<void> => {
     case "--help":
     case "-h":
       usage();
-      return;
-    case undefined:
-      await cmdOpen(undefined);
       return;
     default:
       console.error(`saku: unknown command "${command}"`);

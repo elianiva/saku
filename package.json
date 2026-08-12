@@ -8,12 +8,9 @@
     "typecheck": "turbo typecheck",
     "test": "turbo test",
     "dev": "turbo dev",
-    "demo": "node --experimental-ffi packages/demo/src/entry.ts",
-    "smoke": "node --experimental-ffi packages/demo/scripts/smoke.ts",
     "fmt": "vp fmt",
     "lint": "vp lint",
     "check": "vp check",
-    "smoke:worker": "node packages/worker/smoke.ts",
     "saku": "node packages/cli/src/entry.ts"
   },
   "devDependencies": {

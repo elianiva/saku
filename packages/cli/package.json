@@ -21,7 +21,6 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@saku/tui": "workspace:*",
     "@saku/wire": "workspace:*",
     "@saku/worker": "workspace:*",
     "effect": "4.0.0-beta.106"
