@@ -182,11 +182,16 @@ program). Box API key + LLM provider keys are deployment secrets.
 
 ## 9. Deferred
 
-- The foldkit frontend (next pass — the wire is its contract).
-- Skills management UX (versioning, sharing, live reload), workspace admin push.
+- The console's later slices: model/thinking pickers, settings, skills UX
+  (versioning, sharing, live reload), diff review, terminals and portals,
+  prompt queueing (send-while-busy), the deployed hub's login/cookie minting,
+  mobile polish. The first console slice (M5) is built and driven against the
+  real worker; these are the docks it reserved.
 - Repo provisioning at thread creation; template boxes.
 - Passkeys/accounts (v1 is a shared deployment secret).
 - Box `desktop` (VNC) and preview URLs.
+- Multi-machine registry UI (a factory hub enumerating every machine's
+  threads).
 
 ## 10. Notes
 

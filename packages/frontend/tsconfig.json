@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.saku.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["vite/client"],
+    "paths": {
+      "@saku/wire": ["../wire/src/index.ts"]
+    }
+  },
+  "include": ["src/**/*"]
+}

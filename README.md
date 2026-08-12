@@ -61,8 +61,18 @@ The durable spine's milestones M0–M4 are built and tested:
   register/attach/exec through the hub DO, and `delete_thread` teardown.
   The celld twin (`celld/wrangler.jsonc` + `index.ts`) ships the same code
   for self-hosted fleets — see `packages/deploy/celld/README.md`.
+- **M5 — the console (first slice)**: `packages/frontend` — the foldkit
+  console (humanlayer-style, pseudo-TUI, rose pine light): the thread rail
+  (list, quick start, auto-title, state/mode/env glyphs, delete), the thread
+  pane (entry trail — messages, tool calls, tool results, model errors —
+  live run with streaming message + tool activity, abort), and the composer.
+  Driven by the real worker over the wire; the dev loop boots against the
+  local daemon via the vite `/__saku` bootstrap. The worker's `SAKU_FAKE_MODEL`
+  scripted provider keeps the loop credit-free.
 
-Remaining: the foldkit frontend — see the plan.
+Remaining: the console's later slices (model picker, settings, diff review,
+terminals/portals, skills UX, queueing semantics, the deployed hub's login)
+— see the plan.
 
 ## Prerequisites
 

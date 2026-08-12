@@ -16,10 +16,12 @@
 import { dirname } from "node:path";
 import { Context, Effect, FileSystem, Layer, Result, Schema } from "effect";
 import {
+  createAssistantMessageEventStream,
   createModels,
   createProvider,
   type Api,
   type ApiKeyAuth,
+  type AssistantMessage,
   type AuthInteraction,
   type Credential,
   type CredentialInfo,
@@ -259,6 +261,106 @@ const apiKeyAuthFor = (
 };
 
 // ---------------------------------------------------------------------------
+// The scripted provider (SAKU_FAKE_MODEL)
+// ---------------------------------------------------------------------------
+
+const FAKE_PROVIDER = "saku-fake";
+const FAKE_MODEL = "test";
+
+const fakeText = (): AssistantMessage => ({
+  role: "assistant",
+  content: [{ type: "text", text: "Hello from the saku-fake model." }],
+  api: "pi-messages",
+  provider: FAKE_PROVIDER,
+  model: FAKE_MODEL,
+  usage: {
+    input: 10,
+    output: 5,
+    cacheRead: 0,
+    cacheWrite: 0,
+    totalTokens: 15,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  },
+  stopReason: "stop",
+  timestamp: Date.now(),
+});
+
+/** The first answer of a turn asks for a bash tool call; the follow-up is
+ * text-only, so a turn ends after one real tool round-trip. */
+const fakeToolCall = (): AssistantMessage => ({
+  role: "assistant",
+  content: [
+    { type: "text", text: "Let me look around first." },
+    {
+      type: "toolCall",
+      id: "fake-tool-1",
+      name: "bash",
+      arguments: { command: "sleep 2 && echo fake-tool-ran" },
+    },
+  ],
+  api: "pi-messages",
+  provider: FAKE_PROVIDER,
+  model: FAKE_MODEL,
+  usage: {
+    input: 10,
+    output: 5,
+    cacheRead: 0,
+    cacheWrite: 0,
+    totalTokens: 15,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  },
+  stopReason: "stop",
+  timestamp: Date.now(),
+});
+
+const fakeApiKeyAuth = (): ApiKeyAuth => ({
+  name: "API key",
+  login: async () => ({ type: "api_key" as const, key: "fake" }),
+  check: async () => ({ type: "api_key" as const, source: "configured API key" }),
+  resolve: async () => ({ auth: { apiKey: "fake" }, source: "configured API key" }),
+});
+
+/** The scripted provider: a canned stream, no network. First stream call of
+ * a turn carries the tool call, later calls answer with text. */
+const fakeProvider = (): Provider => {
+  const model: Model<Api> = {
+    id: FAKE_MODEL,
+    name: "test",
+    api: "pi-messages",
+    provider: FAKE_PROVIDER,
+    baseUrl: "https://fake.invalid",
+    reasoning: false,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 128_000,
+    maxTokens: 16_384,
+  };
+  let calls = 0;
+  const streams: ProviderStreams = {
+    stream: () => {
+      const stream = createAssistantMessageEventStream();
+      calls += 1;
+      stream.end(calls % 2 === 1 ? fakeToolCall() : fakeText());
+      return stream;
+    },
+    streamSimple: () => {
+      const stream = createAssistantMessageEventStream();
+      calls += 1;
+      stream.end(calls % 2 === 1 ? fakeToolCall() : fakeText());
+      return stream;
+    },
+  };
+  return createProvider({
+    id: FAKE_PROVIDER,
+    name: "saku-fake",
+    baseUrl: "https://fake.invalid",
+    auth: { apiKey: fakeApiKeyAuth() },
+    models: [model],
+    api: streams,
+  });
+};
+
+// ---------------------------------------------------------------------------
 // The catalog service
 // ---------------------------------------------------------------------------
 
@@ -317,6 +419,13 @@ export const ModelCatalogLive = (
             `models.json: skipping provider "${providerId}": ${String(error)}`,
           );
         }
+      }
+
+      // The scripted provider (dev fixture): a canned stream that answers
+      // every prompt — no paid model needed to exercise the full loop. On
+      // when SAKU_FAKE_MODEL is set in the daemon's environment.
+      if (env.SAKU_FAKE_MODEL !== undefined && env.SAKU_FAKE_MODEL !== "") {
+        models.setProvider(fakeProvider());
       }
 
       return ModelCatalog.of({

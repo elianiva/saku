@@ -82,6 +82,7 @@ import {
   type SkillCommand,
   type ThreadCommand,
   type ThreadInfo,
+  type ThreadState,
   type WireEvent,
 } from "@saku/wire";
 
@@ -557,6 +558,20 @@ export const makeSakuDaemon = (options: {
               new SessionHostError({ message: `unknown thread: ${threadId}` }),
             );
           }
+          // The registry's setState is an in-memory ref (not persisted, not
+          // broadcast); consoles must hear working → idle, so wrap it: every
+          // state push fans a thread_changed out (CONTEXT.md: Thread — state
+          // is a channel every console reads).
+          const broadcastState = (threadId: string, state: ThreadState): Effect.Effect<void, never> =>
+            registry.setState(threadId, state).pipe(
+              Effect.flatMap(() => infoOf(threadId)),
+              Effect.flatMap((info) => emitThreadChanged(info)),
+              Effect.catch(() => Effect.void),
+            );
+          const registryWithBroadcast: ThreadRegistryShape = {
+            ...registry,
+            setState: (threadId, state) => broadcastState(threadId, state),
+          };
           const host = yield* SessionHost.create({
             threadId,
             record: record.value,
@@ -567,7 +582,7 @@ export const makeSakuDaemon = (options: {
             // over the wire (RemoteEnv).
             env: new LocalEnv(record.value.cwd, fs),
             catalog,
-            registry,
+            registry: registryWithBroadcast,
             sink: (event) => {
               void Effect.runFork(emitSessionEvent(threadId, event));
             },

@@ -1071,6 +1071,30 @@ export const SessionHost = {
 };
 
 /** Pi's agent events: durable appends on message_end, then wire projection. */
+
+/**
+ * pi's durable-session check rejects explicit `undefined`-valued keys, and
+ * pi's tool results legitimately carry them (a bash result without
+ * truncation has `details: undefined`). pi's JSONL backends silently dropped
+ * such keys on stringify; the DO-storage repo made the loss explicit. Drop
+ * them up front so the committed payload matches what JSONL would have
+ * stored (ADR 0001: the trail is the wire's contract, not the memory shape).
+ */
+const stripUndefined = <A>(value: A): A => {
+  if (Array.isArray(value)) {
+    return value.map((item) => stripUndefined(item)) as A;
+  }
+  if (typeof value === "object" && value !== null) {
+    const next: Record<string, unknown> = {};
+    for (const [key, candidate] of Object.entries(value)) {
+      if (candidate !== undefined) next[key] = stripUndefined(candidate);
+    }
+    return next as A;
+  }
+  return value;
+};
+
+/** Pi's agent events: durable appends on message_end, then wire projection. */
 const handleAgentEvent = (
   deps: HostDeps,
   event: AgentEvent,
@@ -1084,7 +1108,7 @@ const handleAgentEvent = (
         message.role === "toolResult"
       ) {
         const entryId = yield* Effect.tryPromise({
-          try: () => deps.session.appendMessage(message),
+          try: () => deps.session.appendMessage(stripUndefined(message)),
           catch: toSessionHostError,
         });
         const entry = yield* Effect.tryPromise({

@@ -1,0 +1,80 @@
+@import "tailwindcss";
+
+/*
+ * Saku console — humanlayer-style, pseudo-TUI, rose pine light.
+ *
+ * A terminal-shaped web console: monospace everything, hard corners, 1px
+ * borders on an off-white base, uppercase tracking labels, and glyph-driven
+ * status (● ○ ◐ ▸ ◇ ✕). The rose pine light palette is the only color:
+ * pine for the live accent, gold for working, love for errors.
+ */
+@theme {
+  --color-base: #faf4ed;
+  --color-surface: #fffaf3;
+  --color-overlay: #f2e9de;
+  --color-line: #e6ddce;
+  --color-muted: #9893a5;
+  --color-subtle: #797593;
+  --color-text: #575279;
+  --color-love: #b4637a;
+  --color-gold: #ea9d34;
+  --color-rose: #d7827e;
+  --color-pine: #286983;
+  --color-foam: #56949f;
+  --color-iris: #907aa9;
+
+  --font-mono: ui-monospace, "JetBrains Mono", "SF Mono", "Cascadia Code", "Fira Code",
+    Menlo, Consolas, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-base);
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  color-scheme: light;
+}
+
+::selection {
+  background: var(--color-overlay);
+}
+
+/* Thin, squared scrollbars. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-muted) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--color-muted);
+  border: 2px solid var(--color-base);
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* The streaming cursor (live region). */
+@keyframes saku-blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+.saku-cursor {
+  animation: saku-blink 1s step-end infinite;
+}

@@ -24,9 +24,21 @@ export default defineConfig({
         env: { node: true },
       },
       {
+        // The frontend runs in the browser; its vite config runs in node.
+        files: ["packages/frontend/**"],
+        env: { browser: true },
+      },
+      {
         // Process entries log to a file the CLI/systemd captures; the
-        // worker daemon is grandfathered under the node env block.
-        files: ["packages/cli/**", "packages/env/src/entry.ts", "packages/deploy/scripts/**"],
+        // worker daemon is grandfathered under the node env block. The
+        // frontend's vite config legitimately reads the node environment.
+        files: [
+          "packages/cli/**",
+          "packages/env/src/entry.ts",
+          "packages/deploy/scripts/**",
+          "packages/frontend/vite.config.ts",
+        ],
+        env: { node: true },
         rules: {
           "no-console": "off",
         },
