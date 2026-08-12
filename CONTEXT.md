@@ -50,6 +50,10 @@ _Avoid_: executor, shell, runtime, sandbox (that's the mode name)
 The hands process: one binary, one protocol. Runs on the user's machine (local mode — reachable from anywhere through the hub's relay) or inside a Box (sandbox mode — exposed through the box's private URL). Executes the pi tool surface (`read`/`bash`/`edit`/`write`) against the thread's workspace.
 _Avoid_: agent, worker, executor
 
+**Relay**:
+The hub's outbound bridge: the env daemon dials the hub (relay_hello, deployment secret) and a worker's `RemoteEnv` attaches (relay_attach); the hub pipes the two sockets — the env protocol flows through uninterpreted. The user's machine needs no open ports. Box envs skip the relay: the worker connects to the `host --private` URL directly.
+_Avoid_: tunnel, vpn, proxy
+
 **Box**:
 The remote sandbox provider (ascii.dev). One Box per thread, lazily provisioned by the hub on first use, stopped by **idle-stop** between uses. A Box is a disposable machine: snapshot on stop, resume in seconds.
 _Avoid_: sandbox (the mode name), orb (amp's word), VM

@@ -1,16 +1,20 @@
 /**
  * Local execution environment (local-env.ts): `ExecutionEnv` (pi's
  * `FileSystem & Shell`) implemented over the `FileSystem` service — the
- * "local" half of a thread's hands policy. The daemon runs on the user's
- * machine, so the environment is the machine itself — files under the
- * thread's cwd, shell commands in that cwd.
+ * engine of the env daemon (ADR 0003). The daemon runs on the user's
+ * machine or in a Box, so the environment is that machine: files under the
+ * connection's workspace (`cwd`), shell commands in that cwd.
  *
  * Pi's contract is promise-based (`readTextFile` → `Promise<Result<...>>`),
  * so every operation here runs the `FileSystem` service's effects with
  * `Effect.runPromise` at this promise boundary — failures are captured with
  * `Effect.result`, never try/catch. No node:fs import, no `*Sync` variant.
- * The service instance is injected by the caller (the session host's
- * `create`, which yields `FileSystem.FileSystem`).
+ * The service instance is injected by the caller (the env daemon, which
+ * yields `FileSystem.FileSystem`).
+ *
+ * Relative paths resolve against the workspace root (`cwd`), never the
+ * process cwd — the daemon may be spawned from anywhere, and in a Box the
+ * workspace is the box's workdir.
  */
 
 import { spawn } from "node:child_process";
@@ -79,8 +83,11 @@ const mapFileError = (path: string, error: unknown): FileError => {
 const asError = (error: unknown): Error | undefined =>
   error instanceof Error ? error : error === undefined ? undefined : new Error(String(error));
 
-/** Resolve a path against the process cwd (node's `resolve` handles absolutes). */
-const absolute = (path: string): string => resolve(path);
+/**
+ * Resolve a path against the workspace root: absolute paths pass through
+ * (node's `resolve` handles them), relative ones anchor at the workspace.
+ */
+const absolute = (cwd: string, path: string): string => resolve(cwd, path);
 
 const toBytes = (content: string | Uint8Array): Uint8Array =>
   typeof content === "string" ? new TextEncoder().encode(content) : content;
@@ -107,21 +114,22 @@ const describeEntry = async (fs: FileSystem.FileSystem, path: string): Promise<F
   };
 };
 
-/** Local filesystem + shell. One instance per thread host. */
+/** Local filesystem + shell. One instance per env connection. */
 export class LocalEnv implements ExecutionEnv {
   readonly cwd: string;
   private readonly fs: FileSystem.FileSystem;
   /** Extra environment variables merged over the daemon's own environment. */
   readonly extraEnv: Record<string, string>;
 
-  constructor(cwd: string, fs: FileSystem.FileSystem, extraEnv: Record<string, string> = {}) {
-    this.cwd = cwd;
+  /** `cwd` is the workspace root; null falls back to the daemon's own cwd. */
+  constructor(cwd: string | null, fs: FileSystem.FileSystem, extraEnv: Record<string, string> = {}) {
+    this.cwd = cwd ?? process.cwd();
     this.fs = fs;
     this.extraEnv = extraEnv;
   }
 
   absolutePath(path: string): Promise<PiResult<string, FileError>> {
-    return Promise.resolve(ok(absolute(path)));
+    return Promise.resolve(ok(absolute(this.cwd, path)));
   }
 
   joinPath(parts: string[]): Promise<PiResult<string, FileError>> {
@@ -130,7 +138,7 @@ export class LocalEnv implements ExecutionEnv {
 
   async readTextFile(path: string): Promise<PiResult<string, FileError>> {
     const outcome = await Effect.runPromise(
-      this.fs.readFileString(absolute(path)).pipe(Effect.result),
+      this.fs.readFileString(absolute(this.cwd, path)).pipe(Effect.result),
     );
     return Result.isSuccess(outcome)
       ? ok(outcome.success)
@@ -142,7 +150,7 @@ export class LocalEnv implements ExecutionEnv {
     options?: { maxLines?: number; abortSignal?: AbortSignal },
   ): Promise<PiResult<string[], FileError>> {
     const outcome = await Effect.runPromise(
-      this.fs.readFileString(absolute(path)).pipe(Effect.result),
+      this.fs.readFileString(absolute(this.cwd, path)).pipe(Effect.result),
     );
     if (Result.isFailure(outcome)) {
       if (options?.abortSignal?.aborted) {
@@ -158,7 +166,9 @@ export class LocalEnv implements ExecutionEnv {
     path: string,
     signal?: AbortSignal,
   ): Promise<PiResult<Uint8Array, FileError>> {
-    const outcome = await Effect.runPromise(this.fs.readFile(absolute(path)).pipe(Effect.result));
+    const outcome = await Effect.runPromise(
+      this.fs.readFile(absolute(this.cwd, path)).pipe(Effect.result),
+    );
     if (Result.isFailure(outcome)) {
       if (signal?.aborted) {
         return err(new FileError("aborted", `aborted reading ${path}`, path));
@@ -169,7 +179,7 @@ export class LocalEnv implements ExecutionEnv {
   }
 
   async writeFile(path: string, content: string | Uint8Array): Promise<PiResult<void, FileError>> {
-    const target = absolute(path);
+    const target = absolute(this.cwd, path);
     const outcome = await Effect.runPromise(
       this.fs
         .makeDirectory(dirname(target), { recursive: true })
@@ -186,7 +196,7 @@ export class LocalEnv implements ExecutionEnv {
   }
 
   async appendFile(path: string, content: string | Uint8Array): Promise<PiResult<void, FileError>> {
-    const target = absolute(path);
+    const target = absolute(this.cwd, path);
     const outcome = await Effect.runPromise(
       Effect.scoped(
         this.fs.makeDirectory(dirname(target), { recursive: true }).pipe(
@@ -203,7 +213,9 @@ export class LocalEnv implements ExecutionEnv {
     destinationPath: string,
   ): Promise<PiResult<void, FileError>> {
     const outcome = await Effect.runPromise(
-      this.fs.rename(absolute(sourcePath), absolute(destinationPath)).pipe(Effect.result),
+      this.fs
+        .rename(absolute(this.cwd, sourcePath), absolute(this.cwd, destinationPath))
+        .pipe(Effect.result),
     );
     return Result.isSuccess(outcome)
       ? ok(undefined)
@@ -212,7 +224,7 @@ export class LocalEnv implements ExecutionEnv {
 
   async fileInfo(path: string): Promise<PiResult<FileInfo, FileError>> {
     const outcome = await Effect.runPromise(
-      Effect.promise(() => describeEntry(this.fs, absolute(path))).pipe(Effect.result),
+      Effect.promise(() => describeEntry(this.fs, absolute(this.cwd, path))).pipe(Effect.result),
     );
     return Result.isSuccess(outcome)
       ? ok(outcome.success)
@@ -220,7 +232,7 @@ export class LocalEnv implements ExecutionEnv {
   }
 
   async listDir(path: string, signal?: AbortSignal): Promise<PiResult<FileInfo[], FileError>> {
-    const dir = absolute(path);
+    const dir = absolute(this.cwd, path);
     const outcome = await Effect.runPromise(this.fs.readDirectory(dir).pipe(Effect.result));
     if (Result.isFailure(outcome)) {
       if (signal?.aborted) {
@@ -239,14 +251,18 @@ export class LocalEnv implements ExecutionEnv {
   }
 
   async canonicalPath(path: string): Promise<PiResult<string, FileError>> {
-    const outcome = await Effect.runPromise(this.fs.realPath(absolute(path)).pipe(Effect.result));
+    const outcome = await Effect.runPromise(
+      this.fs.realPath(absolute(this.cwd, path)).pipe(Effect.result),
+    );
     return Result.isSuccess(outcome)
       ? ok(outcome.success)
       : err(mapFileError(path, outcome.failure));
   }
 
   async exists(path: string): Promise<PiResult<boolean, FileError>> {
-    const outcome = await Effect.runPromise(this.fs.exists(absolute(path)).pipe(Effect.result));
+    const outcome = await Effect.runPromise(
+      this.fs.exists(absolute(this.cwd, path)).pipe(Effect.result),
+    );
     return Result.isSuccess(outcome)
       ? ok(outcome.success)
       : err(mapFileError(path, outcome.failure));
@@ -258,7 +274,7 @@ export class LocalEnv implements ExecutionEnv {
   ): Promise<PiResult<void, FileError>> {
     const outcome = await Effect.runPromise(
       this.fs
-        .makeDirectory(absolute(path), { recursive: options?.recursive ?? true })
+        .makeDirectory(absolute(this.cwd, path), { recursive: options?.recursive ?? true })
         .pipe(Effect.result),
     );
     return Result.isSuccess(outcome) ? ok(undefined) : err(mapFileError(path, outcome.failure));
@@ -270,7 +286,7 @@ export class LocalEnv implements ExecutionEnv {
   ): Promise<PiResult<void, FileError>> {
     const outcome = await Effect.runPromise(
       this.fs
-        .remove(absolute(path), {
+        .remove(absolute(this.cwd, path), {
           recursive: options?.recursive ?? false,
           force: options?.force ?? false,
         })

@@ -14,7 +14,28 @@
 export { HubError, messageOf } from "./hub-error.ts";
 export { makeHubRegistry, type HubRecord, type HubRegistryShape } from "./registry.ts";
 export { makeSkillsStore, skillNameFromSource, type SkillsStoreShape } from "./skills.ts";
-export { localOnlyProvisioner, type EnvProvisioner } from "./provisioner.ts";
+export {
+  makeProvisioner,
+  boxSystemdUnit,
+  boxRunScript,
+  boxEnsureNodeCommand,
+  boxInstallCommand,
+  BOX_DAEMON_PORT,
+  BOX_ENV_DIR,
+  BOX_NODE_VERSION,
+  type EnvProvisioner,
+  type ProvisionerDeps,
+} from "./provisioner.ts";
+export {
+  makeBoxApi,
+  pollUntilReady,
+  BoxError,
+  type BoxApi,
+  type BoxInfo,
+  type BoxApiDeps,
+  type CommandResult,
+} from "./box.ts";
+export { makeHubRelay, type HubRelayShape, type RelayServerOptions } from "./relay.ts";
 export {
   type HubEventSink,
   type ThreadWorkerRef,

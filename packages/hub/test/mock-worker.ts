@@ -9,7 +9,7 @@
  * half: this fixture keeps hub tests deterministic and socket-free.
  */
 
-import { Effect } from "effect";
+import { Effect, Option } from "effect";
 import {
   GetAvailableModelsResponse,
   GetAvailableThinkingLevelsResponse,
@@ -22,13 +22,43 @@ import {
   type ThreadState,
 } from "@saku/wire";
 
-import { HubError } from "../src/index.ts";
+import type { EnvHandle } from "@saku/env";
+import { HubError, type EnvProvisioner } from "../src/index.ts";
 import type {
   HubEventSink,
   ThreadWorkerRef,
   WorkerCommandResult,
   WorkerReport,
 } from "../src/index.ts";
+
+/**
+ * A scripted provisioner for hub tests: local threads are always ready
+ * (no handle), sandbox threads succeed with a canned handle (or fail,
+ * when `fail` is set). `released` records every release call.
+ */
+export const scriptedProvisioner = (options: { fail?: boolean } = {}): EnvProvisioner & {
+  readonly released: string[];
+} => {
+  const released: string[] = [];
+  return {
+    ensure: (thread, handle) => {
+      if (thread.mode !== "sandbox") return Effect.succeed(Option.none());
+      if (options.fail === true) {
+        return Effect.fail(new HubError({ message: "sandbox provisioning failed (scripted)" }));
+      }
+      const existing: EnvHandle =
+        Option.isSome(handle)
+          ? handle.value
+          : { url: "ws://127.0.0.1:1", token: "env-token", boxId: "bx_scripted" };
+      return Effect.succeed(Option.some(existing));
+    },
+    release: (threadId) =>
+      Effect.sync(() => {
+        released.push(threadId);
+      }),
+    released,
+  };
+};
 
 /** The single model the scripted worker's catalog knows (wire test's twin). */
 export const MOCK_MODEL = { provider: "mock", id: "m1", contextWindow: 128_000, reasoning: true };

@@ -1,5 +1,5 @@
 {
-  "name": "@saku/worker",
+  "name": "@saku/env",
   "version": "0.1.0",
   "private": true,
   "files": [
@@ -11,25 +11,24 @@
       "types": "./src/index.ts",
       "import": "./src/index.ts"
     },
-    "./daemon": {
-      "types": "./src/daemon-entry.ts",
-      "import": "./src/daemon-entry.ts"
+    "./entry": {
+      "types": "./src/entry.ts",
+      "import": "./src/entry.ts"
+    },
+    "./entry-bundle": {
+      "default": "./dist/entry.bundle.js"
     }
   },
   "scripts": {
-    "build": "tsdown",
+    "build": "tsdown && tsdown --config tsdown.bundle.config.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "^0.84.1",
-    "@earendil-works/pi-ai": "^0.84.1",
     "@effect/platform-node": "4.0.0-beta.105",
-    "@saku/env": "workspace:*",
-    "@saku/store": "workspace:*",
     "@saku/wire": "workspace:*",
     "effect": "4.0.0-beta.106",
-    "effect-machine": "^0.17.1",
     "ws": "^8.18.0"
   },
   "devDependencies": {

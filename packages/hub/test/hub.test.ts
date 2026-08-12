@@ -13,7 +13,6 @@ import { GetEntriesResponse } from "@saku/wire";
 
 import {
   HubError,
-  localOnlyProvisioner,
   makeHub,
   makeHubRegistry,
   makeSkillsStore,
@@ -21,7 +20,7 @@ import {
   type HubEvent,
   type HubShape,
 } from "../src/index.ts";
-import { scriptedWorker, type ScriptedWorker } from "./mock-worker.ts";
+import { scriptedProvisioner, scriptedWorker, type ScriptedWorker } from "./mock-worker.ts";
 
 const run = <A, E extends Error>(effect: Effect.Effect<A, E, never>): Promise<A> =>
   Effect.runPromise(effect);
@@ -43,7 +42,7 @@ interface World {
   readonly events: HubEvent[];
 }
 
-const makeWorld = (provisioner: EnvProvisioner = localOnlyProvisioner): Promise<World> =>
+const makeWorld = (provisioner: EnvProvisioner = scriptedProvisioner()): Promise<World> =>
   Effect.runPromise(
     Effect.gen(function* () {
       const registry = yield* makeHubRegistry(memoryKv());
@@ -192,12 +191,12 @@ describe("makeHub — sessions and the env gate", () => {
   });
 
   it("mutating a sandbox thread fails provisioning and flips the env to error", async () => {
-    const world = await makeWorld();
+    const world = await makeWorld(scriptedProvisioner({ fail: true }));
     const thread = await run(world.hub.createThread({ name: "boxed", mode: "sandbox" }));
     await expect(
       run(world.hub.runSessionCommand(thread.id, { _tag: "prompt", text: "hi" })),
     ).rejects.toMatchObject({
-      message: "sandbox envs are not provisioned yet (the env daemon lands in M3)",
+      message: "sandbox provisioning failed (scripted)",
     });
     expect(world.worker.commands).toHaveLength(0); // never reached the worker
     const info = await run(world.hub.getThread(thread.id));
@@ -208,10 +207,7 @@ describe("makeHub — sessions and the env gate", () => {
   });
 
   it("provisions a stopped env on first touch when the provisioner succeeds", async () => {
-    const provisioner: EnvProvisioner = {
-      ensure: () => Effect.void,
-      release: () => Effect.void,
-    };
+    const provisioner = scriptedProvisioner();
     const world = await makeWorld(provisioner);
     const thread = await run(world.hub.createThread({ name: "boxed", mode: "sandbox" }));
     expect(thread.env).toBe("stopped");

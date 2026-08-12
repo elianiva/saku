@@ -29,6 +29,7 @@ import {
   spawnDaemon,
   stopDaemon,
 } from "./daemon.ts";
+import { ensureEnvConfig, ensureEnvDaemon, envStatus, readEnvUrl, stopEnvDaemon } from "./env.ts";
 
 // ---------------------------------------------------------------------------
 // Console plumbing
@@ -187,11 +188,55 @@ const cmdDaemon = (sub: string | undefined): Effect.Effect<void, Error, never> =
     }
   });
 
+const cmdEnv = (sub: string | undefined, hubUrl: string | undefined): Effect.Effect<void, Error, never> =>
+  Effect.gen(function* () {
+    switch (sub) {
+      case "start": {
+        const config = yield* ensureEnvConfig(hubUrl);
+        const status = yield* envStatus();
+        if (status.running && status.pid !== undefined) {
+          console.log(`env already running (pid ${status.pid})`);
+          return;
+        }
+        const pid = yield* ensureEnvDaemon(config);
+        const url = yield* readEnvUrl();
+        const relay =
+          config.hubUrl !== undefined ? ` (relay to ${config.hubUrl})` : "";
+        console.log(
+          `env started (pid ${pid}, ${Option.isSome(url) ? url.value : "no url"})${relay}`,
+        );
+        return;
+      }
+      case "stop": {
+        const pid = yield* stopEnvDaemon();
+        console.log(
+          Option.match(pid, {
+            onNone: () => "env not running",
+            onSome: (value) => `env stopped (pid ${value})`,
+          }),
+        );
+        return;
+      }
+      case "status": {
+        const status = yield* envStatus();
+        if (status.running) {
+          console.log(`running (pid ${status.pid}, protocol ${status.version}, cwd ${status.cwd})`);
+        } else {
+          console.log("not running");
+        }
+        return;
+      }
+      default:
+        return yield* Effect.fail(new Error("saku env <start|stop|status> [--hub <url>]"));
+    }
+  });
+
 const usage = (): void => {
   console.log(`saku — local software factory
 
 usage:
   saku daemon <start|stop|status>
+  saku env <start|stop|status> [--hub <url>]
   saku list
   saku new <name> [--cwd <dir>] [--mode local|sandbox|any]
   saku rm <thread>
@@ -217,6 +262,9 @@ const main = (): Effect.Effect<void, WireError | Error, never> =>
     switch (command) {
       case "daemon":
         yield* cmdDaemon(rest[0]);
+        return;
+      case "env":
+        yield* cmdEnv(rest[0], rest.includes("--hub") ? rest[rest.indexOf("--hub") + 1] : undefined);
         return;
       case "list":
         yield* cmdList();

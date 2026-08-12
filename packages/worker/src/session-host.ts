@@ -72,7 +72,7 @@ import {
 
 import { DoSessionRepo } from "./do-session.ts";
 import { fileKv } from "@saku/store";
-import { LocalEnv } from "./local-env.ts";
+import { LocalEnv } from "@saku/env";
 import type { ModelCatalogShape } from "./model-catalog.ts";
 import { buildTools } from "./tools.ts";
 import { RegistryError, type ThreadRecord, type ThreadRegistryShape } from "./registry.ts";

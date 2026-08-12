@@ -33,12 +33,25 @@ approval gates; hub-hosted skills).
 
 ## Status
 
-The wire (M0), the worker on DO storage (M1), and the hub (M2) are built and
-tested: the full stack is proven end to end — a wire client drives the real
-`SessionHost` through the hub over WebSockets (lazy sessions, streamed runs,
-working → idle broadcasts, auto-title, thread deletion). The durable spine's
-remaining milestones: the env daemon (M3) and the alchemy deployment on celld
-(M4) — see the plan.
+The durable spine's milestones through M3 are built and tested:
+
+- **M0 — wire**: the protocol (JSONL over WebSocket, hello/version, threads,
+  sessions, skills), the typed `makeWireClient`.
+- **M1 — worker on DO storage**: `DoSessionRepo` over the `KvStore` seam (pi's
+  own backend conformance suite passes), the `SessionHost` as an effect-machine
+  actor with lazy sessions and trail recovery.
+- **M2 — hub**: the control-plane core (`makeHub` — durable registry, worker
+  seam, skills store, env gate), the wire server, full-stack integration over
+  real WebSockets.
+- **M3 — env daemon**: `packages/env` (protocol, daemon, `RemoteEnv`, relay
+  client, Box bundle), Box provisioning through the one-shot API with a
+  `host --private` health probe, the hub relay (register/attach/pipe),
+  idle-stop, and the `saku env start|stop|status` CLI. The agent's tools
+  execute on a real env daemon through the hub's relay, and the built Box
+  bundle serves the tool surface (live-verified).
+
+Remaining: the alchemy deployment on celld (M4) and the foldkit frontend —
+see the plan.
 
 ## Prerequisites
 

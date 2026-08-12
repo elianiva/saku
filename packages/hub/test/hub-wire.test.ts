@@ -33,7 +33,7 @@ import {
   makeHubServer,
   makeSkillsStore,
 } from "../src/index.ts";
-import { scriptedWorker, type ScriptedWorker } from "./mock-worker.ts";
+import { scriptedProvisioner, scriptedWorker, type ScriptedWorker } from "./mock-worker.ts";
 
 const TEST_TOKEN = "hub-test-secret";
 
@@ -60,7 +60,7 @@ beforeEach(async () => {
         registry,
         skills,
         workerRef: worker.ref,
-        provisioner: localOnlyProvisioner,
+        provisioner: scriptedProvisioner({ fail: true }),
       });
       worker.attach(hub.events);
       const server = yield* makeHubServer({ hub, token: TEST_TOKEN }).pipe(
@@ -237,7 +237,7 @@ describe("session commands over the wire", () => {
     expect(last?.tailSeq).toBe(3);
   });
 
-  it("gates sandbox prompts: response error and env → error broadcast", async () => {
+  it("gates sandbox prompts: provisioning failure is a response error, env → error", async () => {
     const client = await connect();
     await run(client.connect());
     const changed: ThreadInfo[] = [];
@@ -247,9 +247,11 @@ describe("session commands over the wire", () => {
     const sandbox = await run(client.createThread("sandboxed", { mode: "sandbox" }));
     expect(sandbox.env).toBe("stopped");
 
+    // This suite's hub carries a failing provisioner: the prompt is refused
+    // before it reaches the worker, and the env axis flips to error.
     await expect(run(client.prompt(sandbox.id, "hi"))).rejects.toMatchObject({
       code: "command_failed",
-      message: "sandbox envs are not provisioned yet (the env daemon lands in M3)",
+      message: "sandbox provisioning failed (scripted)",
     });
     await waitFor(() => changed.some((t) => t.id === sandbox.id && t.env === "error"));
     // Reads bypass the gate: browsing a failed sandbox still answers.

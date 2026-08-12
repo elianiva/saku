@@ -32,6 +32,9 @@ importers:
 
   packages/cli:
     dependencies:
+      '@saku/env':
+        specifier: workspace:*
+        version: link:../env
       '@saku/wire':
         specifier: workspace:*
         version: link:../wire
@@ -55,8 +58,42 @@ importers:
         specifier: ^4.1.9
         version: 4.1.10(@opentelemetry/api@1.9.0)(@types/node@26.2.0)(@vitest/browser-preview@4.1.10)(vite@7.3.6(@types/node@26.2.0)(lightningcss@1.33.0)(yaml@2.9.0))
 
+  packages/env:
+    dependencies:
+      '@earendil-works/pi-agent-core':
+        specifier: ^0.84.1
+        version: 0.84.1(ws@8.21.3)(zod@4.4.3)
+      '@effect/platform-node':
+        specifier: 4.0.0-beta.105
+        version: 4.0.0-beta.105(effect@4.0.0-beta.106)(ioredis@5.11.1)
+      '@saku/wire':
+        specifier: workspace:*
+        version: link:../wire
+      effect:
+        specifier: 4.0.0-beta.106
+        version: 4.0.0-beta.106
+      ws:
+        specifier: ^8.18.0
+        version: 8.21.3
+    devDependencies:
+      '@types/ws':
+        specifier: ^8.18.0
+        version: 8.18.1
+      tsdown:
+        specifier: ^0.22.12
+        version: 0.22.14(typescript@5.9.3)
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.9
+        version: 4.1.10(@opentelemetry/api@1.9.0)(@types/node@26.2.0)(@vitest/browser-preview@4.1.10)(vite@7.3.6(@types/node@26.2.0)(lightningcss@1.33.0)(yaml@2.9.0))
+
   packages/hub:
     dependencies:
+      '@saku/env':
+        specifier: workspace:*
+        version: link:../env
       '@saku/store':
         specifier: workspace:*
         version: link:../store
@@ -156,6 +193,9 @@ importers:
       '@effect/platform-node':
         specifier: 4.0.0-beta.105
         version: 4.0.0-beta.105(effect@4.0.0-beta.106)(ioredis@5.11.1)
+      '@saku/env':
+        specifier: workspace:*
+        version: link:../env
       '@saku/store':
         specifier: workspace:*
         version: link:../store

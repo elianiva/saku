@@ -43,6 +43,7 @@ import {
 
 import { HubError, messageOf } from "./hub-error.ts";
 import type { HubEvent, HubShape } from "./hub.ts";
+import { makeHubRelay, type HubRelayShape } from "./relay.ts";
 
 const DECODE_COMMAND = Schema.decodeUnknownSync(Schema.Union([Hello, WireCommand]));
 
@@ -60,12 +61,16 @@ export interface HubServerOptions {
   readonly hub: HubShape;
   /** The deployment secret, presented in `hello` (v1: single-owner auth). */
   readonly token: string;
+  /** Serve the env relay too (the daemons' outbound registration). */
+  readonly relay?: boolean;
 }
 
 export interface HubServerShape {
-  /** The ws:// URL the hub listens on. */
+  /** The ws:// URL the hub listens on (consoles). */
   readonly url: string;
-  /** Stop the server: drop clients, unsubscribe, close the socket. */
+  /** The ws:// URL the env relay listens on (daemons + workers). */
+  readonly relayUrl: string | null;
+  /** Stop the server: drop clients, unsubscribe, close the sockets. */
   readonly close: () => Effect.Effect<void, never>;
 }
 
@@ -81,6 +86,12 @@ export const makeHubServer = (
 ): Effect.Effect<HubServerShape, Error, Scope.Scope> =>
   Effect.gen(function* () {
     const { hub, token } = options;
+    // The env relay: a separate port for M3 (the DO adapter of M4
+    // multiplexes both behind the deployment's domain).
+    const relay: Option.Option<HubRelayShape> =
+      options.relay === true
+        ? Option.some(yield* makeHubRelay({ token }))
+        : Option.none();
     const clientsRef = yield* Ref.make<ReadonlySet<Client>>(new Set());
     const closedRef = yield* Ref.make(false);
     const serverRef = yield* Ref.make<Option.Option<WebSocketServer>>(Option.none());
@@ -307,6 +318,9 @@ export const makeHubServer = (
             return Effect.void;
           });
         }
+        if (Option.isSome(relay)) {
+          yield* relay.value.close();
+        }
       });
 
     // -- startup -------------------------------------------------------------
@@ -337,5 +351,9 @@ export const makeHubServer = (
     const address = server.address();
     const url =
       address !== null && typeof address !== "string" ? `ws://127.0.0.1:${address.port}` : "";
-    return { url, close };
+    return {
+      url,
+      relayUrl: Option.isSome(relay) ? relay.value.url : null,
+      close,
+    };
   });

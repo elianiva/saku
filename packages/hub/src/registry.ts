@@ -20,6 +20,7 @@
 
 import { randomUUID } from "node:crypto";
 import { Effect, Option, Ref } from "effect";
+import type { EnvHandle } from "@saku/env";
 import type { ThreadEnvState, ThreadInfo, ThreadMode, ThreadState } from "@saku/wire";
 
 import { HubError } from "./hub-error.ts";
@@ -41,6 +42,8 @@ export interface HubRecord {
   sessionId: string | null;
   /** The env axis: persisted, because it outlives processes (idle-stop). */
   env: ThreadEnvState;
+  /** The persisted env handle (url + token + box id); null before provisioning. */
+  envHandle: EnvHandle | null;
 }
 
 export interface HubRegistryShape {
@@ -60,6 +63,11 @@ export interface HubRegistryShape {
   readonly setEnv: (
     threadId: string,
     env: ThreadEnvState,
+  ) => Effect.Effect<Option.Option<HubRecord>, HubError>;
+  /** Persist the env handle (survives hub restarts: a stopped Box stays stopped). */
+  readonly setEnvHandle: (
+    threadId: string,
+    handle: EnvHandle | null,
   ) => Effect.Effect<Option.Option<HubRecord>, HubError>;
   /** Volatile lifecycle state, pushed by the worker (not persisted). */
   readonly setState: (threadId: string, state: ThreadState) => Effect.Effect<void, never>;
@@ -163,6 +171,7 @@ export const makeHubRegistry = (kv: KvStore): Effect.Effect<HubRegistryShape, Hu
             sessionId: null,
             // A Box is not provisioned until the first prompt (lazy, ADR 0003).
             env: input.mode === "sandbox" ? "stopped" : "ready",
+            envHandle: null,
           };
           yield* persist(kv, record);
           yield* Ref.update(recordsRef, (records) => new Map(records).set(record.id, record));
@@ -172,6 +181,8 @@ export const makeHubRegistry = (kv: KvStore): Effect.Effect<HubRegistryShape, Hu
         }),
       update: (threadId, patch_) => patch(threadId, (record) => ({ ...record, ...patch_ })),
       setEnv: (threadId, env) => patch(threadId, (record) => ({ ...record, env })),
+      setEnvHandle: (threadId, envHandle) =>
+        patch(threadId, (record) => ({ ...record, envHandle })),
       setState: (threadId, state) =>
         Ref.update(statesRef, (states) => new Map(states).set(threadId, state)),
       setTailSeq: (threadId, tailSeq) =>

@@ -125,8 +125,28 @@ program). Box API key + LLM provider keys are deployment secrets.
   real-SessionHost stack (in-process worker ref wrapping the actual
   `SessionHost` — lazy sessions, streamed runs, sessionId back-fill,
   auto-title reporting, trail deletion).
-- **M3 — env daemon**: local host + relay registration; Box bootstrap via the one-shot
-  API; idle-stop end to end.
+- **M3 — env daemon** ✅: `packages/env` — the hands of the spine. The
+  env protocol (hello/version, pi's `ExecutionEnv` surface verbatim,
+  streamed `exec`, abort, error classes), the daemon (`makeEnvDaemon`,
+  token-gated WS, one `LocalEnv` per connection workspace), `RemoteEnv`
+  (the worker's `ExecutionEnv` over the wire), the relay client
+  (outbound registration, reconnect loop), and the Box bundle
+  (`tsdown.bundle.config.ts` → `dist/entry.bundle.js`, one self-contained
+  file the provisioner uploads). The hub grew: the Box API client
+  (`makeBoxApi`, injectable fetch), the real provisioner (`makeProvisioner`
+  — lazy create, bootstrap via the one-shot commands/files API, systemd
+  unit + `host --private` wrapper, health probe before `ready`, resume
+  with URL re-read), the relay server (`makeHubRelay` — register, attach,
+  pipe, with frame buffering for attach-before-register), the persisted
+  `EnvHandle` on the registry, and idle-stop (arm on idle / disarm on
+  activity / fire → release → env `stopped`, broadcast). The CLI is
+  `saku env start|stop|status [--hub]` — the daemon spawn, identity in
+  `~/.saku/env.json`, status probed over the env protocol. 156 tests
+  (10 env, 48 hub incl. provisioner/relay/idle-stop over real sockets,
+  78 worker incl. the real SessionHost over RemoteEnv — the agent's
+  `bash` executes on the daemon and its stdout lands in the trail);
+  live-verified: the built bundle serves the tool surface, and the CLI
+  lifecycle works end to end.
 - **M4 — deploy + docs**: alchemy program on celld, README, polish.
 
 ## 9. Deferred
@@ -142,6 +162,15 @@ program). Box API key + LLM provider keys are deployment secrets.
 - `effect-machine` (0.17.1) is patched (`patches/effect-machine@0.17.1.patch`): its
   runtime still calls `Schema.TaggedErrorClass`, renamed to `Schema.TaggedError` in
   effect 4.0.0-beta.105+; the patch is a one-file rename. No shims elsewhere.
+- M3 serves the relay on its own WebSocket port (the wire server and the relay
+  server are separate); the alchemy DO adapter (M4) multiplexes both behind the
+  single domain.
+- M3 hosts the idle-stop timer in the hub (armed on idle worker reports, reset by
+  activity); the worker DO alarm of M4 replaces the timer, same semantics — the
+  ADR's "the worker arms, the hub pulls" is preserved.
+- Local threads still use the in-process `LocalEnv` in the transitional daemon;
+  the relayed local env (a cloud worker driving the user's machine through the
+  hub) is exercised by tests and lands with the DO worker in M4.
 
 ## 11. Verification items (not blockers)
 

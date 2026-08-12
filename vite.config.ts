@@ -24,7 +24,9 @@ export default defineConfig({
         env: { node: true },
       },
       {
-        files: ["packages/cli/**"],
+        // Process entries log to a file the CLI/systemd captures; the
+        // worker daemon is grandfathered under the node env block.
+        files: ["packages/cli/**", "packages/env/src/entry.ts"],
         rules: {
           "no-console": "off",
         },

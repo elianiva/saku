@@ -13,7 +13,6 @@
 export { ensureAuthToken, readAuthToken, ensureSakuDirs } from "./auth.ts";
 export { isNotFound, memoryKv, fileKv, type KvStore, type KvEntry } from "@saku/store";
 export { DoSessionRepo, DoSessionStorage, type DoSessionMetadata } from "./do-session.ts";
-export { LocalEnv } from "./local-env.ts";
 export {
   ModelCatalog,
   ModelCatalogLive,

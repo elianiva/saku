@@ -19,13 +19,13 @@ import { memoryKv } from "@saku/store";
 import { makeWireClient, type ThreadInfo, type WireClient } from "@saku/wire";
 
 import {
-  localOnlyProvisioner,
   makeHub,
   makeHubRegistry,
   makeHubServer,
   makeSkillsStore,
 } from "../src/index.ts";
 import { inProcessWorker } from "./in-process-worker.ts";
+import { scriptedProvisioner } from "./mock-worker.ts";
 import {
   assistantMessage,
   fakeCatalog,
@@ -78,7 +78,7 @@ beforeEach(async () => {
         registry,
         skills,
         workerRef: worker.ref,
-        provisioner: localOnlyProvisioner,
+        provisioner: scriptedProvisioner(),
       });
       worker.attach(hub.events);
       const server = yield* makeHubServer({ hub, token: TEST_TOKEN }).pipe(
@@ -201,15 +201,16 @@ describe("hub + real SessionHost over the wire", () => {
     expect(trailExists).toBe(false);
   });
 
-  it("rejects a prompt on a sandbox thread (no provisioner in M2)", async () => {
+  it("provisions a sandbox thread on first prompt (scripted provisioner)", async () => {
     const client = await connect();
     await run(client.connect());
     const thread = await run(client.createThread("boxed", { mode: "sandbox" }));
     expect(thread.env).toBe("stopped");
-    await expect(run(client.prompt(thread.id, "hi"))).rejects.toMatchObject({
-      code: "command_failed",
-    });
+    // The scripted provisioner succeeds; the real SessionHost runs the run
+    // with its stub stream fn, then the thread settles back to idle.
+    await run(client.prompt(thread.id, "hi"));
     const info = await run(client.getThread(thread.id));
-    expect(info.env).toBe("error");
+    expect(info.env).toBe("ready");
+    expect(info.state).toBe("idle");
   });
 });
