@@ -22,15 +22,9 @@ import {
 } from "@saku/wire";
 
 import { CliError } from "./cli-error.ts";
-import {
-  daemonStatus,
-  ensureDaemon,
-  readWorkerToken,
-  readWorkerUrl,
-  spawnDaemon,
-  stopDaemon,
-} from "./daemon.ts";
-import { ensureEnvConfig, ensureEnvDaemon, envStatus, readEnvUrl, stopEnvDaemon } from "./env.ts";
+import { workerLifecycle } from "./daemon.ts";
+import { ensureEnvConfig, envLifecycle } from "./env.ts";
+import { ensure, spawn, status, stop } from "./lifecycle.ts";
 
 // ---------------------------------------------------------------------------
 // Console plumbing
@@ -41,29 +35,20 @@ import { ensureEnvConfig, ensureEnvDaemon, envStatus, readEnvUrl, stopEnvDaemon 
  * probe first, spawn only when nothing answers, then connect. Every command
  * that talks to the worker goes through here, so a plain `saku list` boots
  * the local stack automatically, and an existing daemon is reused.
+ *
+ * The lifecycle's ensure already read the published url and token (it
+ * waited for the daemon's probe to answer, which proves both files exist),
+ * so connect uses that connection info — the storage layout stays in the
+ * lifecycle module.
  */
 const connect = (): Effect.Effect<WireClient, CliError | WireError, never> =>
   Effect.gen(function* () {
-    yield* ensureDaemon();
-    const url = yield* readWorkerUrl();
-    if (Option.isNone(url)) {
-      return yield* Effect.fail(
-        new CliError({
-          code: "missing_url",
-          message: "the worker did not publish its url",
-        }),
-      );
-    }
-    const token = yield* readWorkerToken();
-    if (Option.isNone(token)) {
-      return yield* Effect.fail(
-        new CliError({
-          code: "missing_token",
-          message: "auth token not created by the worker",
-        }),
-      );
-    }
-    const client = yield* makeWireClient({ url: url.value, token: token.value, role: "cli" });
+    const connection = yield* ensure(workerLifecycle);
+    const client = yield* makeWireClient({
+      url: connection.url,
+      token: connection.token,
+      role: "cli",
+    });
     yield* client.connect();
     return client;
   });
@@ -170,21 +155,21 @@ const cmdRm = (threadArg: string | undefined): Effect.Effect<void, WireError | C
     yield* client.disconnect();
   });
 
-const cmdDaemon = (sub: string | undefined): Effect.Effect<void, Error, never> =>
+const cmdDaemon = (sub: string | undefined): Effect.Effect<void, CliError, never> =>
   Effect.gen(function* () {
     switch (sub) {
       case "start": {
-        const status = yield* daemonStatus();
-        if (status.running && status.pid !== undefined) {
-          console.log(`already running (pid ${status.pid})`);
+        const current = yield* status(workerLifecycle);
+        if (current.running && current.pid !== undefined) {
+          console.log(`already running (pid ${current.pid})`);
           return;
         }
-        const pid = yield* spawnDaemon();
+        const pid = yield* spawn(workerLifecycle);
         console.log(`started (pid ${pid})`);
         return;
       }
       case "stop": {
-        const pid = yield* stopDaemon();
+        const pid = yield* stop(workerLifecycle);
         console.log(
           Option.match(pid, {
             onNone: () => "not running",
@@ -194,9 +179,9 @@ const cmdDaemon = (sub: string | undefined): Effect.Effect<void, Error, never> =
         return;
       }
       case "status": {
-        const status = yield* daemonStatus();
-        if (status.running) {
-          console.log(`running (pid ${status.pid}, wire ${status.version})`);
+        const current = yield* status(workerLifecycle);
+        if (current.running) {
+          console.log(`running (pid ${current.pid}, wire ${current.version})`);
         } else {
           console.log("not running");
         }
@@ -209,29 +194,33 @@ const cmdDaemon = (sub: string | undefined): Effect.Effect<void, Error, never> =
     }
   });
 
-const cmdEnv = (
-  sub: string | undefined,
-  hubUrl: string | undefined,
-): Effect.Effect<void, Error, never> =>
+const cmdEnv = (sub: string | undefined, hubUrl: string | undefined): Effect.Effect<void, CliError, never> =>
   Effect.gen(function* () {
     switch (sub) {
       case "start": {
-        const config = yield* ensureEnvConfig(hubUrl);
-        const status = yield* envStatus();
-        if (status.running && status.pid !== undefined) {
-          console.log(`env already running (pid ${status.pid})`);
+        const config = yield* ensureEnvConfig(hubUrl).pipe(
+          Effect.mapError(
+            (error) =>
+              new CliError({
+                code: "env_config",
+                message: `failed to write the env config: ${error instanceof Error ? error.message : String(error)}`,
+                cause: error,
+              }),
+          ),
+        );
+        const lifecycle = envLifecycle(hubUrl);
+        const current = yield* status(lifecycle);
+        if (current.running && current.pid !== undefined) {
+          console.log(`env already running (pid ${current.pid})`);
           return;
         }
-        const pid = yield* ensureEnvDaemon(config);
-        const url = yield* readEnvUrl();
+        const connection = yield* ensure(lifecycle);
         const relay = config.hubUrl !== undefined ? ` (relay to ${config.hubUrl})` : "";
-        console.log(
-          `env started (pid ${pid}, ${Option.isSome(url) ? url.value : "no url"})${relay}`,
-        );
+        console.log(`env started (pid ${connection.pid}, ${connection.url})${relay}`);
         return;
       }
       case "stop": {
-        const pid = yield* stopEnvDaemon();
+        const pid = yield* stop(envLifecycle());
         console.log(
           Option.match(pid, {
             onNone: () => "env not running",
@@ -241,9 +230,9 @@ const cmdEnv = (
         return;
       }
       case "status": {
-        const status = yield* envStatus();
-        if (status.running) {
-          console.log(`running (pid ${status.pid}, protocol ${status.version}, cwd ${status.cwd})`);
+        const current = yield* status(envLifecycle());
+        if (current.running) {
+          console.log(`running (pid ${current.pid}, protocol ${current.version}, cwd ${current.cwd})`);
         } else {
           console.log("not running");
         }
@@ -272,7 +261,7 @@ usage:
 // Dispatch
 // ---------------------------------------------------------------------------
 
-const main = (): Effect.Effect<void, WireError | Error, never> =>
+const main = (): Effect.Effect<void, WireError | CliError, never> =>
   Effect.gen(function* () {
     const args = process.argv.slice(2);
     const command = args[0];
