@@ -20,7 +20,7 @@
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
-import { Effect, FileSystem, Option, Result } from "effect";
+import { Data, Effect, FileSystem, Option, Result } from "effect";
 import {
   ExecutionError,
   FileError,
@@ -81,7 +81,11 @@ const mapFileError = (path: string, error: unknown): FileError => {
 };
 
 const asError = (error: unknown): Error | undefined =>
-  error instanceof Error ? error : error === undefined ? undefined : new Error(String(error));
+  error instanceof Error
+    ? error
+    : error === undefined
+      ? undefined
+      : new Data.Error({ message: String(error) });
 
 /**
  * Resolve a path against the workspace root: absolute paths pass through
@@ -242,7 +246,11 @@ export class LocalEnv implements ExecutionEnv {
 
   async fileInfo(path: string): Promise<PiResult<FileInfo, FileError>> {
     const outcome = await Effect.runPromise(
-      Effect.promise(() => describeEntry(this.fs, absolute(this.cwd, path))).pipe(Effect.result),
+      // describeEntry is total; a rejection would be a defect (orDie).
+      Effect.tryPromise(() => describeEntry(this.fs, absolute(this.cwd, path))).pipe(
+        Effect.orDie,
+        Effect.result,
+      ),
     );
     return Result.isSuccess(outcome)
       ? ok(outcome.success)

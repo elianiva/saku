@@ -11,6 +11,8 @@
  * - toolResult: `{ role: "toolResult", toolCallId, toolName, content, isError }`
  */
 
+import { Result } from "effect";
+
 import type { MessageProjection } from "./projection.ts";
 
 export const asString = (value: unknown): string => (typeof value === "string" ? value : "");
@@ -86,15 +88,20 @@ export const messageToolResult = (message: MessageProjection): ToolResultRow | n
 
 // -- previews ---------------------------------------------------------------
 
+/**
+ * One-line JSON of an unknown value, falling back to `String(value)` when
+ * it cannot be stringified (circular refs). `Result.try` at the sync
+ * stringify point (house style: no try/catch).
+ */
+const jsonLine = (value: unknown): string => {
+  const raw = Result.try(() => (typeof value === "string" ? value : JSON.stringify(value)));
+  return Result.isSuccess(raw) ? raw.success : String(value);
+};
+
 /** A one-line JSON preview of tool arguments, truncated to the head. */
 export const argsPreview = (value: unknown): string => {
   if (value === undefined) return "";
-  let raw: string;
-  try {
-    raw = typeof value === "string" ? value : JSON.stringify(value);
-  } catch {
-    raw = String(value);
-  }
+  const raw = jsonLine(value);
   return raw.length > 240 ? `${raw.slice(0, 240)}…` : raw;
 };
 
@@ -106,12 +113,7 @@ export const tail = (text: string, limit: number): string =>
 export const stringifyLive = (value: unknown): string => {
   if (value === undefined) return "";
   if (typeof value === "string") return tail(value, 1200);
-  let raw: string;
-  try {
-    raw = JSON.stringify(value);
-  } catch {
-    raw = String(value);
-  }
+  const raw = jsonLine(value);
   return raw.length > 400 ? `${raw.slice(0, 400)}…` : raw;
 };
 

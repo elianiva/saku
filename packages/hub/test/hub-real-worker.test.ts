@@ -11,7 +11,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { NodeFileSystem } from "@effect/platform-node";
-import { Effect, Exit, FileSystem, Scope } from "effect";
+import { Effect, Exit, FileSystem, Schema, Scope } from "effect";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 import { getThreadTrailRoot } from "@saku/worker";
@@ -103,6 +103,11 @@ afterEach(async () => {
 const connect = (): Promise<WireClient> =>
   run(makeWireClient({ url: world.url, token: TEST_TOKEN, role: "cli" }));
 
+/** A polling assertion that gave up (the async fork hadn't landed in time). */
+class TestError extends Schema.TaggedError<TestError>()("TestError", {
+  message: Schema.String,
+}) {}
+
 /** Poll until `fn` holds (hub event forks + agent stream land asynchronously). */
 const waitFor = async (fn: () => boolean | Promise<boolean>, timeoutMs = 3000): Promise<void> => {
   const deadline = Date.now() + timeoutMs;
@@ -110,7 +115,7 @@ const waitFor = async (fn: () => boolean | Promise<boolean>, timeoutMs = 3000): 
     if (fn()) return;
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
-  throw new Error("condition not met");
+  throw new TestError({ message: "condition not met" });
 };
 
 describe("hub + real SessionHost over the wire", () => {

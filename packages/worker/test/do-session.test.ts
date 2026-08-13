@@ -75,7 +75,9 @@ describe("durability", () => {
           const kv = yield* KvStore;
           return yield* Effect.tryPromise(() => run(kv, fs)).pipe(
             Effect.ensuring(
-              fs.remove(root, { recursive: true, force: true }).pipe(Effect.catch(() => Effect.void)),
+              fs
+                .remove(root, { recursive: true, force: true })
+                .pipe(Effect.catch(() => Effect.void)),
             ),
           );
         }).pipe(Effect.provide(KvStore.file(fs, root)));

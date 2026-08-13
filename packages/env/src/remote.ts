@@ -48,7 +48,28 @@ import {
   type Result as PiResult,
   type ShellExecOptions,
 } from "@earendil-works/pi-agent-core";
+import { Schema } from "effect";
 import { decodeFrame, parseFrame, serializeFrame } from "@saku/wire";
+
+/**
+ * A connection-level failure of the env protocol (connect/hello), tagged
+ * so callers can distinguish a rejected hello from a timeout or a socket
+ * failure instead of matching message text.
+ */
+export class EnvConnectionError extends Schema.TaggedError<EnvConnectionError>()(
+  "EnvConnectionError",
+  {
+    kind: Schema.Literals([
+      "already_connected",
+      "socket_error",
+      "closed_before_hello",
+      "hello_timeout",
+      "rejected",
+    ]),
+    message: Schema.String,
+    cause: Schema.optional(Schema.Unknown),
+  },
+) {}
 
 /**
  * The socket surface RemoteEnv needs: `on` listeners for the four
@@ -82,7 +103,9 @@ export const workerdSocket = (ws: WorkerdWebSocketLike): SocketLike => ({
     if (event === "message") {
       ws.addEventListener("message", (ev) => listener(ev.data));
     } else if (event === "error") {
-      ws.addEventListener("error", () => listener(new Error("websocket error")));
+      ws.addEventListener("error", () =>
+        listener(new EnvConnectionError({ kind: "socket_error", message: "websocket error" })),
+      );
     } else if (event === "close") {
       ws.addEventListener("close", () => listener(undefined));
     } else {
@@ -173,7 +196,7 @@ export class RemoteEnv implements ExecutionEnv {
   private pending = new Map<string, Pending>();
   private seq = 0;
   private onceHello:
-    | { resolve: (hello: EnvHelloOk) => void; reject: (error: Error) => void }
+    | { resolve: (hello: EnvHelloOk) => void; reject: (error: EnvConnectionError) => void }
     | undefined;
   private onceHelloTimer: NodeJS.Timeout | undefined;
 
@@ -190,10 +213,14 @@ export class RemoteEnv implements ExecutionEnv {
 
   /** Open the connection, attach through the relay if configured, hello. */
   connect(): Promise<EnvHelloOk> {
-    if (this.socket !== null) return Promise.reject(new Error("already connected"));
+    if (this.socket !== null) {
+      return Promise.reject(
+        new EnvConnectionError({ kind: "already_connected", message: "already connected" }),
+      );
+    }
     return new Promise<EnvHelloOk>((resolve, reject) => {
       let settled = false;
-      const fail = (error: Error): void => {
+      const fail = (error: EnvConnectionError): void => {
         if (settled) return;
         settled = true;
         if (this.onceHelloTimer !== undefined) clearTimeout(this.onceHelloTimer);
@@ -223,13 +250,26 @@ export class RemoteEnv implements ExecutionEnv {
       socket.on("error", (error) => {
         const message = error instanceof Error ? error.message : String(error);
         this.log(`env connection error: ${message}`);
-        fail(new Error(`env connection failed: ${message}`));
+        fail(
+          new EnvConnectionError({
+            kind: "socket_error",
+            message: `env connection failed: ${message}`,
+            cause: error,
+          }),
+        );
       });
       socket.on("close", () => {
         const wasConnected = this.connected;
         this.socket = null;
         this.failAll(CONNECTION_LOST);
-        if (!wasConnected) fail(new Error("env connection closed before hello"));
+        if (!wasConnected) {
+          fail(
+            new EnvConnectionError({
+              kind: "closed_before_hello",
+              message: "env connection closed before hello",
+            }),
+          );
+        }
       });
       this.onceHello = {
         resolve: (hello) => {
@@ -246,7 +286,7 @@ export class RemoteEnv implements ExecutionEnv {
         },
       };
       this.onceHelloTimer = setTimeout(() => {
-        fail(new Error("env hello timed out"));
+        fail(new EnvConnectionError({ kind: "hello_timeout", message: "env hello timed out" }));
         this.socket?.close();
       }, 15_000);
     });
@@ -265,7 +305,7 @@ export class RemoteEnv implements ExecutionEnv {
     }
     if (frame._tag === "env_error") {
       const message = (frame as unknown as EnvErrorFrame).message;
-      this.onceHello?.reject(new Error(message));
+      this.onceHello?.reject(new EnvConnectionError({ kind: "rejected", message }));
       return;
     }
     if (frame._tag === "env_stream") {

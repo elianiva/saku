@@ -12,14 +12,15 @@
  *
  * Startup failures are defects by design, matching the `makeSakuDaemon`
  * contract: a server that cannot bind fails hard (see the
- * `resume(Effect.fail(new Error("no listening address")))` below) — the
- * process's fatal path, never a silent half-up server.
+ * `resume(Effect.fail(new HubError({ kind: "startup", … })))` below) —
+ * the process's fatal path, never a silent half-up server.
  */
 
 import { WebSocketServer, type WebSocket } from "ws";
 import { Effect, Option, Ref, Scope } from "effect";
 
 import type { HubShape } from "./hub.ts";
+import { HubError } from "./hub-error.ts";
 import { makeWireCore, type WireCoreShape } from "./wire-core.ts";
 import { makeHubRelay, type HubRelayShape } from "./relay.ts";
 import type { SocketLike } from "./socket.ts";
@@ -53,13 +54,27 @@ export interface HubServerShape {
  */
 export const makeHubServer = (
   options: HubServerOptions,
-): Effect.Effect<HubServerShape, Error, Scope.Scope> =>
+): Effect.Effect<HubServerShape, HubError, Scope.Scope> =>
   Effect.gen(function* () {
     const { hub, token } = options;
     // The env relay: a separate port for M3 (the DO adapter of M4
     // multiplexes both behind the deployment's domain).
     const relay: Option.Option<HubRelayShape> =
-      options.relay === true ? Option.some(yield* makeHubRelay({ token })) : Option.none();
+      options.relay === true
+        ? Option.some(
+            yield* makeHubRelay({ token }).pipe(
+              // The relay's raw socket failures are hub startup failures.
+              Effect.mapError(
+                (error) =>
+                  new HubError({
+                    kind: "startup",
+                    message: `relay: ${error instanceof Error ? error.message : String(error)}`,
+                    cause: error,
+                  }),
+              ),
+            ),
+          )
+        : Option.none();
     const core: WireCoreShape = yield* makeWireCore({ hub, token });
     const closedRef = yield* Ref.make(false);
     const serverRef = yield* Ref.make<Option.Option<WebSocketServer>>(Option.none());
@@ -90,19 +105,21 @@ export const makeHubServer = (
 
     // -- startup -------------------------------------------------------------
 
-    const server = yield* Effect.callback<WebSocketServer, Error>((resume) => {
+    const server = yield* Effect.callback<WebSocketServer, HubError>((resume) => {
       const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
       server.on("connection", (socket) => {
         void Effect.runFork(Effect.scoped(core.runConnection(asSocketLike(socket))));
       });
       server.on("error", (error) => {
         log(`server error: ${error.message}`);
-        resume(Effect.fail(error));
+        resume(
+          Effect.fail(new HubError({ kind: "startup", message: error.message, cause: error })),
+        );
       });
       server.on("listening", () => {
         const address = server.address();
         if (address === null || typeof address === "string") {
-          resume(Effect.fail(new Error("no listening address")));
+          resume(Effect.fail(new HubError({ kind: "startup", message: "no listening address" })));
           return;
         }
         const url = `ws://127.0.0.1:${address.port}`;

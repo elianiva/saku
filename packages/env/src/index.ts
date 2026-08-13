@@ -56,6 +56,7 @@ export {
 } from "./daemon.ts";
 export {
   RemoteEnv,
+  EnvConnectionError,
   workerdSocket,
   workerdSocketFactory,
   type SocketLike,

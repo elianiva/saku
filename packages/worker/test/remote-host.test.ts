@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { NodeFileSystem } from "@effect/platform-node";
-import { Effect, Exit, FileSystem, Scope } from "effect";
+import { Effect, Exit, FileSystem, Schema, Scope } from "effect";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 import { makeEnvDaemon, nodeSocket, RemoteEnv, type EnvDaemonShape } from "@saku/env";
@@ -143,6 +143,11 @@ describe("SessionHost over RemoteEnv", () => {
   });
 });
 
+/** A polling assertion that gave up (the host machine hadn't moved in time). */
+class TestError extends Schema.TaggedError<TestError>()("TestError", {
+  message: Schema.String,
+}) {}
+
 /** Wait for the host's lifecycle tag (the machine moves asynchronously). */
 const waitForState = async (host: SessionHost, state: string, timeoutMs = 5000): Promise<void> => {
   const deadline = Date.now() + timeoutMs;
@@ -150,5 +155,5 @@ const waitForState = async (host: SessionHost, state: string, timeoutMs = 5000):
     if (host.threadState === state) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  throw new Error(`host state ${state} not reached; last: ${host.threadState}`);
+  throw new TestError({ message: `host state ${state} not reached; last: ${host.threadState}` });
 };

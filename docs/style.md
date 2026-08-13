@@ -19,11 +19,14 @@ every call in `Effect.tryPromise`, the file backend wrapped every call in
 
 **Do**: `yield*` Effect services everywhere; `runPromise` once at the seam or the
 process edge; make a non-pi static constructor an Effect (`AuthJsonCredentialStore.load`
-is an Effect, not `static async`).
+is an Effect, not `static async`); at a platform promise edge (DO storage,
+socket factories), cross with `Effect.tryPromise` + `Effect.orDie`/`catch` mapping
+(see `KvStore.doStorage`).
 
-**Don't**: write saku code in `async`/`Promise`; wrap saku's own async code in
-`Effect.promise` — there is none; `Effect.tryPromise(() => Effect.runPromise(...))`
-is always wrong.
+**Don't**: write saku code in `async`/`Promise`; `Effect.promise` anywhere — it
+dies on rejection without a tagged error (the rejection is a raw defect nobody
+can `catchTag`); wrap saku's own async code in `Effect.promise` — there is none;
+`Effect.tryPromise(() => Effect.runPromise(...))` is always wrong.
 
 ## Schemas over casts
 
@@ -61,18 +64,25 @@ failure site is a fresh string, so callers can only match on message text.
 `WireError` (the house model) and opencode's `Git.OperationError` discriminate
 with literals, so callers `catchTag`.
 
-**Do**: a `kind` literal per failure class (model/auth/compaction/busy…); every
-construction site passes one; `catchTag` at call sites; keep `message` + optional
-`cause`.
+**Do**: a `kind`/`code` literal per failure class (model/auth/compaction/busy…);
+every construction site passes one — the discriminator is **required** in the
+schema (`HubError`, `DaemonError`, `SessionHostError`, `CliError` are the
+migrated set; `RegistryError.op` stays optional only where no literal fits, e.g.
+the thread DO's create refusal); keep `message` + optional `cause`; `catchTag`
+at call sites.
 
 **Don't**: fresh strings per failure site; a `catch: () => undefined` that swallows
 a typed error (see the old `rpc.ts` idle-stop disarm); catch-all `Effect.catch`
 where the failure set is known.
 
-**Staging**: `kind` may be `optional` while construction sites outside your file
-haven't migrated yet (`HubError`, `SessionHostError` still do this — the daemon's
-`new SessionHostError({ message: ... })` at `worker/src/daemon.ts:336` is the last
-straggler). Make it required when the last site migrates.
+**No plain `Error`**: `new Error(...)` / `throw new TypeError(...)` /
+`Effect.die(new Error(...))` are banned — even at process edges and in tests.
+The CLI's usage failures are `CliError` (it is the process edge, not an excuse
+for a plain Error); startup failures are tagged (`DaemonError` code `startup`,
+`HubError` kind `startup`); test polling helpers throw a per-file `TestError`;
+fakes throw `FakeError`. The only foreign errors that ride through are pi's own
+`SessionError`/`FileError`/`ExecutionError` at pi's promise seam and the
+platform's raw errors passed through untouched (`resume(Effect.fail(wsError))`).
 
 ## Services
 
@@ -112,35 +122,40 @@ never` hand-rolls; casting an event to its expected type before folding.
 ## Effect idioms
 
 - **Polling/waits** — `Effect.retry` + `Schedule` (`spaced`/`exponential`/`upTo`).
-  *Why*: the CLI had four `for (i < 100) { sleep; probe }` loops and `box.ts`
+  _Why_: the CLI had four `for (i < 100) { sleep; probe }` loops and `box.ts`
   polled by self-recursion against a `Date.now()` deadline — imperative timing that
-  `Clock` can't fake in tests. *Don't*: `for` loops with sleeps, `Date.now()`
+  `Clock` can't fake in tests. _Don't_: `for` loops with sleeps, `Date.now()`
   deadlines, `pollUntilReady`-style recursion.
 - **Independent iterations** — `Effect.forEach(..., { concurrency: "unbounded" })`.
-  *Why*: `listThreads` and `listFiles` serialized independent reads in `for`
-  loops. *Don't*: sequential loops over independent work.
-- **Equality** — `Schema.equivalence(T)`. *Why*: `applyReport` compared states with
+  _Why_: `listThreads` and `listFiles` serialized independent reads in `for`
+  loops. _Don't_: sequential loops over independent work.
+- **Equality** — `Schema.equivalence(T)`. _Why_: `applyReport` compared states with
   `JSON.stringify(before) !== JSON.stringify(after)` — order-sensitive, wasteful,
-  and wrong as an equivalence. *Don't*: stringify comparison.
-- **Listener containment** — `Result.try(() => listener(event))` + warn. *Why*:
+  and wrong as an equivalence. _Don't_: stringify comparison.
+- **Listener containment** — `Result.try(() => listener(event))` + warn. _Why_:
   the hub's `notify` used try/catch while the wire client's `emit` used
-  `Result.try` — one concept, two implementations. *Don't*: try/catch around
+  `Result.try` — one concept, two implementations. _Don't_: try/catch around
   listeners.
 - **Boundary settling** — `Effect.result` / `Effect.option` / `Effect.catchTag`.
-  *Don't*: `catch: (error) => error as Error` casts without `instanceof`
-  (passthrough: `cause instanceof Error ? cause : new Error(String(cause))`).
+  _Don't_: `catch: (error) => error as Error` casts without `instanceof`; a
+  non-Error coerced to an Error uses `new Data.Error({ message: … })`, never
+  `new Error(...)` (see `local-env.ts` `asError`).
 - **No try/catch inside Effect code** — `catchEager` for sync-effect recovery.
 
 ## Boundaries
 
 - **Isolate-cleanliness**: anything exported through `@saku/worker/isolate` must
   not import node (`fake-provider.ts` is node-clean).
-- **Plain `new Error(...)` only at process edges**: CLI usage errors (the exit
-  path), startup defects — opencode-style "plain Error at process edges".
+- **No plain `new Error(...)`, even at process edges**: the CLI's failures are
+  `CliError`; startup defects are tagged (`DaemonError`/`HubError` with
+  `startup`); a platform error that arrives already-built is passed through
+  untouched, never re-wrapped into a plain Error.
 - **DO `fetch`/`alarm` entry points are promise-shaped** — the platform seam, like
   the CLI's `Effect.runPromise(main())`. `runPromise` once at that edge; memoize
   lazy construction as a named Effect run once (`buildHubShape` + a promise cache),
-  not `await` + `Effect.runSync` mixed mid-function.
+  not `await` + `Effect.runSync` mixed mid-function. The fetch seam's try/catch
+  is the boundary that stringifies tagged errors for the wire — nothing untagged
+  is constructed there.
 - Refactors add **no new dependencies**: `effect@4.0.0-beta.106` + workspace
   packages only.
 

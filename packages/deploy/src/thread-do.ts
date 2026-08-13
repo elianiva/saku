@@ -52,6 +52,7 @@ const toSessionHostError =
   (message: string) =>
   (error: unknown): SessionHostError =>
     new SessionHostError({
+      kind: "pi_seam",
       message: `${message}: ${error instanceof Error ? error.message : String(error)}`,
       cause: error,
     });
@@ -194,13 +195,10 @@ export class SakuThreadDO {
     if (command === undefined) return jsonError("missing command");
     const record = await this.loadRecord();
     if (record === undefined) return jsonError("unknown thread");
-    const result = await Effect.runPromise(
-      this.runCommand(record, command).pipe(
-        Effect.catch((error: unknown) =>
-          Effect.fail(new Error(error instanceof Error ? error.message : String(error))),
-        ),
-      ),
-    );
+    // The tagged `CommandError` (SessionHostError | RegistryError) rejects
+    // through the boundary; the fetch catch below stringifies it for the
+    // wire.
+    const result = await Effect.runPromise(this.runCommand(record, command));
     return jsonOk({ payload: result.payload, tailSeq: result.tailSeq });
   }
 
@@ -272,11 +270,20 @@ export class SakuThreadDO {
       });
       if (handle === null) {
         return yield* Effect.fail(
-          new SessionHostError({ message: "no env handle — the hub has not provisioned an env" }),
+          new SessionHostError({
+            kind: "no_env",
+            message: "no env handle — the hub has not provisioned an env",
+          }),
         );
       }
-      const env = yield* Effect.promise(() => self.envFor(handle));
-      yield* Effect.promise(() => env.connect());
+      const env = yield* Effect.tryPromise({
+        try: () => self.envFor(handle),
+        catch: toSessionHostError("build env"),
+      });
+      yield* Effect.tryPromise({
+        try: () => env.connect(),
+        catch: toSessionHostError("connect env"),
+      });
       const registry = self.registryShape(record);
       const host = yield* SessionHost.create({
         threadId: record.id,
@@ -349,7 +356,15 @@ export class SakuThreadDO {
           if (threadId !== record.id) return Option.none();
           const next: ThreadRecord = { ...current(), ...patch };
           self.record = next;
-          yield* Effect.promise(() => self.state.storage.put(RECORD_KEY, next));
+          yield* Effect.tryPromise({
+            try: () => self.state.storage.put(RECORD_KEY, next),
+            catch: (error) =>
+              new RegistryError({
+                op: "persist",
+                message: "persist thread record",
+                cause: error,
+              }),
+          });
           if (patch.sessionId !== undefined) push({ sessionId: patch.sessionId });
           if (patch.name !== undefined) push({ name: patch.name });
           return Option.some(next);

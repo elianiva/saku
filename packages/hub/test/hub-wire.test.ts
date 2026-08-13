@@ -10,7 +10,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
-import { Effect, Exit, Result, Scope } from "effect";
+import { Effect, Exit, Result, Schema, Scope } from "effect";
 
 import { KvStore } from "@saku/store";
 import {
@@ -102,13 +102,17 @@ const frameLog = (socket: WebSocket): Promise<Array<Record<string, unknown>>> =>
 };
 
 /** Poll until `fn` holds (the hub's event forks land asynchronously). */
+class TestError extends Schema.TaggedError<TestError>()("TestError", {
+  message: Schema.String,
+}) {}
+
 const waitFor = async (fn: () => boolean, timeoutMs = 2000): Promise<void> => {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (fn()) return;
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
-  throw new Error("condition not met");
+  throw new TestError({ message: "condition not met" });
 };
 
 describe("handshake", () => {
@@ -203,7 +207,9 @@ describe("session commands over the wire", () => {
     const thread = await newThread(a, "runner");
     world.worker.onCommand((threadId, command) => {
       if (command._tag !== "prompt") {
-        return Effect.fail(new HubError({ message: `unscripted: ${command._tag}` }));
+        return Effect.fail(
+          new HubError({ kind: "command", message: `unscripted: ${command._tag}` }),
+        );
       }
       world.worker.report(threadId, { state: "working" });
       world.worker.emit(

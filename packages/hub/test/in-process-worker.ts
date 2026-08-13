@@ -79,7 +79,7 @@ export interface InProcessWorkerRef {
 const toHubError =
   (message: string) =>
   (error: unknown): HubError =>
-    new HubError({ message, cause: error });
+    new HubError({ kind: "worker", message, cause: error });
 
 /** The reads that never start a session (the hub's gate mirrors this). */
 const READ_ONLY = new Set<SessionCommand["_tag"]>([
@@ -314,7 +314,9 @@ export const inProcessWorker = (
             // Exhaustiveness: a new SessionCommand tag must be handled here.
             const exhaustive: never = command;
             void exhaustive;
-            return yield* Effect.fail(new HubError({ message: "unknown session command" }));
+            return yield* Effect.fail(
+              new HubError({ kind: "command", message: "unknown session command" }),
+            );
           }
         }
       });
@@ -384,7 +386,9 @@ export const inProcessWorker = (
               Effect.map((records) => records.get(threadId)),
             );
             if (record === undefined) {
-              return yield* Effect.fail(new HubError({ message: `unknown thread: ${threadId}` }));
+              return yield* Effect.fail(
+                new HubError({ kind: "registry", message: `unknown thread: ${threadId}` }),
+              );
             }
             const host = yield* hostFor(threadId, {
               id: record.id,

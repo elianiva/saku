@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { NodeFileSystem } from "@effect/platform-node";
-import { Effect, Exit, FileSystem, Scope } from "effect";
+import { Effect, Exit, FileSystem, Schema, Scope } from "effect";
 import {
   makeEnvDaemon,
   makeEnvRelayClient,
@@ -24,6 +24,11 @@ import {
 } from "@saku/env";
 
 import { makeHubRelay, type HubRelayShape } from "../src/index.ts";
+
+/** A polling assertion that gave up (the async fork hadn't landed in time). */
+class TestError extends Schema.TaggedError<TestError>()("TestError", {
+  message: Schema.String,
+}) {}
 
 const RELAY_TOKEN = "hub-relay-secret";
 const ENV_TOKEN = "env-token";
@@ -91,7 +96,7 @@ describe("hub relay", () => {
       if (await fn()) return;
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
-    throw new Error("condition not met");
+    throw new TestError({ message: "condition not met" });
   };
 
   it("pipes a worker's RemoteEnv to the registered daemon: hello + exec through the relay", async () => {

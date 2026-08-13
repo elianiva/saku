@@ -8,6 +8,13 @@
  * binary type is rejected — frames are text) and on Node (Buffer/ArrayBuffer).
  */
 
+import { Schema } from "effect";
+
+/** A malformed wire frame (the transport's decode failure). */
+export class WireFrameError extends Schema.TaggedError<WireFrameError>()("WireFrameError", {
+  message: Schema.String,
+}) {}
+
 /** Serialize one frame as a JSON line, ready for `ws.send`. */
 export const serializeFrame = (value: unknown): string => `${JSON.stringify(value)}\n`;
 
@@ -25,7 +32,9 @@ export const decodeFrame = (data: unknown): string => {
   if (ArrayBuffer.isView(data)) {
     return TEXT_DECODER.decode(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
   }
-  throw new TypeError("wire frames must arrive as text or binary; got a Blob");
+  throw new WireFrameError({
+    message: "wire frames must arrive as text or binary; got a Blob",
+  });
 };
 
 /** Parse one frame line; returns the decoded JSON or undefined for blank lines. */

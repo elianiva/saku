@@ -9,7 +9,7 @@
  * instead of silently passing.
  */
 
-import { Effect, Option } from "effect";
+import { Effect, Option, Schema } from "effect";
 import type {
   Api,
   AssistantMessage,
@@ -70,8 +70,13 @@ export const assistantMessage = (
   timestamp: Date.now(),
 });
 
+/** A scripted failure of the fake catalog (an unimplemented or failing surface). */
+class FakeError extends Schema.TaggedError<FakeError>()("FakeError", {
+  message: Schema.String,
+}) {}
+
 const unimplemented = (name: string): never => {
-  throw new Error(
+  throw new FakeError(
     `fake models: ${name} is not implemented — the host should not call it in these tests`,
   );
 };
@@ -92,15 +97,15 @@ export const fakeCatalog = (options: { completions?: string[] } = {}): ModelCata
     getAvailable: async () => [testModel()],
     getAuth: async () => undefined,
     login: async () => {
-      throw new Error("fake login");
+      throw new FakeError("fake login");
     },
     logout: async () => {},
     stream: () => {
-      throw new Error("fake stream");
+      throw new FakeError("fake stream");
     },
     complete: async () => assistantMessage(""),
     streamSimple: () => {
-      throw new Error("fake streamSimple");
+      throw new FakeError("fake streamSimple");
     },
     completeSimple: async (
       _model: Model<Api>,

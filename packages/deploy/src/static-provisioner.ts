@@ -23,6 +23,7 @@ export const staticProvisioner = (env: DeploymentEnv): EnvProvisioner => ({
       if (url === undefined || url.length === 0 || token === undefined || token.length === 0) {
         return yield* Effect.fail(
           new HubError({
+            kind: "provisioner",
             message: "static provisioner requires SAKU_ENV_URL and SAKU_ENV_TOKEN",
           }),
         );

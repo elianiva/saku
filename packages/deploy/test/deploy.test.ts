@@ -25,7 +25,7 @@ import * as Test from "alchemy/Test/Bun";
 import { expect } from "bun:test";
 import * as Redacted from "effect/Redacted";
 import * as Effect from "effect/Effect";
-import { Exit, FileSystem, Scope } from "effect";
+import { Exit, FileSystem, Schema, Scope } from "effect";
 import { NodeFileSystem } from "@effect/platform-node";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -35,6 +35,11 @@ import { makeEnvDaemon, makeEnvRelayClient, nodeSocket, RemoteEnv } from "@saku/
 import { makeWireClient, type WireClient } from "@saku/wire";
 
 import { makeStack } from "../alchemy.run.ts";
+
+/** A harness-level failure (no deployment url, poll deadline). */
+class DeployTestError extends Schema.TaggedError<DeployTestError>()("DeployTestError", {
+  message: Schema.String,
+}) {}
 
 const TOKEN = "deploy-test-token";
 const ENV_TOKEN = "deploy-env-token";
@@ -108,7 +113,7 @@ harnessAfterAll(
 const consoleFor = (url: string | undefined): Effect.Effect<WireClient, never, never> =>
   Effect.gen(function* () {
     if (url === undefined) {
-      return yield* Effect.die(new Error("stack deployed without a url"));
+      return yield* Effect.die(new DeployTestError({ message: "stack deployed without a url" }));
     }
     const client = yield* makeWireClient({ url: `${url}/ws`, token: TOKEN, role: "cli" });
     yield* client.connect();
@@ -132,7 +137,7 @@ const waitFor = <A>(
       const value = yield* effect;
       if (predicate(value)) return value;
       if (Date.now() > deadline) {
-        return yield* Effect.die(new Error(`timed out waiting for ${what}`));
+        return yield* Effect.die(new DeployTestError({ message: `timed out waiting for ${what}` }));
       }
       return yield* Effect.sleep(100).pipe(Effect.andThen(loop));
     });
@@ -285,7 +290,11 @@ t(
       });
       yield* Effect.tryPromise(() => env.connect());
       const outcome = yield* Effect.tryPromise(() => env.exec("printf relay-through-the-do"));
-      if (!outcome.ok) throw new Error(`exec failed: ${outcome.error.message}`);
+      if (!outcome.ok) {
+        return yield* Effect.die(
+          new DeployTestError({ message: `exec failed: ${outcome.error.message}` }),
+        );
+      }
       expect(outcome.value.stdout).toBe("relay-through-the-do");
       expect(outcome.value.exitCode).toBe(0);
       env.close();

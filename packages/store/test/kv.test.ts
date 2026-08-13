@@ -12,8 +12,10 @@ const encode = (text: string): Uint8Array => new TextEncoder().encode(text);
 const decode = (value: Uint8Array): string => new TextDecoder().decode(value);
 
 /** Run an effect that needs a KvStore against a backend layer. */
-const run = <A>(layer: Layer.Layer<KvStore>, effect: Effect.Effect<A, never, KvStore>): Promise<A> =>
-  Effect.runPromise(effect.pipe(Effect.provide(layer)));
+const run = <A>(
+  layer: Layer.Layer<KvStore>,
+  effect: Effect.Effect<A, never, KvStore>,
+): Promise<A> => Effect.runPromise(effect.pipe(Effect.provide(layer)));
 
 describe("KvStore.memory()", () => {
   it("round-trips put/get/list/delete", async () => {

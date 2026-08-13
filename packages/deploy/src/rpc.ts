@@ -9,12 +9,11 @@
  *   back through `hubRpc` (`/push` on the hub DO)
  */
 
-import { Effect } from "effect";
-import type { ResponsePayload, SessionCommand, SessionWireEvent } from "@saku/wire";
+import { Effect, Schema } from "effect";
+import type { SessionWireEvent } from "@saku/wire";
 import type { EnvHandle } from "@saku/env/remote";
 import {
   HubError,
-  type HubRecord,
   type ThreadWorkerRef,
   type WorkerCommandResult,
   type WorkerReport,
@@ -29,10 +28,19 @@ interface RpcResponse {
   readonly error?: string;
 }
 
+/** A failed DO-to-DO call: the endpoint, the status, and the hub/thread error text. */
+export class RpcError extends Schema.TaggedError<RpcError>()("RpcError", {
+  path: Schema.String,
+  message: Schema.String,
+  status: Schema.optional(Schema.Number),
+  cause: Schema.optional(Schema.Unknown),
+}) {}
+
 const toHubError =
   (context: string) =>
   (error: unknown): HubError =>
     new HubError({
+      kind: "worker",
       message: `${context}: ${error instanceof Error ? error.message : String(error)}`,
       cause: error,
     });
@@ -49,7 +57,11 @@ export const hubRpc = (env: DeploymentEnv, path: string, body: unknown): Promise
     .then(async (response) => {
       const parsed = (await response.json()) as RpcResponse;
       if (!response.ok || !parsed.ok) {
-        throw new Error(parsed.error ?? `hub rpc ${path} failed (${response.status})`);
+        throw new RpcError({
+          path,
+          message: parsed.error ?? `hub rpc ${path} failed (${response.status})`,
+          status: response.status,
+        });
       }
       return parsed;
     });
@@ -72,7 +84,11 @@ export const threadRpc = (
     .then(async (response) => {
       const parsed = (await response.json()) as RpcResponse;
       if (!response.ok || !parsed.ok) {
-        throw new Error(parsed.error ?? `thread rpc ${path} failed (${response.status})`);
+        throw new RpcError({
+          path,
+          message: parsed.error ?? `thread rpc ${path} failed (${response.status})`,
+          status: response.status,
+        });
       }
       return parsed;
     });

@@ -81,17 +81,16 @@ export interface DaemonOptions {
   urlPath?: string;
 }
 
-/** A command-level failure owned by the daemon (resolve/validation). */
+/** A command-level or startup failure owned by the daemon (resolve/validation/listen). */
 export class DaemonError extends Schema.TaggedError<DaemonError>()("DaemonError", {
-  code: Schema.optional(
-    Schema.Literals([
-      "unknown_thread",
-      "empty_name",
-      "skills_not_served",
-      "unknown_command",
-      "missing_thread_id",
-    ]),
-  ),
+  code: Schema.Literals([
+    "unknown_thread",
+    "empty_name",
+    "skills_not_served",
+    "unknown_command",
+    "startup",
+    "resolution",
+  ]),
   message: Schema.String,
   cause: Schema.optional(Schema.Unknown),
 }) {}
@@ -134,7 +133,7 @@ export const makeSakuDaemon = (options: {
   catalog: ModelCatalogShape;
   fs: FileSystem.FileSystem;
   urlPath: string;
-}): Effect.Effect<SakuDaemonShape, Error, Scope.Scope> =>
+}): Effect.Effect<SakuDaemonShape, DaemonError, Scope.Scope> =>
   Effect.gen(function* () {
     const { registry, catalog, fs, urlPath } = options;
     const hostsRef = yield* Ref.make<ReadonlyMap<string, SessionHost>>(new Map());
@@ -190,7 +189,9 @@ export const makeSakuDaemon = (options: {
         const threads = yield* registry.list();
         const resolved = resolveThread(threads, input);
         if (Result.isFailure(resolved)) {
-          return yield* Effect.fail(new DaemonError({ message: resolved.failure }));
+          return yield* Effect.fail(
+            new DaemonError({ code: "resolution", message: resolved.failure }),
+          );
         }
         return resolved.success.id;
       });
@@ -333,7 +334,10 @@ export const makeSakuDaemon = (options: {
           const record = yield* registry.get(threadId);
           if (Option.isNone(record)) {
             return yield* Effect.fail(
-              new SessionHostError({ message: `unknown thread: ${threadId}` }),
+              new SessionHostError({
+                kind: "unknown_thread",
+                message: `unknown thread: ${threadId}`,
+              }),
             );
           }
           // The registry's setState is an in-memory ref (not persisted, not
@@ -418,22 +422,36 @@ export const makeSakuDaemon = (options: {
 
     // -- startup -------------------------------------------------------------
 
-    yield* ensureSakuDirs(fs);
-    yield* ensureAuthToken(fs);
+    /** The daemon's startup phase failures (dirs/token/listen), all tagged. */
+    const startup =
+      (message: string) =>
+      (error: unknown): DaemonError =>
+        new DaemonError({
+          code: "startup",
+          message: `${message}: ${error instanceof Error ? error.message : String(error)}`,
+          cause: error,
+        });
+
+    yield* ensureSakuDirs(fs).pipe(Effect.mapError(startup("ensure saku dirs")));
+    yield* ensureAuthToken(fs).pipe(Effect.mapError(startup("ensure auth token")));
     yield* fs.remove(urlPath, { force: true }).pipe(Effect.catch(() => Effect.void));
-    const server = yield* Effect.callback<WebSocketServer, Error>((resume) => {
+    const server = yield* Effect.callback<WebSocketServer, DaemonError>((resume) => {
       const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
       server.on("connection", (socket) => {
         void Effect.runFork(Effect.scoped(core.runConnection(socket as unknown as ServerSocket)));
       });
       server.on("error", (error) => {
         log(`server error: ${error.message}`);
-        resume(Effect.fail(error));
+        resume(
+          Effect.fail(new DaemonError({ code: "startup", message: error.message, cause: error })),
+        );
       });
       server.on("listening", () => {
         const address = server.address();
         if (address === null || typeof address === "string") {
-          resume(Effect.fail(new Error("no listening address")));
+          resume(
+            Effect.fail(new DaemonError({ code: "startup", message: "no listening address" })),
+          );
           return;
         }
         const url = `ws://127.0.0.1:${address.port}`;
@@ -467,7 +485,7 @@ export const makeSakuDaemon = (options: {
  */
 export const SakuDaemonLive = (
   options: DaemonOptions = {},
-): Layer.Layer<SakuDaemon, Error, ThreadRegistry | ModelCatalog | FileSystem.FileSystem> =>
+): Layer.Layer<SakuDaemon, DaemonError, ThreadRegistry | ModelCatalog | FileSystem.FileSystem> =>
   Layer.effect(
     SakuDaemon,
     Effect.gen(function* () {
@@ -488,8 +506,9 @@ export const SakuDaemonLive = (
   );
 
 /** The daemon with its dependencies wired: what daemon-entry runs. */
-export const SakuDaemonLayer: Layer.Layer<SakuDaemon, Error> = SakuDaemonLive().pipe(
-  Layer.provide(ThreadRegistryLive),
-  Layer.provide(ModelCatalogLive()),
-  Layer.provide(NodeFileSystem.layer),
-);
+export const SakuDaemonLayer: Layer.Layer<SakuDaemon, DaemonError | RegistryError> =
+  SakuDaemonLive().pipe(
+    Layer.provide(ThreadRegistryLive),
+    Layer.provide(ModelCatalogLive()),
+    Layer.provide(NodeFileSystem.layer),
+  );

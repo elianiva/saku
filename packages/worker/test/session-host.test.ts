@@ -5,7 +5,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { NodeFileSystem } from "@effect/platform-node";
-import { Effect, FileSystem, Layer, Option } from "effect";
+import { Effect, FileSystem, Layer, Option, Schema } from "effect";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { AssistantMessage, TextContent } from "@earendil-works/pi-ai";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
@@ -37,6 +37,11 @@ const record = (): ThreadRecord => ({
 });
 
 /** Wait for the host's lifecycle tag (the machine moves asynchronously). */
+/** A polling assertion that gave up (the host machine hadn't moved in time). */
+class TestError extends Schema.TaggedError<TestError>()("TestError", {
+  message: Schema.String,
+}) {}
+
 const waitForState = async (
   host: SessionHost,
   state: HostState,
@@ -47,7 +52,7 @@ const waitForState = async (
     if (host.threadState === state) return;
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
-  throw new Error(`host state ${state} not reached; last: ${host.threadState}`);
+  throw new TestError({ message: `host state ${state} not reached; last: ${host.threadState}` });
 };
 
 /** A scripted stream that emits one assistant message immediately. */

@@ -1,32 +1,36 @@
 /**
- * The hub's error type: every command-level failure the hub can produce
+ * The hub's error type: every failure the hub can produce — command-level
  * (registry persistence, worker forwarding, env provisioning, thread
- * resolution, skills store). One type — the wire turns it into a
- * `response {ok: false, error}` frame; the server never sees its shape.
+ * resolution, skills store) and startup. One type — the wire turns it into
+ * a `response {ok: false, error}` frame; the server never sees its shape.
  *
  * `kind` discriminates the failure category (house model: `WireError`'s
- * `code` literals). It is staged-optional: construction sites owned by
- * other plans (`hub/src/registry.ts`, `skills.ts`, `wire-core.ts`) still
- * construct `HubError` without it while they migrate — so `kind` stays
- * optional until every site passes one, then a follow-up makes it
- * required. New code constructs via `makeHubError(kind, message, cause?)`.
+ * `code` literals). Every construction site passes one (prefer the
+ * `makeHubError(kind, message, cause?)` helper).
  */
 
 import { Schema } from "effect";
 
-/** The hub error categories (`HubError.kind`; staged-optional). */
+/** The hub error categories (`HubError.kind`). */
 export type HubErrorKind =
   | "registry" // thread lookups/record failures surfaced as hub errors
   | "worker" // workerRef forwarding/create failures
   | "provisioner" // env ensure/release failures
   | "resolution" // unknown/ambiguous thread input
   | "skills" // unknown skill
-  | "command"; // command validation (empty name, missing threadId)
+  | "command" // command validation (empty name, missing threadId)
+  | "startup"; // the hub's wire server failed to come up
 
 export class HubError extends Schema.TaggedError<HubError>()("HubError", {
-  kind: Schema.optional(
-    Schema.Literals(["registry", "worker", "provisioner", "resolution", "skills", "command"]),
-  ),
+  kind: Schema.Literals([
+    "registry",
+    "worker",
+    "provisioner",
+    "resolution",
+    "skills",
+    "command",
+    "startup",
+  ]),
   message: Schema.String,
   cause: Schema.optional(Schema.Unknown),
 }) {}

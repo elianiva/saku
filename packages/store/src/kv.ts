@@ -135,35 +135,35 @@ export class KvStore extends Context.Service<KvStore, KvStoreShape>()("KvStore")
 
   /**
    * Durable Object storage backend (the platform boundary; Cloudflare and
-   * celld). The DO's promise API is the platform boundary: each call wraps
-   * in `Effect.promise` (not `Effect.tryPromise`) — the KvStore channel is
-   * `never`, so there is no error to map; a rejected DO promise dies and
-   * kills the caller, which is exactly what DO storage does unadapted.
+   * celld). The DO's promise API is the platform boundary: each call
+   * crosses with `Effect.tryPromise` and `Effect.orDie` — the KvStore
+   * channel is `never`, so a rejected DO promise is a defect that kills
+   * the caller, which is exactly what DO storage does unadapted.
    */
   static doStorage(storage: DoStorageLike): Layer.Layer<KvStore> {
     return Layer.sync(KvStore, () => ({
       get: (key) =>
-        Effect.promise(async () => {
+        Effect.tryPromise(async () => {
           const value = await storage.get(key);
           return value instanceof Uint8Array ? value : undefined;
-        }),
+        }).pipe(Effect.orDie),
       put: (key, value) =>
-        Effect.promise(async () => {
+        Effect.tryPromise(async () => {
           await storage.put(key, value);
-        }),
+        }).pipe(Effect.orDie),
       delete: (key) =>
-        Effect.promise(async () => {
+        Effect.tryPromise(async () => {
           await storage.delete(key);
-        }),
+        }).pipe(Effect.orDie),
       list: ({ prefix }) =>
-        Effect.promise(async () => {
+        Effect.tryPromise(async () => {
           const entries = await storage.list({ prefix });
           const out: KvEntry[] = [];
           for (const [key, value] of entries) {
             if (value instanceof Uint8Array) out.push({ key, value });
           }
           return out;
-        }),
+        }).pipe(Effect.orDie),
     }));
   }
 }

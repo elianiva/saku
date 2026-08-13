@@ -340,7 +340,9 @@ export const SessionHost = {
             .waitFor((state) => state._tag !== "Working" && state._tag !== "Compacting")
             .pipe(Effect.timeout(Duration.seconds(10)), Effect.ignore);
           yield* actor.drain;
-          yield* Effect.promise(() => env.cleanup());
+          // Best-effort teardown: a cleanup failure is a typed pi-seam
+          // failure, swallowed by the dispose's `Effect.ignore` below.
+          yield* Effect.tryPromise({ try: () => env.cleanup(), catch: toSessionHostError });
         }).pipe(Effect.ignore);
 
       return {

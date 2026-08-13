@@ -6,9 +6,4 @@
  */
 
 export { isNotFound } from "./fs.ts";
-export {
-  KvStore,
-  type DoStorageLike,
-  type KvEntry,
-  type KvStoreShape,
-} from "./kv.ts";
+export { KvStore, type DoStorageLike, type KvEntry, type KvStoreShape } from "./kv.ts";

@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 
 import { KvStore } from "@saku/store";
 import { GetEntriesResponse } from "@saku/wire";
@@ -26,6 +26,11 @@ import { scriptedProvisioner, scriptedWorker, type ScriptedWorker } from "./mock
 const run = <A, E extends Error>(effect: Effect.Effect<A, E, never>): Promise<A> =>
   Effect.runPromise(effect);
 
+/** A polling assertion that gave up (the async fork hadn't landed in time). */
+class TestError extends Schema.TaggedError<TestError>()("TestError", {
+  message: Schema.String,
+}) {}
+
 /** Poll until the condition holds (worker-event forks land asynchronously). */
 const waitFor = async (fn: () => boolean | Promise<boolean>, timeoutMs = 2000): Promise<void> => {
   const deadline = Date.now() + timeoutMs;
@@ -33,7 +38,7 @@ const waitFor = async (fn: () => boolean | Promise<boolean>, timeoutMs = 2000): 
     if (fn()) return;
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
-  throw new Error("condition not met");
+  throw new TestError({ message: "condition not met" });
 };
 
 interface World {

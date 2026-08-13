@@ -10,7 +10,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 
 import { makeHubError } from "../src/hub-error.ts";
 
@@ -26,6 +26,11 @@ import { KvStore } from "@saku/store";
 
 const IDLE_MS = 60;
 
+/** A polling assertion that gave up (the async fork hadn't landed in time). */
+class TestError extends Schema.TaggedError<TestError>()("TestError", {
+  message: Schema.String,
+}) {}
+
 const run = <A, E extends Error>(effect: Effect.Effect<A, E, never>): Promise<A> =>
   Effect.runPromise(effect);
 
@@ -37,7 +42,7 @@ const waitFor = async (fn: () => boolean, timeoutMs = 2000): Promise<void> => {
     if (fn()) return;
     await sleep(5);
   }
-  throw new Error("condition not met");
+  throw new TestError({ message: "condition not met" });
 };
 
 interface World {

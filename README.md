@@ -25,7 +25,7 @@ for the house style.
 | Package           | Role                                                                                                                                       |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
 | `packages/wire`   | the wire protocol: JSONL over WebSocket, hello/version, thread + session + skills commands, typed `WireClient` (an effect-machine actor)   |
-| `packages/store`  | the durability seam: the `KvStore` Effect service (the Durable Object storage contract) with memory, file, and DO storage backend layers                                                                 |
+| `packages/store`  | the durability seam: the `KvStore` Effect service (the Durable Object storage contract) with memory, file, and DO storage backend layers   |
 | `packages/hub`    | the control-plane DO: registry, Box provisioning, skills store, auth, routing, fan-out                                                     |
 | `packages/worker` | the thread DO: pi-agent-core `Agent` + `Session` over DO storage, env client, idle-stop                                                    |
 | `packages/env`    | the hands daemon: pi tool surface over a streaming protocol, local and in-Box                                                              |

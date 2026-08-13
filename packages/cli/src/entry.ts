@@ -21,6 +21,7 @@ import {
   type WireClient,
 } from "@saku/wire";
 
+import { CliError } from "./cli-error.ts";
 import {
   daemonStatus,
   ensureDaemon,
@@ -41,16 +42,26 @@ import { ensureEnvConfig, ensureEnvDaemon, envStatus, readEnvUrl, stopEnvDaemon 
  * that talks to the worker goes through here, so a plain `saku list` boots
  * the local stack automatically, and an existing daemon is reused.
  */
-const connect = (): Effect.Effect<WireClient, Error, never> =>
+const connect = (): Effect.Effect<WireClient, CliError | WireError, never> =>
   Effect.gen(function* () {
     yield* ensureDaemon();
     const url = yield* readWorkerUrl();
     if (Option.isNone(url)) {
-      return yield* Effect.fail(new Error("the worker did not publish its url"));
+      return yield* Effect.fail(
+        new CliError({
+          code: "missing_url",
+          message: "the worker did not publish its url",
+        }),
+      );
     }
     const token = yield* readWorkerToken();
     if (Option.isNone(token)) {
-      return yield* Effect.fail(new Error("auth token not created by the worker"));
+      return yield* Effect.fail(
+        new CliError({
+          code: "missing_token",
+          message: "auth token not created by the worker",
+        }),
+      );
     }
     const client = yield* makeWireClient({ url: url.value, token: token.value, role: "cli" });
     yield* client.connect();
@@ -58,10 +69,8 @@ const connect = (): Effect.Effect<WireClient, Error, never> =>
   });
 
 /**
- * Print the error and exit; the only imperative boundary of the CLI. Usage
- * errors are intentionally plain Errors — the CLI is the process edge, and
- * the message is the process's to print (opencode-style "plain Error at
- * process edges").
+ * Print the error and exit; the only imperative boundary of the CLI. The
+ * failure is always a tagged error — the process edge prints its message.
  */
 const fail = (error: unknown): never => {
   const message = error instanceof Error ? error.message : String(error);
@@ -93,7 +102,7 @@ const run = <T>(
 
 const pad = (text: string, width: number): string => text.padEnd(width).slice(0, width);
 
-const cmdList = (): Effect.Effect<void, WireError | Error, never> =>
+const cmdList = (): Effect.Effect<void, WireError | CliError, never> =>
   Effect.gen(function* () {
     const client = yield* connect();
     const threads = yield* run(client.listThreads(), "list threads");
@@ -122,11 +131,14 @@ const cmdNew = (
   name: string | undefined,
   cwd: string,
   mode: ThreadMode | undefined,
-): Effect.Effect<void, WireError | Error, never> =>
+): Effect.Effect<void, WireError | CliError, never> =>
   Effect.gen(function* () {
     if (name === undefined || name.length === 0) {
       return yield* Effect.fail(
-        new Error("saku new requires a name: saku new <name> [--cwd <dir>]"),
+        new CliError({
+          code: "usage",
+          message: "saku new requires a name: saku new <name> [--cwd <dir>]",
+        }),
       );
     }
     const client = yield* connect();
@@ -140,16 +152,18 @@ const cmdNew = (
     yield* client.disconnect();
   });
 
-const cmdRm = (threadArg: string | undefined): Effect.Effect<void, WireError | Error, never> =>
+const cmdRm = (threadArg: string | undefined): Effect.Effect<void, WireError | CliError, never> =>
   Effect.gen(function* () {
     if (threadArg === undefined) {
-      return yield* Effect.fail(new Error("saku rm requires a thread: saku rm <id-or-name>"));
+      return yield* Effect.fail(
+        new CliError({ code: "usage", message: "saku rm requires a thread: saku rm <id-or-name>" }),
+      );
     }
     const client = yield* connect();
     const threads = yield* run(client.listThreads(), "list threads");
     const resolved = resolveThread(threads, threadArg);
     if (Result.isFailure(resolved)) {
-      return yield* Effect.fail(new Error(resolved.failure));
+      return yield* Effect.fail(new CliError({ code: "resolution", message: resolved.failure }));
     }
     yield* run(client.deleteThread(resolved.success.id), "delete thread");
     console.log(`deleted ${shortThreadId(resolved.success.id)} (${resolved.success.name})`);
@@ -189,7 +203,9 @@ const cmdDaemon = (sub: string | undefined): Effect.Effect<void, Error, never> =
         return;
       }
       default:
-        return yield* Effect.fail(new Error("saku daemon <start|stop|status>"));
+        return yield* Effect.fail(
+          new CliError({ code: "usage", message: "saku daemon <start|stop|status>" }),
+        );
     }
   });
 
@@ -234,7 +250,9 @@ const cmdEnv = (
         return;
       }
       default:
-        return yield* Effect.fail(new Error("saku env <start|stop|status> [--hub <url>]"));
+        return yield* Effect.fail(
+          new CliError({ code: "usage", message: "saku env <start|stop|status> [--hub <url>]" }),
+        );
     }
   });
 
@@ -298,7 +316,9 @@ const main = (): Effect.Effect<void, WireError | Error, never> =>
         usage();
         return;
       default:
-        return yield* Effect.fail(new Error(`unknown command "${command}"`));
+        return yield* Effect.fail(
+          new CliError({ code: "usage", message: `unknown command "${command}"` }),
+        );
     }
   });
 

@@ -4,30 +4,26 @@
  * share one error vocabulary without importing each other.
  *
  * `kind` discriminates the failure classes (model/auth/compaction/busy…)
- * so callers can `catchTag` instead of matching on message text. The kind
- * is `optional` in the schema while the daemon (plan 02's file) still
- * constructs the error without one — every construction site in this
- * package passes a kind explicitly, and a follow-up can make the field
- * required once the daemon migrates.
+ * so callers can `catchTag` instead of matching on message text. Every
+ * construction site passes one.
  */
 
 import { Schema } from "effect";
 
 /** A session-host failure: a pi-boundary, storage, or rejected command. */
 export class SessionHostError extends Schema.TaggedError<SessionHostError>()("SessionHostError", {
-  kind: Schema.optional(
-    Schema.Literals([
-      "unknown_model",
-      "no_auth",
-      "no_model",
-      "compact_prepare",
-      "pi_seam",
-      "command_failed",
-      "branch_busy",
-      "unknown_entry",
-      "unknown_thread",
-    ]),
-  ),
+  kind: Schema.Literals([
+    "unknown_model",
+    "no_auth",
+    "no_model",
+    "compact_prepare",
+    "pi_seam",
+    "command_failed",
+    "branch_busy",
+    "unknown_entry",
+    "unknown_thread",
+    "no_env",
+  ]),
   message: Schema.String,
   cause: Schema.optional(Schema.Unknown),
 }) {}

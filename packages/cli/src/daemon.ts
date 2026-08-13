@@ -16,6 +16,8 @@ import { Effect, Option, Schedule } from "effect";
 import { makeWireClient } from "@saku/wire";
 import { getAuthPath, getWorkerLogPath, getWorkerUrlPath } from "@saku/worker";
 
+import { CliError } from "./cli-error.ts";
+
 export const resolveDaemonEntry = (): string =>
   fileURLToPath(import.meta.resolve("@saku/worker/daemon"));
 
@@ -95,14 +97,27 @@ const waitForDaemon = (): Effect.Effect<DaemonStatus & { pid: number }, undefine
   );
 
 /** Spawn if needed and wait until the socket answers. Returns the pid. */
-export const ensureDaemon = (): Effect.Effect<number, Error, never> =>
+export const ensureDaemon = (): Effect.Effect<number, CliError, never> =>
   Effect.gen(function* () {
     const status = yield* daemonStatus();
     if (status.running && status.pid !== undefined) return status.pid;
-    const pid = yield* spawnDaemon();
+    const pid = yield* spawnDaemon().pipe(
+      Effect.mapError(
+        (error) =>
+          new CliError({
+            code: "spawn_failed",
+            message: `failed to spawn the worker: ${error instanceof Error ? error.message : String(error)}`,
+            cause: error,
+          }),
+      ),
+    );
     const now = yield* waitForDaemon().pipe(
       Effect.mapError(
-        () => new Error(`daemon did not come up (spawned pid ${pid}); see ${getWorkerLogPath()}`),
+        () =>
+          new CliError({
+            code: "worker_timeout",
+            message: `daemon did not come up (spawned pid ${pid}); see ${getWorkerLogPath()}`,
+          }),
       ),
     );
     return now.pid;

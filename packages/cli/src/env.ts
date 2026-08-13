@@ -24,6 +24,8 @@ import { RemoteEnv, nodeSocket } from "@saku/env";
 import { getEnvConfigPath, getEnvLogPath, getEnvUrlPath } from "@saku/env";
 import { getAuthPath } from "@saku/worker";
 
+import { CliError } from "./cli-error.ts";
+
 export const resolveEnvEntry = (): string => fileURLToPath(import.meta.resolve("@saku/env/entry"));
 
 const EnvConfigSchema = Schema.Struct({
@@ -154,14 +156,27 @@ export const spawnEnvDaemon = (config: EnvConfig): Effect.Effect<number, Error, 
   });
 
 /** Spawn if needed and wait until the env answers. Returns the pid. */
-export const ensureEnvDaemon = (config: EnvConfig): Effect.Effect<number, Error, never> =>
+export const ensureEnvDaemon = (config: EnvConfig): Effect.Effect<number, CliError, never> =>
   Effect.gen(function* () {
     const status = yield* envStatus();
     if (status.running && status.pid !== undefined) return status.pid;
-    const pid = yield* spawnEnvDaemon(config);
+    const pid = yield* spawnEnvDaemon(config).pipe(
+      Effect.mapError(
+        (error) =>
+          new CliError({
+            code: "spawn_failed",
+            message: `failed to spawn the env daemon: ${error instanceof Error ? error.message : String(error)}`,
+            cause: error,
+          }),
+      ),
+    );
     const now = yield* waitForEnvDaemon().pipe(
       Effect.mapError(
-        () => new Error(`env daemon did not come up (spawned pid ${pid}); see ${getEnvLogPath()}`),
+        () =>
+          new CliError({
+            code: "env_timeout",
+            message: `env daemon did not come up (spawned pid ${pid}); see ${getEnvLogPath()}`,
+          }),
       ),
     );
     return now.pid;

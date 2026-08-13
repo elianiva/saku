@@ -12,7 +12,7 @@
  * bootstrap falls through to the next source instead of surfacing an error.
  */
 
-import { Effect, Option, Schema as S } from "effect";
+import { Effect, Option, Result, Schema as S } from "effect";
 
 export interface SakuConfig {
   readonly url: string;
@@ -48,11 +48,11 @@ export const fetchBootstrap: Effect.Effect<Option.Option<SakuConfig>, never> = E
 export const readSavedConfig = (): SakuConfig | null => {
   const raw = window.localStorage.getItem(LOCALSTORAGE_KEY);
   if (raw === null) return null;
-  try {
-    return Option.getOrNull(S.decodeUnknownOption(BootstrapSchema)(JSON.parse(raw)));
-  } catch {
-    return null;
-  }
+  // A corrupt saved config falls through to the next source, like a
+  // missing bootstrap (Result.try at the sync parse point, house style).
+  const parsed = Result.try(() => JSON.parse(raw) as unknown);
+  if (Result.isFailure(parsed)) return null;
+  return Option.getOrNull(S.decodeUnknownOption(BootstrapSchema)(parsed.success));
 };
 
 export const resolveConfig: Effect.Effect<SakuConfig, never> = Effect.gen(function* () {

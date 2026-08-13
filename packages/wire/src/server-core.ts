@@ -43,6 +43,12 @@ import {
 export const messageOf = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
+/** A protocol violation detected by the server core (a malformed command frame). */
+export class WireServerError extends Schema.TaggedError<WireServerError>()("WireServerError", {
+  code: Schema.Literals(["missing_thread_id"]),
+  message: Schema.String,
+}) {}
+
 /** The transport surface the core drives; node `ws` sockets and the hub's
  * `SocketLike` adapters satisfy it structurally. */
 export interface ServerSocket {
@@ -185,7 +191,12 @@ export const makeWireServer = (
         let run: Effect.Effect<unknown, unknown, never>;
         if (isSessionCommand(command.command)) {
           if (command.threadId === undefined) {
-            run = Effect.fail(new Error("session command without a threadId"));
+            run = Effect.fail(
+              new WireServerError({
+                code: "missing_thread_id",
+                message: "session command without a threadId",
+              }),
+            );
           } else {
             run = options.handlers.runSessionCommand(command.threadId, command.command);
           }

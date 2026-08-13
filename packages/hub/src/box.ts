@@ -11,7 +11,7 @@
  * The full platform guide is at https://docs.ascii.dev/box/platform-guide.
  */
 
-import { Effect, Schedule, Schema } from "effect";
+import { Effect, Result, Schedule, Schema } from "effect";
 
 /** A failure of the Box API (auth, limits, provisioning, transport). */
 export class BoxError extends Schema.TaggedError<BoxError>()("BoxError", {
@@ -142,26 +142,21 @@ export const makeBoxApi = (deps: BoxApiDeps): BoxApi => {
         catch: (error) =>
           new BoxError({ message: `box api read failed: ${String(error)}`, body: error }),
       });
-      const parsed = ((): Envelope | undefined => {
-        try {
-          return JSON.parse(text) as Envelope;
-        } catch {
-          return undefined;
-        }
-      })();
+      const parsed = Result.try(() => JSON.parse(text) as Envelope);
+      const envelope = Result.isSuccess(parsed) ? parsed.success : undefined;
       if (!response.ok) {
         return yield* Effect.fail(
           new BoxError({
             message:
-              parsed?.ok === false && typeof parsed?.error === "string"
-                ? (parsed.error as string)
+              envelope?.ok === false && typeof envelope?.error === "string"
+                ? (envelope.error as string)
                 : `box api ${method} ${path} failed: HTTP ${response.status}`,
             status: response.status,
-            body: parsed ?? text,
+            body: envelope ?? text,
           }),
         );
       }
-      return parsed ?? {};
+      return envelope ?? {};
     });
 
   return {
