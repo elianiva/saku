@@ -60,7 +60,7 @@ Keep `message` + optional `cause`.
 
 ```ts
 const ReplyOk = Schema.TaggedStruct("reply_ok", {
-  result: Schema.optional(Schema.Unknown),          // compact result
+  result: Schema.optional(Schema.Unknown), // compact result
   model: Schema.optional(Schema.Union([Schema.Null, WireModelInfo])),
   level: Schema.optional(ThinkingLevelSchema),
 });

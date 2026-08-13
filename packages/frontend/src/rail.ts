@@ -50,37 +50,47 @@ const railHeader = (model: Model, h: HtmlBuilder<AppMessage>): Html => {
 };
 
 const quickStartComposer = (model: Model, h: HtmlBuilder<AppMessage>): Html =>
-  h.div([h.Class("p-3 border-b border-line")], [
-    h.div([h.Class("flex items-center gap-1 border border-line bg-base px-2 py-1.5")], [
-      h.span([h.Class("text-pine")], ["❯"]),
-      h.input([
-        h.Class(
-          "flex-1 bg-transparent outline-none placeholder:text-muted text-[13px] min-w-0",
-        ),
-        h.Type("text"),
-        h.Placeholder("quick start — a prompt spins up a thread"),
-        h.Spellcheck(false),
-        h.Value(model.railInput),
-        h.OnInput((raw) => RailInputChanged({ text: raw })),
-        h.OnKeyDownPreventDefault((key, modifiers) =>
-          key === "Enter" && !modifiers.shiftKey
-            ? Option.some(QuickStartRequested())
-            : Option.none(),
-        ),
-      ]),
-    ]),
-  ]);
+  h.div(
+    [h.Class("p-3 border-b border-line")],
+    [
+      h.div(
+        [h.Class("flex items-center gap-1 border border-line bg-base px-2 py-1.5")],
+        [
+          h.span([h.Class("text-pine")], ["❯"]),
+          h.input([
+            h.Class(
+              "flex-1 bg-transparent outline-none placeholder:text-muted text-[13px] min-w-0",
+            ),
+            h.Type("text"),
+            h.Placeholder("quick start — a prompt spins up a thread"),
+            h.Spellcheck(false),
+            h.Value(model.railInput),
+            h.OnInput((raw) => RailInputChanged({ text: raw })),
+            h.OnKeyDownPreventDefault((key, modifiers) =>
+              key === "Enter" && !modifiers.shiftKey
+                ? Option.some(QuickStartRequested())
+                : Option.none(),
+            ),
+          ]),
+        ],
+      ),
+    ],
+  );
 
 const railList = (model: Model, h: HtmlBuilder<AppMessage>): Html => {
   switch (model.rail._tag) {
     case "loading":
       return h.div([h.Class("p-4 text-muted text-[12px]")], ["loading…"]);
     case "failed":
-      return h.div([h.Class("p-4 text-love text-[12px]")], [`threads unavailable — ${model.rail.error}`]);
+      return h.div(
+        [h.Class("p-4 text-love text-[12px]")],
+        [`threads unavailable — ${model.rail.error}`],
+      );
     case "ready":
-      return h.div([h.Class("flex-1 overflow-y-auto min-h-0")], [
-        ...model.rail.threads.map((thread) => threadRow(thread, model.active, h)),
-      ]);
+      return h.div(
+        [h.Class("flex-1 overflow-y-auto min-h-0")],
+        [...model.rail.threads.map((thread) => threadRow(thread, model.active, h))],
+      );
   }
 };
 
@@ -122,7 +132,10 @@ const stateGlyph = (thread: ThreadInfo, h: HtmlBuilder<AppMessage>): Html => {
     case "working":
       return h.span([h.Class("text-gold animate-pulse"), h.Title("working")], ["●"]);
     case "interrupted":
-      return h.span([h.Class("text-rose"), h.Title("interrupted — recovery on next command")], ["◐"]);
+      return h.span(
+        [h.Class("text-rose"), h.Title("interrupted — recovery on next command")],
+        ["◐"],
+      );
   }
 };
 
@@ -142,9 +155,7 @@ const envGlyph = (thread: ThreadInfo, h: HtmlBuilder<AppMessage>): Html => {
 const modeGlyph = (thread: ThreadInfo, h: HtmlBuilder<AppMessage>): Html =>
   h.span(
     [
-      h.Class(
-        "border border-line px-1 text-[10px] text-subtle uppercase",
-      ),
+      h.Class("border border-line px-1 text-[10px] text-subtle uppercase"),
       h.Title(`mode: ${thread.mode}`),
     ],
     [thread.mode === "sandbox" ? "S" : thread.mode === "any" ? "A" : "L"],

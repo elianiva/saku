@@ -63,9 +63,5 @@ export {
   type RemoteEnvOptions,
 } from "./remote.ts";
 export { nodeSocket } from "./remote-node.ts";
-export {
-  makeEnvRelayClient,
-  type RelayClientOptions,
-  type RelayClientShape,
-} from "./relay.ts";
+export { makeEnvRelayClient, type RelayClientOptions, type RelayClientShape } from "./relay.ts";
 export * from "./paths.ts";

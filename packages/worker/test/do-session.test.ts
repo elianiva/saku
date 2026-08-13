@@ -6,14 +6,22 @@
 
 import { describe, expect, it } from "vitest";
 import { NodeFileSystem } from "@effect/platform-node";
-import { Effect, FileSystem } from "effect";
+import { Effect, FileSystem, Layer } from "effect";
 import {
   createSessionBackendConformance,
   type SessionBackendFixture,
 } from "@earendil-works/pi-agent-core/session/testing";
 
 import { DoSessionRepo, DoSessionStorage } from "../src/do-session.ts";
-import { fileKv, memoryKv, type KvStore } from "@saku/store";
+import { KvStore, type KvStoreShape } from "@saku/store";
+
+/** Build a KvStore value from a backend layer (the pi seam is value-shaped). */
+const buildKv = (layer: Layer.Layer<KvStore>): Promise<KvStoreShape> =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      return yield* KvStore;
+    }).pipe(Effect.provide(layer)),
+  );
 
 /** Run pi's conformance cases as vitest cases. */
 const runConformance = (label: string, factory: () => Promise<SessionBackendFixture>): void => {
@@ -27,7 +35,7 @@ const runConformance = (label: string, factory: () => Promise<SessionBackendFixt
 };
 
 const memoryFixture = async (): Promise<SessionBackendFixture> => ({
-  repository: new DoSessionRepo(memoryKv()),
+  repository: new DoSessionRepo(await buildKv(KvStore.memory())),
   [Symbol.asyncDispose]: async () => {},
 });
 
@@ -40,7 +48,7 @@ const fileFixtureFactory = await Effect.runPromise(
     const fs = yield* FileSystem.FileSystem;
     return async (): Promise<SessionBackendFixture> => {
       const root = await Effect.runPromise(fs.makeTempDirectory({ prefix: "saku-trail-" }));
-      const kv = fileKv(fs, root);
+      const kv = await buildKv(KvStore.file(fs, root));
       return {
         repository: new DoSessionRepo(kv),
         [Symbol.asyncDispose]: async () => {
@@ -56,17 +64,21 @@ const fileFixtureFactory = await Effect.runPromise(
 runConformance("fileKv", fileFixtureFactory);
 
 describe("durability", () => {
-  const withFileKv = <A>(run: (kv: KvStore, fs: FileSystem.FileSystem) => Promise<A>): Promise<A> =>
+  const withFileKv = <A>(
+    run: (kv: KvStoreShape, fs: FileSystem.FileSystem) => Promise<A>,
+  ): Promise<A> =>
     Effect.runPromise(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const root = yield* fs.makeTempDirectory({ prefix: "saku-durability-" });
-        const result = yield* Effect.tryPromise(() => run(fileKv(fs, root), fs)).pipe(
-          Effect.ensuring(
-            fs.remove(root, { recursive: true, force: true }).pipe(Effect.catch(() => Effect.void)),
-          ),
-        );
-        return result;
+        return yield* Effect.gen(function* () {
+          const kv = yield* KvStore;
+          return yield* Effect.tryPromise(() => run(kv, fs)).pipe(
+            Effect.ensuring(
+              fs.remove(root, { recursive: true, force: true }).pipe(Effect.catch(() => Effect.void)),
+            ),
+          );
+        }).pipe(Effect.provide(KvStore.file(fs, root)));
       }).pipe(Effect.provide(NodeFileSystem.layer)),
     );
 
@@ -118,7 +130,7 @@ describe("durability", () => {
   });
 
   it("delete removes the session's keys", async () => {
-    const kv = memoryKv();
+    const kv = await buildKv(KvStore.memory());
     const repo = new DoSessionRepo(kv);
     const session = await repo.create({ id: "delete-me" });
     await session.appendMessage({
@@ -135,7 +147,7 @@ describe("durability", () => {
   });
 
   it("load validates a torn log prefix is impossible: writes are atomic per key", async () => {
-    const kv = memoryKv();
+    const kv = await buildKv(KvStore.memory());
     const repo = new DoSessionRepo(kv);
     const session = await repo.create({ id: "atomic" });
     await session.appendMessage({
@@ -149,9 +161,9 @@ describe("durability", () => {
       timestamp: Date.now(),
     });
     // A crash between mutations leaves a prefix: simulate by deleting the tail.
-    const keys = [...(await kv.list({ prefix: "session/atomic/log/" }))];
+    const keys = [...(await Effect.runPromise(kv.list({ prefix: "session/atomic/log/" })))];
     const last = keys.sort((a, b) => a.key.localeCompare(b.key)).at(-1)!;
-    await kv.delete(last.key);
+    await Effect.runPromise(kv.delete(last.key));
     const [metadata] = await repo.list();
     // Replay must still load the remaining prefix.
     const reopened = await repo.open(metadata);

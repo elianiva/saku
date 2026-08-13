@@ -8,11 +8,12 @@
 import { describe, expect, it } from "vitest";
 import { Effect } from "effect";
 
-import { memoryKv } from "@saku/store";
+import { KvStore } from "@saku/store";
 import { GetEntriesResponse } from "@saku/wire";
 
+import { makeHubError } from "../src/hub-error.ts";
+
 import {
-  HubError,
   makeHub,
   makeHubRegistry,
   makeSkillsStore,
@@ -45,8 +46,8 @@ interface World {
 const makeWorld = (provisioner: EnvProvisioner = scriptedProvisioner()): Promise<World> =>
   Effect.runPromise(
     Effect.gen(function* () {
-      const registry = yield* makeHubRegistry(memoryKv());
-      const skills = yield* makeSkillsStore(memoryKv());
+      const registry = yield* makeHubRegistry().pipe(Effect.provide(KvStore.memory()));
+      const skills = yield* makeSkillsStore().pipe(Effect.provide(KvStore.memory()));
       const worker = scriptedWorker();
       const hub = yield* makeHub({ registry, skills, workerRef: worker.ref, provisioner });
       worker.attach(hub.events);
@@ -64,7 +65,7 @@ const changedIds = (events: HubEvent[]): string[] =>
 const scriptPrompt = (world: World, text: string, tailSeq = 1): void => {
   world.worker.onCommand((threadId, command) => {
     if (command._tag !== "prompt") {
-      return Effect.fail(new HubError({ message: `unscripted command: ${command._tag}` }));
+      return Effect.fail(makeHubError("command", `unscripted command: ${command._tag}`));
     }
     world.worker.report(threadId, { state: "working" });
     world.worker.emit(
@@ -95,7 +96,7 @@ describe("makeHub — threads", () => {
 
   it("rolls back when the worker cannot be created", async () => {
     const world = await makeWorld();
-    world.worker.failCreateWith(new HubError({ message: "no worker namespace" }));
+    world.worker.failCreateWith(makeHubError("worker", "no worker namespace"));
     await expect(run(world.hub.createThread({ name: "doomed" }))).rejects.toMatchObject({
       message: "failed to create worker: no worker namespace",
     });

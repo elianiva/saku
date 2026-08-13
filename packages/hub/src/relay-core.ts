@@ -43,11 +43,7 @@ export interface HubRelayShape {
 }
 
 /** Pipe one socket's frames onto the other; both die together. */
-const pipeSockets = (
-  from: SocketLike,
-  to: SocketLike,
-  cleanup: () => void,
-): (() => void) => {
+const pipeSockets = (from: SocketLike, to: SocketLike, cleanup: () => void): (() => void) => {
   const onMessage = (data: unknown): void => {
     // A dead peer between the check and the send is a no-op; the close
     // handler tears both sides down.
@@ -281,6 +277,9 @@ export const makeHubRelayCore = (
         yield* Ref.set(waitingRef, new Map());
       });
 
-    return { handleConnection, registered: () => Ref.get(envsRef).pipe(Effect.map((envs) => [...envs.keys()])), close };
+    return {
+      handleConnection,
+      registered: () => Ref.get(envsRef).pipe(Effect.map((envs) => [...envs.keys()])),
+      close,
+    };
   });
-

@@ -23,7 +23,7 @@ export interface DeploymentVars {
   readonly SAKU_FAKE_MODEL?: string;
 }
 
-/** The deployment's env: namespaces + secret + vars + provider keys. */
+/** The deployment's env: namespaces + secret + vars. */
 export interface DeploymentEnv extends DeploymentVars {
   readonly HUB: DurableObjectNamespace;
   readonly THREAD: DurableObjectNamespace;
@@ -31,12 +31,6 @@ export interface DeploymentEnv extends DeploymentVars {
   readonly DEPLOYMENT_SECRET: string;
   /** The Box API key (ascii.dev); empty for static-provisioner deploys. */
   readonly BOX_API_KEY: string;
-  /** LLM provider keys, bound as secrets; the catalog resolves them. */
-  readonly ANTHROPIC_API_KEY?: string;
-  readonly OPENAI_API_KEY?: string;
-  readonly GOOGLE_API_KEY?: string;
-  readonly GEMINI_API_KEY?: string;
-  readonly MISTRAL_API_KEY?: string;
 }
 
 /** The hub DO's instance name (the single control-plane instance). */

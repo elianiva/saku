@@ -2,7 +2,14 @@ import { defineConfig } from "vite-plus";
 
 export default defineConfig({
   fmt: {
-    ignorePatterns: ["dist/**", ".turbo/**", ".references/**", "node_modules/**", ".wrangler/**"],
+    ignorePatterns: [
+      "dist/**",
+      ".turbo/**",
+      ".references/**",
+      "node_modules/**",
+      ".wrangler/**",
+      "packages/deploy/src/generated/**",
+    ],
     singleQuote: false,
     semi: true,
     indentWidth: 2,
@@ -13,7 +20,11 @@ export default defineConfig({
     ignorePatterns: ["dist/**", ".turbo/**", ".references/**", "node_modules/**", ".wrangler/**"],
     options: {
       typeAware: true,
-      typeCheck: true,
+      // Oxlint's experimental type-check emits false positives on
+      // effect-machine's generic `.on` overload chains (TS2769 where tsc
+      // passes). Type checking stays authoritative via tsc, which `pnpm
+      // typecheck` (and CI) runs separately.
+      typeCheck: false,
     },
     rules: {
       "no-console": ["error", { allow: ["warn", "error"] }],
@@ -35,6 +46,7 @@ export default defineConfig({
         files: [
           "packages/cli/**",
           "packages/env/src/entry.ts",
+          "packages/worker/src/daemon.ts",
           "packages/deploy/scripts/**",
           "packages/frontend/vite.config.ts",
         ],

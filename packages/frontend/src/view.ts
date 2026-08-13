@@ -15,11 +15,14 @@ import { threadPane } from "./thread-pane.ts";
 
 export const view = (model: Model, h: HtmlBuilder<AppMessage>): Document => ({
   title: "saku",
-  body: h.div([h.Class("h-screen flex flex-col bg-base text-text")], [
-    topBar(model, h),
-    banner(model, h),
-    h.div([h.Class("flex flex-1 min-h-0")], [railPane(model, h), threadPane(model, h)]),
-  ]),
+  body: h.div(
+    [h.Class("h-screen flex flex-col bg-base text-text")],
+    [
+      topBar(model, h),
+      banner(model, h),
+      h.div([h.Class("flex flex-1 min-h-0")], [railPane(model, h), threadPane(model, h)]),
+    ],
+  ),
 });
 
 const topBar = (model: Model, h: HtmlBuilder<AppMessage>): Html =>
@@ -44,16 +47,19 @@ const connStatus = (model: Model, h: HtmlBuilder<AppMessage>): Html => {
     case "online":
       return h.span([h.Class("text-foam")], [`● online · pid ${model.conn.pid}`]);
     case "offline":
-      return h.div([h.Class("flex items-center gap-2")], [
-        h.span([h.Class("text-love")], ["✕ offline"]),
-        h.button(
-          [
-            h.Class("border border-line px-2 py-0.5 hover:border-subtle text-subtle"),
-            h.OnClick(RetryRequested()),
-          ],
-          ["retry"],
-        ),
-      ]);
+      return h.div(
+        [h.Class("flex items-center gap-2")],
+        [
+          h.span([h.Class("text-love")], ["✕ offline"]),
+          h.button(
+            [
+              h.Class("border border-line px-2 py-0.5 hover:border-subtle text-subtle"),
+              h.OnClick(RetryRequested()),
+            ],
+            ["retry"],
+          ),
+        ],
+      );
   }
 };
 
@@ -69,7 +75,11 @@ const banner = (model: Model, h: HtmlBuilder<AppMessage>): Html =>
         [
           h.span([h.Class("flex-1 truncate")], [model.banner]),
           h.button(
-            [h.Class("shrink-0 hover:text-text"), h.OnClick(DismissBanner()), h.AriaLabel("dismiss")],
+            [
+              h.Class("shrink-0 hover:text-text"),
+              h.OnClick(DismissBanner()),
+              h.AriaLabel("dismiss"),
+            ],
             ["✕"],
           ),
         ],

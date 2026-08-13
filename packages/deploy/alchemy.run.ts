@@ -38,10 +38,6 @@ export interface StackOptions {
   readonly fakeModel?: boolean;
 }
 
-/** The deployment's LLM provider keys, bound as optional secrets. */
-const providerKey = (name: string): Config.Config<Redacted.Redacted<string>> =>
-  Config.redacted(name).pipe(Config.withDefault(Redacted.make("")));
-
 export const makeStack = (options: StackOptions = {}) =>
   Alchemy.Stack(
     "Saku",
@@ -79,11 +75,6 @@ export const makeStack = (options: StackOptions = {}) =>
           SAKU_FAKE_MODEL: Config.string("SAKU_FAKE_MODEL").pipe(
             Config.withDefault(options.fakeModel === true ? "1" : ""),
           ),
-          ANTHROPIC_API_KEY: providerKey("ANTHROPIC_API_KEY"),
-          OPENAI_API_KEY: providerKey("OPENAI_API_KEY"),
-          GOOGLE_API_KEY: providerKey("GOOGLE_API_KEY"),
-          GEMINI_API_KEY: providerKey("GEMINI_API_KEY"),
-          MISTRAL_API_KEY: providerKey("MISTRAL_API_KEY"),
         },
       });
       return { url: worker.url };

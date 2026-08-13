@@ -30,6 +30,9 @@
 
 import { Effect, Option, Result } from "effect";
 import { RemoteEnv, nodeSocket, type EnvHandle } from "@saku/env";
+import { HubError, makeHubError, messageOf } from "./hub-error.ts";
+import type { HubRecord } from "./registry.ts";
+import { pollUntilReady, type BoxApi, type BoxInfo } from "./box.ts";
 
 /** A fresh env protocol token (the daemon's credential). */
 const randomToken = (): string => {
@@ -37,10 +40,6 @@ const randomToken = (): string => {
   crypto.getRandomValues(bytes);
   return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
 };
-
-import { HubError } from "./hub-error.ts";
-import type { HubRecord } from "./registry.ts";
-import { pollUntilReady, type BoxApi, type BoxInfo } from "./box.ts";
 
 /** The node the box gets when it has none (official binary tarball). */
 export const BOX_NODE_VERSION = "v26.7.0";
@@ -133,22 +132,28 @@ const pollOptions = (deps: ProvisionerDeps): { log?: (message: string) => void }
 const toHubError =
   (context: string) =>
   (error: unknown): HubError =>
-    new HubError({ message: `${context}: ${error instanceof Error ? error.message : String(error)}`, cause: error });
+    makeHubError(
+      "provisioner",
+      `${context}: ${error instanceof Error ? error.message : String(error)}`,
+      error,
+    );
 
 /** Probe an env URL with the protocol's hello; answers = ready. */
-const probeDaemon = (
-  url: string,
-  token: string,
-): Effect.Effect<void, HubError, never> =>
+const probeDaemon = (url: string, token: string): Effect.Effect<void, HubError, never> =>
   Effect.gen(function* () {
     const env = new RemoteEnv({ url, token, socket: nodeSocket });
+    // The rejection reason is unknown (never `as Error`): the failure arm
+    // below messages it via messageOf.
     const outcome = yield* Effect.tryPromise({
       try: () => env.connect().then(() => env.close()),
-      catch: (error) => error as Error,
+      catch: (error) => error,
     }).pipe(Effect.result);
     if (Result.isFailure(outcome)) {
       return yield* Effect.fail(
-        new HubError({ message: `env daemon did not answer at ${url}: ${outcome.failure.message}` }),
+        makeHubError(
+          "provisioner",
+          `env daemon did not answer at ${url}: ${messageOf(outcome.failure)}`,
+        ),
       );
     }
   });
@@ -184,9 +189,10 @@ const bootstrapBox = (
       .pipe(Effect.mapError(fail));
     if (!install.success) {
       return yield* Effect.fail(
-        new HubError({
-          message: `box ${box.id} daemon install failed: ${install.stderr.trim() || install.stdout.trim()}`,
-        }),
+        makeHubError(
+          "provisioner",
+          `box ${box.id} daemon install failed: ${install.stderr.trim() || install.stdout.trim()}`,
+        ),
       );
     }
     log(`box ${box.id} daemon installed; waiting for its URL`);
@@ -210,7 +216,7 @@ const readHostUrl = (
     const url = content.trim().split("\n")[0] ?? "";
     if (url.length > 0) return url;
     if (attempts <= 0) {
-      return yield* Effect.fail(new HubError({ message: `box ${boxId} never wrote host.url` }));
+      return yield* Effect.fail(makeHubError("provisioner", `box ${boxId} never wrote host.url`));
     }
     yield* Effect.sleep("1 seconds");
     return yield* readHostUrl(deps, boxId, attempts - 1);
@@ -225,7 +231,7 @@ const resumeBox = (
   Effect.gen(function* () {
     const fail = toHubError(`box ${handle.boxId ?? "?"} resume failed`);
     if (handle.boxId === null) {
-      return yield* Effect.fail(new HubError({ message: "sandbox thread without a box id" }));
+      return yield* Effect.fail(makeHubError("provisioner", "sandbox thread without a box id"));
     }
     yield* deps.boxApi.resume(handle.boxId).pipe(Effect.mapError(fail));
     yield* pollUntilReady(deps.boxApi, handle.boxId, pollOptions(deps)).pipe(Effect.mapError(fail));
@@ -257,7 +263,9 @@ export const makeProvisioner = (deps: ProvisionerDeps): EnvProvisioner => {
           // The thread id tags the box (platform guide: identify boxes).
           env: { SAKU_THREAD_ID: thread.id },
         })
-        .pipe(Effect.mapError(toHubError(`box creation failed for thread ${thread.id.slice(0, 8)}`)));
+        .pipe(
+          Effect.mapError(toHubError(`box creation failed for thread ${thread.id.slice(0, 8)}`)),
+        );
       yield* pollUntilReady(deps.boxApi, box.id, pollOptions(deps)).pipe(
         Effect.mapError(toHubError(`box ${box.id} provisioning failed`)),
       );
@@ -273,10 +281,12 @@ export const makeProvisioner = (deps: ProvisionerDeps): EnvProvisioner => {
       }
       yield* deps.boxApi
         .stop(handle.value.boxId)
-        .pipe(Effect.mapError(toHubError(`box ${handle.value.boxId} stop failed (thread ${threadId.slice(0, 8)})`)));
+        .pipe(
+          Effect.mapError(
+            toHubError(`box ${handle.value.boxId} stop failed (thread ${threadId.slice(0, 8)})`),
+          ),
+        );
     });
 
   return { ensure, release };
 };
-
-

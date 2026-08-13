@@ -45,5 +45,12 @@ export {
   type WorkerCommandResult,
   type WorkerReport,
 } from "./worker-ref.ts";
-export { makeHub, type HubDeps, type HubEvent, type HubListener, type HubShape, type IdleStopController } from "./hub.ts";
+export {
+  makeHub,
+  type HubDeps,
+  type HubEvent,
+  type HubListener,
+  type HubShape,
+  type IdleStopController,
+} from "./hub.ts";
 export { makeHubServer, type HubServerOptions, type HubServerShape } from "./server.ts";

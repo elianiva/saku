@@ -31,16 +31,16 @@ celld deploy packages/deploy/celld --bucket <your-bucket>
 
 ## Vars to set before deploying
 
-| Var                    | Meaning                                                                 |
-| ---------------------- | ----------------------------------------------------------------------- |
-| `DEPLOYMENT_SECRET`    | The token consoles present in `hello`. **Trust note**: celld vars are    |
-|                        | plaintext in the fleet bucket — this is a dev/self-hosted trust domain,  |
-|                        | not a secret store. Cloudflare deployments bind it as a secret instead.  |
-| `SAKU_ENV_URL`         | The static provisioner's env daemon URL (e.g. `http://<host>:4311`).     |
-| `SAKU_ENV_TOKEN`       | The daemon's token (`saku env start` writes it to `~/.saku/env.json`).   |
-| `SAKU_IDLE_STOP_MS`    | Idle window before the thread DO's alarm stops the env (default 300s).   |
-| `SAKU_FAKE_MODEL`      | `"1"` adds the scripted `saku-fake` provider (no LLM keys needed).       |
-| `BOX_API_KEY`          | Unused in the static twin (kept for parity with the Cloudflare shape).   |
+| Var                 | Meaning                                                                 |
+| ------------------- | ----------------------------------------------------------------------- |
+| `DEPLOYMENT_SECRET` | The token consoles present in `hello`. **Trust note**: celld vars are   |
+|                     | plaintext in the fleet bucket — this is a dev/self-hosted trust domain, |
+|                     | not a secret store. Cloudflare deployments bind it as a secret instead. |
+| `SAKU_ENV_URL`      | The static provisioner's env daemon URL (e.g. `http://<host>:4311`).    |
+| `SAKU_ENV_TOKEN`    | The daemon's token (`saku env start` writes it to `~/.saku/env.json`).  |
+| `SAKU_IDLE_STOP_MS` | Idle window before the thread DO's alarm stops the env (default 300s).  |
+| `SAKU_FAKE_MODEL`   | `"1"` adds the scripted `saku-fake` provider (no LLM keys needed).      |
+| `BOX_API_KEY`       | Unused in the static twin (kept for parity with the Cloudflare shape).  |
 
 ## Known celld-specific checks
 

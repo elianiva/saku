@@ -70,6 +70,7 @@ finalizer), `closeClients`, and the canonical `messageOf` (review finding: 4 cop
 exist — this becomes the exportable one).
 
 Semantic notes:
+
 - `handleCommand`'s failure path: `Effect.matchEffect` (or `Effect.tapBoth`) on the
   handler Effect → `respond` / `respondCommandFailure`. Unify the error channel as
   `unknown` and stringify at the frame boundary — exactly what both implementations
@@ -109,9 +110,10 @@ export const runSessionCommand = <E>(
 Implementation: `Match.value(command).pipe(Match.tagsExhaustive({ … }))` — the FIRST
 backend `Match` in the repo, per lutra/foldkit idiom. Case map (verbatim from both
 current implementations — keep payloads byte-identical):
+
 - `get_entries` / `get_state` / `get_available_thinking_levels`: `readOnlyHost` →
   `Option.match` → no-host fallback (`GetEntriesResponse.make({entries: [], tailSeq: 0,
-  leafId: null})`, default `GetStateResponse` snapshot, `THINKING_LEVELS`) or the host
+leafId: null})`, default `GetStateResponse` snapshot, `THINKING_LEVELS`) or the host
   call.
 - `get_available_models`: `deps.availableModels()` (both impls serve catalog, host or not).
 - Everything else (`prompt` … `get_session_stats`, `set_session_name`): `hostFor` →
@@ -142,24 +144,24 @@ package subpath; **do not** touch `worker/package.json`).
    `pid: process.pid`, `log` via the existing `log`. Also: `list_threads` — replace
    the sequential `for (const record of records) threads.push(yield* infoOf(...))`
    (~line 305) with `Effect.forEach(records, (r) => infoOf(r.id), { concurrency:
-   "unbounded" })`. While here, add the `code` discriminant to `DaemonError`
+"unbounded" })`. While here, add the `code` discriminant to `DaemonError`
    (`code: Schema.Literals(["unknown_thread","empty_name","skills_not_served",
-   "unknown_command","missing_thread_id"])` — optional, all sites in this file).
+"unknown_command","missing_thread_id"])` — optional, all sites in this file).
 5. **`packages/hub/src/wire-core.ts`**: becomes a thin wrapper: `makeWireCore(options)`
    = `makeWireServer({ token: () => Effect.succeed(token), pid, handlers: { runHubCommand
-   (the hub-shaped one — keep it here), runSessionCommand: hub.runSessionCommand } })`
-   + the hub subscription (`hub.subscribe(onHubEvent)`) + `close`. `runHubCommand`'s
-   switch stays for now (it is hub-specific; plan 04 owns Match conversion of
-   `hub.ts`, not this file — keep `exhaustive: never` here or use Match; either is
-   fine, pick Match for consistency).
+(the hub-shaped one — keep it here), runSessionCommand: hub.runSessionCommand } })`
+   - the hub subscription (`hub.subscribe(onHubEvent)`) + `close`. `runHubCommand`'s
+     switch stays for now (it is hub-specific; plan 04 owns Match conversion of
+     `hub.ts`, not this file — keep `exhaustive: never` here or use Match; either is
+     fine, pick Match for consistency).
 6. **`packages/deploy/src/thread-do.ts`**:
    - Delete `runHostCommand` and `readOnlyWithoutHost`; `runCommand` calls shared
      `runSessionCommand` with `hostFor: (id) => self.hostFor(record)`,
      `readOnlyHost` (implement locally over `self.host` + `READ_ONLY`/`loadRecord`
      semantics — mirror `readOnlyHost` from daemon.ts), `availableModels`.
    - Fix the round trip at ~line 300: `Effect.tryPromise({ try: () =>
-     Effect.runPromise(SessionHost.create({…})) })` → `yield* SessionHost.create({…}).pipe(
-     Effect.mapError(toError("create host")))`.
+Effect.runPromise(SessionHost.create({…})) })` → `yield* SessionHost.create({…}).pipe(
+Effect.mapError(toError("create host")))`.
    - Keep the typed channel: `runCommand` returns
      `Effect<{payload, tailSeq}, SessionHostError | RegistryError, never>`; only the
      `handleCommand` fetch boundary stringifies via `Effect.runPromise` + catch.
@@ -180,7 +182,7 @@ package subpath; **do not** touch `worker/package.json`).
   `packages/hub/src/wire-core.ts` (whole file, 301 lines).
 - Match idiom: lutra `packages/frontend/src/editor/update.ts:218` and foldkit
   `packages/typing-game/client/src/page/home/update/update.ts` (`M.value(x).pipe(
-  M.withReturnType<T>(), M.tagsExhaustive({…}))`).
+M.withReturnType<T>(), M.tagsExhaustive({…}))`).
 - Service-factory seam style: opencode `packages/core/src/session/store.ts` (one
   file, `Effect.gen` factory, typed interface).
 - Concurrency: opencode `packages/core/src/context-epoch.ts:46`

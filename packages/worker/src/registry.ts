@@ -10,25 +10,32 @@
  */
 
 import { Context, Effect, FileSystem, Layer, Option, Ref, Schema } from "effect";
-import type { ThreadInfo, ThreadMode, ThreadState } from "@saku/wire";
+import { ThreadMode, type ThreadInfo, type ThreadState } from "@saku/wire";
 
 import { isNotFound } from "@saku/store";
 import { getThreadDir, getThreadFile } from "./paths.ts";
 import { RegistryError } from "./registry-error.ts";
 
-export interface ThreadRecord {
-  /** Full uuid (unhyphenated). Consoles see an 8-char prefix. */
-  id: string;
-  name: string;
-  cwd: string;
+const ThreadRecordSchema = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  cwd: Schema.String,
   /** Hands policy, pinned at creation. */
-  mode: ThreadMode;
-  createdAt: number;
+  mode: ThreadMode,
+  createdAt: Schema.Number,
   /** Pi session id, stable across daemon restarts; set on first touch. */
-  sessionId: string | null;
+  sessionId: Schema.Union([Schema.Null, Schema.String]),
   /** The name is an auto-generated prompt snippet awaiting auto-title (CONTEXT.md: Quick start, Auto-title). */
-  nameAuto: boolean;
-}
+  nameAuto: Schema.Boolean,
+});
+
+/**
+ * A thread's registry record: id, name, cwd, mode, session id, auto-title
+ * flag — what the daemon persists to `threads/<id>/thread.json`.
+ */
+export type ThreadRecord = Schema.Schema.Type<typeof ThreadRecordSchema>;
+
+const DECODE_THREAD_RECORD = Schema.decodeUnknownSync(ThreadRecordSchema);
 
 export interface ThreadRegistryShape {
   readonly list: () => Effect.Effect<readonly ThreadRecord[], RegistryError>;
@@ -63,9 +70,9 @@ export class ThreadRegistry extends Context.Service<ThreadRegistry, ThreadRegist
 const THREAD_DIR_RE = /^[0-9a-f]{32}$/u;
 
 const toRegistryError =
-  (message: string) =>
+  (message: string, op: "list" | "persist") =>
   (error: unknown): RegistryError =>
-    new RegistryError({ message, cause: error });
+    new RegistryError({ message, op, cause: error });
 
 /** Write one record atomically (temp file + rename). */
 const persist = (
@@ -75,15 +82,15 @@ const persist = (
   Effect.gen(function* () {
     yield* fs
       .makeDirectory(getThreadDir(record.id), { recursive: true })
-      .pipe(Effect.mapError(toRegistryError(`failed to persist thread ${record.id}`)));
+      .pipe(Effect.mapError(toRegistryError(`failed to persist thread ${record.id}`, "persist")));
     const path = getThreadFile(record.id);
     const tmp = `${path}.tmp`;
     yield* fs
       .writeFileString(tmp, `${JSON.stringify(record, null, 2)}\n`)
-      .pipe(Effect.mapError(toRegistryError(`failed to persist thread ${record.id}`)));
+      .pipe(Effect.mapError(toRegistryError(`failed to persist thread ${record.id}`, "persist")));
     yield* fs
       .rename(tmp, path)
-      .pipe(Effect.mapError(toRegistryError(`failed to persist thread ${record.id}`)));
+      .pipe(Effect.mapError(toRegistryError(`failed to persist thread ${record.id}`, "persist")));
   });
 
 /**
@@ -98,7 +105,7 @@ const loadRecords = (
       Effect.catchEager((error) =>
         isNotFound(error) ? Effect.succeed([] as string[]) : Effect.fail(error),
       ),
-      Effect.mapError(toRegistryError("failed to list the threads directory")),
+      Effect.mapError(toRegistryError("failed to list the threads directory", "list")),
     );
     return yield* Effect.forEach(
       names,
@@ -109,8 +116,8 @@ const loadRecords = (
             .readFileString(getThreadFile(name))
             .pipe(Effect.catchEager(() => Effect.succeed("")));
           return yield* Effect.try({
-            try: () => JSON.parse(content) as ThreadRecord,
-            catch: toRegistryError(`failed to read thread record ${name}`),
+            try: () => DECODE_THREAD_RECORD(content),
+            catch: toRegistryError(`failed to read thread record ${name}`, "list"),
           }).pipe(Effect.catchEager(() => Effect.succeed(undefined)));
         });
       },
@@ -167,7 +174,8 @@ export const ThreadRegistryLive: Layer.Layer<ThreadRegistry, RegistryError, File
               name: input.name,
               cwd:
                 input.cwd ??
-                ((globalThis as { process?: { cwd?: () => string } }).process?.cwd?.() ?? "/"),
+                (globalThis as { process?: { cwd?: () => string } }).process?.cwd?.() ??
+                "/",
               mode: input.mode ?? "local",
               createdAt: Date.now(),
               sessionId: null,

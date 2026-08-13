@@ -75,7 +75,7 @@ Pi's own extension vocabulary, saku-hosted (amp-style): the hub keeps a skills s
 _Avoid_: plugins (pi says extensions), modules, addons
 
 **Deployment**:
-The deployable whole: one alchemy program (`packages/deploy/alchemy.run.ts`) declaring the Worker, the `HUB` and `THREAD` Durable Object namespaces, the deployment secret, and the LLM provider keys — targeted at Cloudflare (`bun alchemy deploy`) or celld (the hand-maintained twin in `packages/deploy/celld/`). The DO classes (`SakuHubDO`, `SakuThreadDO`) are plain workerd — no alchemy runtime in the entry bundle — so the same code ships to both hosts.
+The deployable whole: one alchemy program (`packages/deploy/alchemy.run.ts`) declaring the Worker, the `HUB` and `THREAD` Durable Object namespaces, the deployment secret, and the Box/static-provisioner config — targeted at Cloudflare (`bun alchemy deploy`) or celld (the hand-maintained twin in `packages/deploy/celld/`). The DO classes (`SakuHubDO`, `SakuThreadDO`) are plain workerd — no alchemy runtime in the entry bundle — so the same code ships to both hosts. Model credentials are not deployment secrets: the catalog registers only the opencode-go provider (local: pi's `auth.json`/`models.json`; deployed: `OPENCODE_API_KEY` off the worker's bindings).
 _Avoid_: app, service, api
 
 **Env handle**:

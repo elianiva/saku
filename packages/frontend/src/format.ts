@@ -1,91 +1,47 @@
 /**
  * Formatting and extraction helpers (format.ts): the console renders pi's
- * vocabulary, so these narrow pi's message/entry shapes from the wire's
- * opaque `unknown` payloads (ADR 0004: entries cross verbatim; the wire
- * doesn't decode them).
+ * vocabulary, so these read pi's message/entry shapes through the console's
+ * schema projections (projection.ts — decoded at the boundaries, ADR 0005).
+ * Every field is optional: pi renders what is present, and `asString` is the
+ * defensive cast that keeps optional fields renderable.
  *
- * pi-ai's message shapes (what these helpers read):
+ * pi-ai's message shapes (what the projections read):
  * - user: `{ role: "user", content: string | (text|image)[] }`
  * - assistant: `{ role: "assistant", content: (text|thinking|toolCall)[] }`
  * - toolResult: `{ role: "toolResult", toolCallId, toolName, content, isError }`
  */
 
-// -- narrowing --------------------------------------------------------------
-
-interface Block {
-  readonly type?: unknown;
-  readonly text?: unknown;
-  readonly thinking?: unknown;
-  readonly id?: unknown;
-  readonly name?: unknown;
-  readonly arguments?: unknown;
-}
-
-interface MessageLike {
-  readonly role?: unknown;
-  readonly content?: unknown;
-  readonly toolCallId?: unknown;
-  readonly toolName?: unknown;
-  readonly isError?: unknown;
-  readonly stopReason?: unknown;
-  readonly errorMessage?: unknown;
-}
-
-interface EntryLike {
-  readonly id?: unknown;
-  readonly seq?: unknown;
-  readonly type?: unknown;
-  readonly message?: unknown;
-  readonly provider?: unknown;
-  readonly modelId?: unknown;
-  readonly thinkingLevel?: unknown;
-  readonly activeToolNames?: unknown;
-  readonly summary?: unknown;
-}
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null;
+import type { MessageProjection } from "./projection.ts";
 
 export const asString = (value: unknown): string => (typeof value === "string" ? value : "");
 
-export const entryOf = (value: unknown): EntryLike => (isRecord(value) ? value : {});
-
-export const messageOf = (value: unknown): MessageLike =>
-  isRecord(value) ? (value as unknown as MessageLike) : {};
-
-export const messageRole = (message: MessageLike): string => asString(message.role);
+export const messageRole = (message: MessageProjection): string => asString(message.role);
 
 /** An assistant message that failed: `stop: error` with the provider's error. */
-export const messageError = (message: MessageLike): string =>
+export const messageError = (message: MessageProjection): string =>
   message.stopReason === "error" ? asString(message.errorMessage) : "";
 
 // -- text -------------------------------------------------------------------
 
-const blockText = (block: Block): string => {
-  if (block.type === "text") return asString(block.text);
-  return "";
-};
-
 /** The joined text content of a message (all text blocks / raw strings). */
-export const messageText = (message: MessageLike): string => {
+export const messageText = (message: MessageProjection): string => {
   const content = message.content;
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
     return content
-      .map((block) => (isRecord(block) ? blockText(block as unknown as Block) : ""))
+      .map((block) => (block.type === "text" ? asString(block.text) : ""))
       .join("")
       .trim();
   }
   return "";
 };
 
-/** The joined thinking content of a message. */export const messageThinking = (message: MessageLike): string => {
+/** The joined thinking content of a message. */
+export const messageThinking = (message: MessageProjection): string => {
   const content = message.content;
   if (!Array.isArray(content)) return "";
   return content
-    .map((block) =>
-      isRecord(block) && block.type === "thinking" ? asString(block.thinking) : "",
-    )
+    .map((block) => (block.type === "thinking" ? asString(block.thinking) : ""))
     .join("")
     .trim();
 };
@@ -97,12 +53,12 @@ export interface ToolCallRow {
 }
 
 /** The tool calls an assistant message asks for. */
-export const messageToolCalls = (message: MessageLike): ToolCallRow[] => {
+export const messageToolCalls = (message: MessageProjection): ToolCallRow[] => {
   const content = message.content;
   if (!Array.isArray(content)) return [];
   const rows: ToolCallRow[] = [];
   for (const block of content) {
-    if (!isRecord(block) || block.type !== "toolCall") continue;
+    if (block.type !== "toolCall") continue;
     rows.push({
       id: asString(block.id),
       name: asString(block.name),
@@ -119,7 +75,7 @@ export interface ToolResultRow {
 }
 
 /** A toolResult message's payload. */
-export const messageToolResult = (message: MessageLike): ToolResultRow | null => {
+export const messageToolResult = (message: MessageProjection): ToolResultRow | null => {
   if (message.role !== "toolResult") return null;
   return {
     name: asString(message.toolName),

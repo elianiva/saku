@@ -25,12 +25,13 @@ const sakuDevBootstrap = (): Plugin => ({
   configureServer(server) {
     server.middlewares.use("/__saku", (_request, response) => {
       const sakuHome = process.env.SAKU_HOME ?? join(homedir(), ".saku");
-      void Promise.all([readMaybe(join(sakuHome, "worker.url")), readMaybe(join(sakuHome, "auth"))]).then(
-        ([url, token]) => {
-          response.setHeader("content-type", "application/json");
-          response.end(JSON.stringify({ url, token }));
-        },
-      );
+      void Promise.all([
+        readMaybe(join(sakuHome, "worker.url")),
+        readMaybe(join(sakuHome, "auth")),
+      ]).then(([url, token]) => {
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({ url, token }));
+      });
     });
   },
 });

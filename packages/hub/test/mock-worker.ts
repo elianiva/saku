@@ -23,6 +23,7 @@ import {
 } from "@saku/wire";
 
 import type { EnvHandle } from "@saku/env";
+import { makeHubError } from "../src/hub-error.ts";
 import { HubError, type EnvProvisioner } from "../src/index.ts";
 import type {
   HubEventSink,
@@ -36,7 +37,9 @@ import type {
  * (no handle), sandbox threads succeed with a canned handle (or fail,
  * when `fail` is set). `released` records every release call.
  */
-export const scriptedProvisioner = (options: { fail?: boolean } = {}): EnvProvisioner & {
+export const scriptedProvisioner = (
+  options: { fail?: boolean } = {},
+): EnvProvisioner & {
   readonly released: string[];
 } => {
   const released: string[] = [];
@@ -44,12 +47,11 @@ export const scriptedProvisioner = (options: { fail?: boolean } = {}): EnvProvis
     ensure: (thread, handle) => {
       if (thread.mode !== "sandbox") return Effect.succeed(Option.none());
       if (options.fail === true) {
-        return Effect.fail(new HubError({ message: "sandbox provisioning failed (scripted)" }));
+        return Effect.fail(makeHubError("provisioner", "sandbox provisioning failed (scripted)"));
       }
-      const existing: EnvHandle =
-        Option.isSome(handle)
-          ? handle.value
-          : { url: "ws://127.0.0.1:1", token: "env-token", boxId: "bx_scripted" };
+      const existing: EnvHandle = Option.isSome(handle)
+        ? handle.value
+        : { url: "ws://127.0.0.1:1", token: "env-token", boxId: "bx_scripted" };
       return Effect.succeed(Option.some(existing));
     },
     release: (threadId) =>
@@ -119,7 +121,7 @@ const canned = (
         tailSeq: 0,
       });
     default:
-      return Effect.fail(new HubError({ message: `unscripted command: ${command._tag}` }));
+      return Effect.fail(makeHubError("command", `unscripted command: ${command._tag}`));
   }
 };
 

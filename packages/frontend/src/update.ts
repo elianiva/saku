@@ -7,7 +7,7 @@
 
 import { Match as M } from "effect";
 import type { Command } from "foldkit";
-import type { SessionWireEvent } from "@saku/wire";
+import type { ThreadInfo } from "@saku/wire";
 
 import {
   AbortCmd,
@@ -19,18 +19,11 @@ import {
   ScrollTrailCmd,
   WireConnectCmd,
 } from "./commands.ts";
-import {
-  asString,
-  entryOf,
-  messageOf,
-  messageText,
-  messageThinking,
-  stringifyLive,
-} from "./format.ts";
+import { asString, messageText, messageThinking, stringifyLive } from "./format.ts";
 import type { AppMessage } from "./message.ts";
 import { Model, emptyLive, type LiveTool } from "./model.ts";
+import type { EntryProjection, SessionEventProjection } from "./projection.ts";
 import { Wire } from "./wire.ts";
-import type { ThreadInfo } from "@saku/wire";
 
 export type Commands = ReadonlyArray<Command.Command<AppMessage, never, Wire>>;
 export type UpdateReturn = readonly [Model, Commands];
@@ -52,14 +45,14 @@ const withThread = (model: Model, thread: ThreadInfo): Model => {
 // -- live run folding -------------------------------------------------------
 
 /** `entry_appended` on the active thread: grow the trail, dedupe by id. */
-const foldEntryAppended = (model: Model, entry: unknown): UpdateReturn => {
+const foldEntryAppended = (model: Model, entry: EntryProjection): UpdateReturn => {
   if (model.trail._tag !== "ready") return [model, none];
   const last = model.trail.entries[model.trail.entries.length - 1];
-  const id = asString(entryOf(entry).id);
-  if (last !== undefined && asString(entryOf(last).id) === id) return [model, none];
+  const id = asString(entry.id);
+  if (last !== undefined && asString(last.id) === id) return [model, none];
   // A message entry lands complete — the live region's copy of it is stale.
   const live =
-    entryOf(entry).type === "message"
+    entry.type === "message"
       ? { ...model.live, message: undefined, thinking: undefined }
       : model.live;
   return [
@@ -68,7 +61,7 @@ const foldEntryAppended = (model: Model, entry: unknown): UpdateReturn => {
       trail: {
         _tag: "ready",
         entries: [...model.trail.entries, entry],
-        tailSeq: Math.max(model.trail.tailSeq, Number(entryOf(entry).seq) || 0),
+        tailSeq: Math.max(model.trail.tailSeq, entry.seq ?? 0),
       },
       live,
     },
@@ -76,78 +69,80 @@ const foldEntryAppended = (model: Model, entry: unknown): UpdateReturn => {
   ];
 };
 
-const foldLiveTool = (tools: readonly LiveTool[], callId: string, next: Partial<LiveTool>): LiveTool[] =>
-  tools.map((tool) => (tool.callId === callId ? { ...tool, ...next } : tool));
+const foldLiveTool = (
+  tools: readonly LiveTool[],
+  callId: string,
+  next: Partial<LiveTool>,
+): LiveTool[] => tools.map((tool) => (tool.callId === callId ? { ...tool, ...next } : tool));
+
+/** The streaming message body shared by `message_start`/`message_end`. */
+const liveMessage = (model: Model, text: string): UpdateReturn => [
+  { ...model, live: { ...model.live, message: text } },
+  [ScrollTrailCmd()],
+];
 
 /** The wire's session events for the active thread → live region + trail. */
-const foldWireEvent = (model: Model, event: SessionWireEvent): UpdateReturn => {
-  switch (event.type) {
-    case "entry_appended":
-      return foldEntryAppended(model, event.entry);
-    case "message_start":
-    case "message_end": {
-      const text = messageText(messageOf(event.message));
-      return [{ ...model, live: { ...model.live, message: text } }, [ScrollTrailCmd()]];
-    }
-    case "message_update": {
-      const text = messageText(messageOf(event.message));
-      const thinking = messageThinking(messageOf(event.message));
-      return [
-        {
-          ...model,
-          live: {
-            ...model.live,
-            message: text === "" ? model.live.message : text,
-            thinking: thinking === "" ? model.live.thinking : thinking,
+const foldWireEvent = (model: Model, event: SessionEventProjection): UpdateReturn =>
+  M.value(event).pipe(
+    M.withReturnType<UpdateReturn>(),
+    M.tagsExhaustive({
+      entry_appended: ({ entry }) => foldEntryAppended(model, entry),
+      message_start: ({ message }) => liveMessage(model, messageText(message)),
+      message_end: ({ message }) => liveMessage(model, messageText(message)),
+      message_update: ({ message }) => {
+        const text = messageText(message);
+        const thinking = messageThinking(message);
+        return [
+          {
+            ...model,
+            live: {
+              ...model.live,
+              message: text === "" ? model.live.message : text,
+              thinking: thinking === "" ? model.live.thinking : thinking,
+            },
           },
-        },
-        [ScrollTrailCmd()],
-      ];
-    }
-    case "tool_execution_start": {
-      const tool: LiveTool = { callId: event.toolCallId, name: event.toolName, state: "running" };
-      return [{ ...model, live: { ...model.live, tools: [...model.live.tools, tool] } }, none];
-    }
-    case "tool_execution_update":
-      return [
+          [ScrollTrailCmd()],
+        ];
+      },
+      tool_execution_start: ({ toolCallId, toolName }) => {
+        const tool: LiveTool = { callId: toolCallId, name: toolName, state: "running" };
+        return [{ ...model, live: { ...model.live, tools: [...model.live.tools, tool] } }, none];
+      },
+      tool_execution_update: ({ toolCallId, partialResult }) => [
         {
           ...model,
           live: {
             ...model.live,
-            tools: foldLiveTool(model.live.tools, event.toolCallId, {
-              partial: stringifyLive(event.partialResult),
+            tools: foldLiveTool(model.live.tools, toolCallId, {
+              partial: stringifyLive(partialResult),
             }),
           },
         },
         none,
-      ];
-    case "tool_execution_end":
-      return [
+      ],
+      tool_execution_end: ({ toolCallId, isError, result }) => [
         {
           ...model,
           live: {
             ...model.live,
-            tools: foldLiveTool(model.live.tools, event.toolCallId, {
-              state: event.isError ? "failed" : "done",
-              result: stringifyLive(event.result),
+            tools: foldLiveTool(model.live.tools, toolCallId, {
+              state: isError ? "failed" : "done",
+              result: stringifyLive(result),
             }),
           },
         },
         none,
-      ];
-    case "settled":
-      return [{ ...model, live: emptyLive() }, none];
-    case "compaction_start":
-      return [
-        { ...model, live: { ...model.live, notice: `compacting (${event.reason})` } },
+      ],
+      settled: () => [{ ...model, live: emptyLive() }, none],
+      compaction_start: ({ reason }) => [
+        { ...model, live: { ...model.live, notice: `compacting (${reason})` } },
         none,
-      ];
-    case "compaction_end":
-      return [{ ...model, live: { ...model.live, notice: undefined } }, none];
-    default:
-      return [model, none];
-  }
-};
+      ],
+      compaction_end: () => [{ ...model, live: { ...model.live, notice: undefined } }, none],
+      // Unknown pi events degrade to a named no-op instead of a silent default.
+      unhandled: () => [model, none],
+    }),
+  );
 
 // -- update -----------------------------------------------------------------
 
@@ -159,10 +154,17 @@ export const update = (model: Model, message: AppMessage): UpdateReturn =>
       WireConnectRequested: () => [model, [WireConnectCmd()]],
       RetryRequested: () => [{ ...model, conn: { _tag: "connecting" } }, [WireConnectCmd()]],
       Connected: ({ hello }) => [
-        { ...model, conn: { _tag: "online", pid: hello.pid, version: hello.version }, banner: undefined },
+        {
+          ...model,
+          conn: { _tag: "online", pid: hello.pid, version: hello.version },
+          banner: undefined,
+        },
         [ListThreadsCmd()],
       ],
-      ConnectFailed: ({ message }) => [{ ...model, conn: { _tag: "offline", error: message } }, none],
+      ConnectFailed: ({ message }) => [
+        { ...model, conn: { _tag: "offline", error: message } },
+        none,
+      ],
       ConnectionClosed: () => [
         { ...model, conn: { _tag: "offline", error: "connection closed" } },
         none,
@@ -223,10 +225,7 @@ export const update = (model: Model, message: AppMessage): UpdateReturn =>
         model.active === id
           ? [{ ...model, trail: { _tag: "ready", entries, tailSeq } }, [ScrollTrailCmd()]]
           : [model, none],
-      TrailFailed: ({ message }) => [
-        { ...model, trail: { _tag: "failed", error: message } },
-        none,
-      ],
+      TrailFailed: ({ message }) => [{ ...model, trail: { _tag: "failed", error: message } }, none],
 
       // composer
       ComposerChanged: ({ text }) => [{ ...model, composer: text }, none],
@@ -243,9 +242,7 @@ export const update = (model: Model, message: AppMessage): UpdateReturn =>
 
       // wire events
       WireEvent: ({ threadId, event }) =>
-        threadId === model.active
-          ? foldWireEvent(model, event as SessionWireEvent)
-          : [model, none],
+        threadId === model.active ? foldWireEvent(model, event) : [model, none],
       ThreadChanged: ({ thread }) => [withThread(model, thread), none],
 
       // housekeeping

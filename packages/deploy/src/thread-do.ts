@@ -23,45 +23,22 @@
  * - `/disarm-idle`     — `deleteAlarm()`
  */
 
-import { Effect, Option, Ref } from "effect";
+import { Effect, Option } from "effect";
 import type { ExecutionEnv, StreamFn } from "@earendil-works/pi-agent-core";
+import { RemoteEnv, workerdSocketFactory, type EnvHandle } from "@saku/env/remote";
 import {
-  RemoteEnv,
-  workerdSocketFactory,
-  type EnvHandle,
-} from "@saku/env/remote";import {
   SessionHost,
+  SessionHostError,
   RegistryError,
+  runSessionCommand,
   type ModelCatalogShape,
   type ThreadRecord,
   type ThreadRegistryShape,
 } from "@saku/worker/isolate";
-import {
-  AbortResponse,
-  BranchResponse,
-  CompactResponse,
-  FollowUpResponse,
-  GetAvailableModelsResponse,
-  GetAvailableThinkingLevelsResponse,
-  GetEntriesResponse,
-  GetSessionStatsResponse,
-  GetStateResponse,
-  PromptResponse,
-  ResponsePayload,
-  SetAutoCompactionResponse,
-  SetFollowUpModeResponse,
-  SetModelResponse,
-  SetSessionNameResponse,
-  SetSteeringModeResponse,
-  SetThinkingLevelResponse,
-  SteerResponse,
-  THINKING_LEVELS,
-  type SessionCommand,
-  type SessionWireEvent,
-} from "@saku/wire";
+import { type ResponsePayload, type SessionCommand } from "@saku/wire";
 import type { HubEventSink, WorkerReport } from "@saku/hub/core";
+import { KvStore } from "@saku/store";
 
-import { doStorageKv } from "./kv.ts";
 import { varOrDefault, type DeploymentEnv } from "./env.ts";
 import { deploymentCatalog } from "./catalog.ts";
 import { pushToHub } from "./rpc.ts";
@@ -71,18 +48,16 @@ const RECORD_KEY = "record";
 const THREAD_ID_KEY = "thread-id";
 const ENV_HANDLE_KEY = "env-handle";
 
-const toError =
+const toSessionHostError =
   (message: string) =>
-  (error: unknown): Error =>
-    new Error(`${message}: ${error instanceof Error ? error.message : String(error)}`);
+  (error: unknown): SessionHostError =>
+    new SessionHostError({
+      message: `${message}: ${error instanceof Error ? error.message : String(error)}`,
+      cause: error,
+    });
 
-/** The reads that never start a session (the hub's gate mirrors this). */
-const READ_ONLY = new Set<SessionCommand["_tag"]>([
-  "get_entries",
-  "get_state",
-  "get_available_models",
-  "get_available_thinking_levels",
-]);
+/** The failures a session command can produce (stringified at the fetch boundary). */
+type CommandError = SessionHostError | RegistryError;
 
 export class SakuThreadDO {
   private host: SessionHost | undefined;
@@ -92,14 +67,12 @@ export class SakuThreadDO {
   /** The handle the live env was built with (a changed handle rebuilds). */
   private envKey: string | undefined;
   private threadId: string | undefined;
-  private readonly kv;
   private readonly catalog: ModelCatalogShape;
 
   constructor(
     private readonly state: DurableObjectState,
     private readonly deployment: DeploymentEnv,
   ) {
-    this.kv = doStorageKv(this.state.storage);
     this.catalog = deploymentCatalog(this.deployment);
   }
 
@@ -234,57 +207,55 @@ export class SakuThreadDO {
   private runCommand(
     record: ThreadRecord,
     command: SessionCommand,
-  ): Effect.Effect<{ payload: ResponsePayload; tailSeq: number }, Error, never> {
+  ): Effect.Effect<{ payload: ResponsePayload; tailSeq: number }, CommandError, never> {
     const self = this;
     return Effect.gen(function* () {
-      // Read-only commands never start a session: a thread whose session
-      // has never begun answers from the record/catalog alone.
-      if (self.host === undefined && READ_ONLY.has(command._tag)) {
-        return yield* self.readOnlyWithoutHost(command);
+      // The shared dispatch serves the read-only commands without a host
+      // (a thread whose session has never begun answers from the
+      // record/catalog alone, ADR 0004) and starts the session on the
+      // first mutating command.
+      const payload = yield* runSessionCommand(
+        {
+          hostFor: () => self.hostFor(record),
+          readOnlyHost: () => self.readOnlyHost(record),
+          availableModels: () =>
+            self.catalog
+              .available()
+              .pipe(Effect.map((models) => models.map((model) => self.catalog.toWireInfo(model)))),
+        },
+        record.id,
+        command,
+      );
+      // Reads without a host report tailSeq 0; anything that touched a host
+      // reports the live trail's tail.
+      let tailSeq = 0;
+      if (self.host !== undefined) {
+        const { tailSeq: live } = yield* self.host
+          .getEntries()
+          .pipe(Effect.mapError(toSessionHostError("tailSeq")));
+        tailSeq = live;
       }
-      const host = yield* self.hostFor(record);
-      const payload = yield* self.runHostCommand(host, command);
-      const { tailSeq } = yield* host
-        .getEntries()
-        .pipe(Effect.mapError(toError("tailSeq")));
       return { payload, tailSeq };
     });
   }
 
-  /** The no-session answers for the read-only commands. */
-  private readOnlyWithoutHost(
-    command: SessionCommand,
-  ): Effect.Effect<{ payload: ResponsePayload; tailSeq: number }, never, never> {
+  /** The live host only when the thread's session has already started; none otherwise. */
+  private readOnlyHost(
+    record: ThreadRecord,
+  ): Effect.Effect<Option.Option<SessionHost>, CommandError, never> {
     const self = this;
     return Effect.gen(function* () {
-      const payload: ResponsePayload =
-        command._tag === "get_entries"
-          ? GetEntriesResponse.make({ entries: [], tailSeq: 0, leafId: null })
-          : command._tag === "get_state"
-            ? GetStateResponse.make({
-                state: {
-                  sessionId: null,
-                  state: "idle",
-                  tailSeq: 0,
-                  model: null,
-                  thinkingLevel: "off",
-                },
-              })
-            : command._tag === "get_available_models"
-              ? GetAvailableModelsResponse.make({
-                  models: (yield* self.catalog.available()).map((model) =>
-                    self.catalog.toWireInfo(model),
-                  ),
-                })
-              : GetAvailableThinkingLevelsResponse.make({ levels: [...THINKING_LEVELS] });
-      return { payload, tailSeq: 0 };
+      if (self.host !== undefined) return Option.some(self.host);
+      // A session that has started (sessionId back-filled through the push
+      // channel) rebuilds its host for reads; a never-started thread answers
+      // from the record/catalog alone (ADR 0004).
+      if (record.sessionId === null) return Option.none();
+      return Option.some(yield* self.hostFor(record));
     });
   }
 
   /** The lazy host: built on the first mutating command; crashed hosts rebuild. */
-  private hostFor(
-    record: ThreadRecord,
-  ): Effect.Effect<SessionHost, Error, never> {
+  private hostFor(record: ThreadRecord): Effect.Effect<SessionHost, CommandError, never> {
     const self = this;
     return Effect.gen(function* () {
       const existing = self.host;
@@ -295,45 +266,48 @@ export class SakuThreadDO {
         self.host = undefined;
       }
       // The env: the persisted handle, connected before the host runs.
-      const handle = yield* Effect.promise(() => self.loadEnvHandle());
+      const handle = yield* Effect.tryPromise({
+        try: () => self.loadEnvHandle(),
+        catch: toSessionHostError("load env handle"),
+      });
       if (handle === null) {
-        return yield* Effect.fail(new Error("no env handle — the hub has not provisioned an env"));
+        return yield* Effect.fail(
+          new SessionHostError({ message: "no env handle — the hub has not provisioned an env" }),
+        );
       }
       const env = yield* Effect.promise(() => self.envFor(handle));
       yield* Effect.promise(() => env.connect());
       const registry = self.registryShape(record);
-      const host = yield* Effect.tryPromise({
-        try: () =>
-          Effect.runPromise(
-            SessionHost.create({
-              threadId: record.id,
-              record,
-              kv: self.kv,
-              catalog: self.catalog,
-              registry,
-              env,
-              sink: (event) => {
-                void Effect.runFork(
-                  Effect.gen(function* () {
-                    const live = self.host;
-                    if (live !== undefined) {
-                      const { tailSeq } = yield* live
-                        .getEntries()
-                        .pipe(Effect.catch(() => Effect.succeed({ tailSeq: 0 })));
-                      pushToHub(self.deployment, {
-                        type: "sessionEvent",
-                        threadId: record.id,
-                        event,
-                        tailSeq,
-                      });
-                    }
-                  }),
-                );
-              },
+      const host = yield* SessionHost.create({
+        threadId: record.id,
+        record,
+        catalog: self.catalog,
+        registry,
+        env,
+        sink: (event) => {
+          void Effect.runFork(
+            Effect.gen(function* () {
+              const live = self.host;
+              if (live !== undefined) {
+                const { tailSeq } = yield* live
+                  .getEntries()
+                  .pipe(Effect.catch(() => Effect.succeed({ tailSeq: 0 })));
+                pushToHub(self.deployment, {
+                  type: "sessionEvent",
+                  threadId: record.id,
+                  event,
+                  tailSeq,
+                });
+              }
             }),
-          ),
-        catch: toError("create host"),
-      });
+          );
+        },
+      }).pipe(
+        // The thread's trail lives on this DO's storage (the platform
+        // boundary, the `KvStore` service, doStorage backend).
+        Effect.provide(KvStore.doStorage(self.state.storage)),
+        Effect.mapError(toSessionHostError("create host")),
+      );
       self.host = host;
       return host;
     });
@@ -369,9 +343,7 @@ export class SakuThreadDO {
       get: (threadId) =>
         Effect.succeed(threadId === record.id ? Option.some(current()) : Option.none()),
       create: () =>
-        Effect.fail(
-          new RegistryError({ message: "thread DO: the hub owns thread creation" }),
-        ),
+        Effect.fail(new RegistryError({ message: "thread DO: the hub owns thread creation" })),
       update: (threadId, patch) =>
         Effect.gen(function* () {
           if (threadId !== record.id) return Option.none();
@@ -390,110 +362,11 @@ export class SakuThreadDO {
       toInfo: () => Effect.succeed(Option.none()),
     };
   }
-
-  /** Forward one command to the host and shape the wire response. */
-  private runHostCommand(
-    host: SessionHost,
-    command: SessionCommand,
-  ): Effect.Effect<ResponsePayload, Error, never> {
-    const self = this;
-    return Effect.gen(function* () {
-      switch (command._tag) {
-        case "prompt":
-          yield* host.prompt(command.text, command.images).pipe(Effect.mapError(toError("prompt")));
-          return PromptResponse.make({});
-        case "steer":
-          yield* host.steer(command.text).pipe(Effect.mapError(toError("steer")));
-          return SteerResponse.make({});
-        case "follow_up":
-          yield* host.followUp(command.text).pipe(Effect.mapError(toError("follow_up")));
-          return FollowUpResponse.make({});
-        case "abort":
-          yield* host.abort().pipe(Effect.mapError(toError("abort")));
-          return AbortResponse.make({});
-        case "set_steering_mode":
-          yield* host.setSteeringMode(command.mode);
-          return SetSteeringModeResponse.make({});
-        case "set_follow_up_mode":
-          yield* host.setFollowUpMode(command.mode);
-          return SetFollowUpModeResponse.make({});
-        case "compact":
-          return CompactResponse.make({
-            result: yield* host
-              .compact(command.customInstructions)
-              .pipe(Effect.mapError(toError("compact"))),
-          });
-        case "set_auto_compaction":
-          yield* host
-            .setAutoCompaction(command.enabled)
-            .pipe(Effect.mapError(toError("set_auto_compaction")));
-          return SetAutoCompactionResponse.make({});
-        case "set_model": {
-          const model = yield* host
-            .setModel(command.provider, command.modelId)
-            .pipe(Effect.mapError(toError("set_model")));
-          return SetModelResponse.make({ model });
-        }
-        case "set_thinking_level":
-          return SetThinkingLevelResponse.make({
-            level: yield* host
-              .setThinkingLevel(command.level)
-              .pipe(Effect.mapError(toError("set_thinking_level"))),
-          });
-        case "set_session_name":
-          yield* host
-            .setSessionName(command.name)
-            .pipe(Effect.mapError(toError("set_session_name")));
-          return SetSessionNameResponse.make({});
-        case "branch":
-          return BranchResponse.make({
-            leafId: yield* host
-              .branch(command.entryId)
-              .pipe(Effect.mapError(toError("branch"))),
-          });
-        case "get_session_stats":
-          return GetSessionStatsResponse.make({
-            stats: yield* host
-              .getSessionStats()
-              .pipe(Effect.mapError(toError("get_session_stats"))),
-          });
-        case "get_entries": {
-          const { entries, tailSeq, leafId } = yield* host
-            .getEntries(command.sinceSeq)
-            .pipe(Effect.mapError(toError("get_entries")));
-          return GetEntriesResponse.make({ entries, tailSeq, leafId });
-        }
-        case "get_state":
-          return GetStateResponse.make({
-            state: yield* host.getState().pipe(Effect.mapError(toError("get_state"))),
-          });
-        case "get_available_models":
-          return GetAvailableModelsResponse.make({
-            models: (yield* self.catalog.available()).map((model) =>
-              self.catalog.toWireInfo(model),
-            ),
-          });
-        case "get_available_thinking_levels":
-          return GetAvailableThinkingLevelsResponse.make({
-            levels: yield* host.getAvailableThinkingLevels(),
-          });
-        default: {
-          // Exhaustiveness: a new SessionCommand tag must be handled here.
-          const exhaustive: never = command;
-          void exhaustive;
-          return yield* Effect.fail(new Error("unknown session command"));
-        }
-      }
-    });
-  }
 }
 
 const envKeyOf = (handle: EnvHandle | null): string =>
-  handle === null
-    ? "none"
-    : `${handle.url}|${handle.token}|${handle.relay?.envId ?? ""}`;
+  handle === null ? "none" : `${handle.url}|${handle.token}|${handle.relay?.envId ?? ""}`;
 
 const jsonOk = (payload: unknown): Response => Response.json({ ok: true, payload });
 
-const jsonError = (error: string): Response =>
-  Response.json({ ok: false, error }, { status: 400 });
+const jsonError = (error: string): Response => Response.json({ ok: false, error }, { status: 400 });

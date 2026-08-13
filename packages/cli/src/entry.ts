@@ -57,7 +57,12 @@ const connect = (): Effect.Effect<WireClient, Error, never> =>
     return client;
   });
 
-/** Print the error and exit; the only imperative boundary of the CLI. */
+/**
+ * Print the error and exit; the only imperative boundary of the CLI. Usage
+ * errors are intentionally plain Errors — the CLI is the process edge, and
+ * the message is the process's to print (opencode-style "plain Error at
+ * process edges").
+ */
 const fail = (error: unknown): never => {
   const message = error instanceof Error ? error.message : String(error);
   console.error(`saku: ${message}`);
@@ -188,7 +193,10 @@ const cmdDaemon = (sub: string | undefined): Effect.Effect<void, Error, never> =
     }
   });
 
-const cmdEnv = (sub: string | undefined, hubUrl: string | undefined): Effect.Effect<void, Error, never> =>
+const cmdEnv = (
+  sub: string | undefined,
+  hubUrl: string | undefined,
+): Effect.Effect<void, Error, never> =>
   Effect.gen(function* () {
     switch (sub) {
       case "start": {
@@ -200,8 +208,7 @@ const cmdEnv = (sub: string | undefined, hubUrl: string | undefined): Effect.Eff
         }
         const pid = yield* ensureEnvDaemon(config);
         const url = yield* readEnvUrl();
-        const relay =
-          config.hubUrl !== undefined ? ` (relay to ${config.hubUrl})` : "";
+        const relay = config.hubUrl !== undefined ? ` (relay to ${config.hubUrl})` : "";
         console.log(
           `env started (pid ${pid}, ${Option.isSome(url) ? url.value : "no url"})${relay}`,
         );
@@ -264,7 +271,10 @@ const main = (): Effect.Effect<void, WireError | Error, never> =>
         yield* cmdDaemon(rest[0]);
         return;
       case "env":
-        yield* cmdEnv(rest[0], rest.includes("--hub") ? rest[rest.indexOf("--hub") + 1] : undefined);
+        yield* cmdEnv(
+          rest[0],
+          rest.includes("--hub") ? rest[rest.indexOf("--hub") + 1] : undefined,
+        );
         return;
       case "list":
         yield* cmdList();

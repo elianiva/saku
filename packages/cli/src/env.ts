@@ -19,28 +19,26 @@ import { mkdir, open, readFile, writeFile } from "node:fs/promises";
 import { randomBytes, randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Effect, Option } from "effect";
+import { Effect, Option, Schedule, Schema } from "effect";
 import { RemoteEnv, nodeSocket } from "@saku/env";
 import { getEnvConfigPath, getEnvLogPath, getEnvUrlPath } from "@saku/env";
 import { getAuthPath } from "@saku/worker";
 
-export const resolveEnvEntry = (): string =>
-  fileURLToPath(import.meta.resolve("@saku/env/entry"));
+export const resolveEnvEntry = (): string => fileURLToPath(import.meta.resolve("@saku/env/entry"));
 
-export interface EnvConfig {
-  readonly envId: string;
-  readonly token: string;
-  readonly hubUrl?: string;
-}
+const EnvConfigSchema = Schema.Struct({
+  envId: Schema.String.check(Schema.isMinLength(1)),
+  token: Schema.String.check(Schema.isMinLength(1)),
+  hubUrl: Schema.optional(Schema.String),
+});
+const DECODE_ENV_CONFIG = Schema.decodeUnknownOption(EnvConfigSchema);
+export type EnvConfig = Schema.Schema.Type<typeof EnvConfigSchema>;
 
 /** Read the env identity; none before the first `saku env start`. */
 export const readEnvConfig = (): Effect.Effect<Option.Option<EnvConfig>, never, never> =>
   Effect.tryPromise(() => readFile(getEnvConfigPath(), "utf8")).pipe(
-    Effect.map((content) =>
-      Option.some(JSON.parse(content) as EnvConfig).pipe(
-        Option.filter((config) => config.envId.length > 0 && config.token.length > 0),
-      ),
-    ),
+    Effect.flatMap((content) => Effect.try(() => JSON.parse(content) as unknown)),
+    Effect.map(DECODE_ENV_CONFIG),
     Effect.catch(() => Effect.succeed(Option.none())),
   );
 
@@ -127,7 +125,9 @@ export const envStatus = (): Effect.Effect<EnvStatus, never, never> =>
 /** Spawn a detached env daemon; returns its pid (0 when spawn failed). */
 export const spawnEnvDaemon = (config: EnvConfig): Effect.Effect<number, Error, never> =>
   Effect.gen(function* () {
-    yield* Effect.tryPromise(() => mkdir(dirname(getEnvLogPath()), { recursive: true, mode: 0o700 }));
+    yield* Effect.tryPromise(() =>
+      mkdir(dirname(getEnvLogPath()), { recursive: true, mode: 0o700 }),
+    );
     const logFd = yield* Effect.tryPromise(() => open(getEnvLogPath(), "a"));
     // The relay credential is the deployment secret (~/.saku/auth, the
     // worker's token); the env daemon presents it in relay_hello. Mint it
@@ -159,15 +159,38 @@ export const ensureEnvDaemon = (config: EnvConfig): Effect.Effect<number, Error,
     const status = yield* envStatus();
     if (status.running && status.pid !== undefined) return status.pid;
     const pid = yield* spawnEnvDaemon(config);
-    for (let i = 0; i < 100; i++) {
-      yield* Effect.sleep("100 millis");
-      const now = yield* envStatus();
-      if (now.running && now.pid !== undefined) return now.pid;
-    }
-    return yield* Effect.fail(
-      new Error(`env daemon did not come up (spawned pid ${pid}); see ${getEnvLogPath()}`),
+    const now = yield* waitForEnvDaemon().pipe(
+      Effect.mapError(
+        () => new Error(`env daemon did not come up (spawned pid ${pid}); see ${getEnvLogPath()}`),
+      ),
     );
+    return now.pid;
   });
+
+/**
+ * Probe until the env daemon answers: first probe + 99 retries, 100 ms apart.
+ * The error channel is the retry-exhausted probe failure (`undefined`).
+ */
+const waitForEnvDaemon = (): Effect.Effect<EnvStatus & { pid: number }, undefined, never> =>
+  envStatus().pipe(
+    Effect.filterOrFail(
+      (status): status is EnvStatus & { pid: number } => status.running && status.pid !== undefined,
+      () => undefined,
+    ),
+    Effect.retry({ times: 99, schedule: Schedule.spaced("100 millis") }),
+  );
+
+/** Probe until the env daemon is gone: first probe + 49 retries, 100 ms apart. */
+const waitForEnvStop = (): Effect.Effect<void, never, never> =>
+  envStatus().pipe(
+    Effect.filterOrFail(
+      (status) => !status.running,
+      () => undefined,
+    ),
+    Effect.retry({ times: 49, schedule: Schedule.spaced("100 millis") }),
+    // 50 probes exhausted: give up silently, like the old loop's break.
+    Effect.catch(() => Effect.void),
+  );
 
 /** Stop the env daemon; returns the pid that was stopped, or none. */
 export const stopEnvDaemon = (): Effect.Effect<Option.Option<number>, never, never> =>
@@ -177,10 +200,6 @@ export const stopEnvDaemon = (): Effect.Effect<Option.Option<number>, never, nev
     const pid = status.pid;
     // Already gone is fine — the process was reaped between the probe and now.
     yield* Effect.try(() => process.kill(pid, "SIGTERM")).pipe(Effect.catch(() => Effect.void));
-    for (let i = 0; i < 50; i++) {
-      yield* Effect.sleep("100 millis");
-      const now = yield* envStatus();
-      if (!now.running) break;
-    }
+    yield* waitForEnvStop();
     return Option.some(pid);
   });

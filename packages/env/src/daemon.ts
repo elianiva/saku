@@ -24,7 +24,7 @@
  */
 
 import { WebSocketServer, type WebSocket } from "ws";
-import { Effect, FileSystem, Result, Schema, Scope } from "effect";
+import { Effect, FileSystem, Match, Result, Schema, Scope } from "effect";
 import type {
   ExecutionEnv,
   ExecutionError,
@@ -119,85 +119,71 @@ const runOp = (
       outcome.ok ? { ok: true, payload: outcome.value } : fail(outcome.error),
     );
 
-  switch (op._tag) {
-    case "health":
-      return Promise.resolve({
-        ok: true,
-        payload: { cwd: ctx.cwd, pid: ctx.pid, version: ENV_VERSION },
-      });
-    case "absolute_path":
-      return run<string, FileError>(env.absolutePath(op.path));
-    case "join_path":
-      return run<string, FileError>(env.joinPath([...op.parts]));
-    case "read_text_file":
-      return run<string, FileError>(env.readTextFile(op.path));
-    case "read_text_lines":
-      return run<string[], FileError>(
-        env.readTextLines(
-          op.path,
-          op.maxLines === undefined ? undefined : { maxLines: op.maxLines },
-        ),
-      );
-    case "read_binary_file":
-      return run<string, FileError>(
-        env.readBinaryFile(op.path).then((outcome) =>
-          outcome.ok
-            ? {
-                ok: true as const,
-                value: Buffer.from(outcome.value).toString("base64"),
-              }
-            : { ok: false as const, error: outcome.error },
-        ),
-      );
-    case "write_file": {
-      const content = op.encoding === "base64" ? Buffer.from(op.content, "base64") : op.content;
-      return run<void, FileError>(env.writeFile(op.path, content));
-    }
-    case "append_file": {
-      const content = op.encoding === "base64" ? Buffer.from(op.content, "base64") : op.content;
-      return run<void, FileError>(env.appendFile(op.path, content));
-    }
-    case "rename_file":
-      return run<void, FileError>(env.renameFile(op.sourcePath, op.destinationPath));
-    case "file_info":
-      return run<FileInfo, FileError>(env.fileInfo(op.path));
-    case "list_dir":
-      return run<FileInfo[], FileError>(env.listDir(op.path));
-    case "canonical_path":
-      return run<string, FileError>(env.canonicalPath(op.path));
-    case "exists":
-      return run<boolean, FileError>(env.exists(op.path));
-    case "create_dir":
-      return run<void, FileError>(env.createDir(op.path, { recursive: op.recursive ?? true }));
-    case "remove":
-      return run<void, FileError>(env.remove(op.path, { recursive: op.recursive ?? false, force: op.force ?? false }));
-    case "create_temp_dir":
-      return run<string, FileError>(env.createTempDir(op.prefix));
-    case "create_temp_file":
-      return run<string, FileError>(env.createTempFile(op.prefix === undefined ? {} : { prefix: op.prefix }));
-    case "exec": {
-      const controller = new AbortController();
-      ctx.aborters.set(id, () => controller.abort());
-      return run<{ stdout: string; stderr: string; exitCode: number }, ExecutionError>(
-        env.exec(op.command, {
-          ...(op.cwd === undefined ? {} : { cwd: op.cwd }),
-          ...(op.env === undefined ? {} : { env: op.env }),
-          ...(op.timeout === undefined ? {} : { timeout: op.timeout }),
-          ...(op.inheritEnv === undefined ? {} : { inheritEnv: op.inheritEnv }),
-          abortSignal: controller.signal,
-          onStdout: (text) => ctx.send(EnvStream.make({ id, kind: "stdout", text })),
-          onStderr: (text) => ctx.send(EnvStream.make({ id, kind: "stderr", text })),
+  return Match.value(op).pipe(
+    Match.tagsExhaustive({
+      health: () =>
+        Promise.resolve({
+          ok: true as const,
+          payload: { cwd: ctx.cwd, pid: ctx.pid, version: ENV_VERSION },
         }),
-      );
-    }
-    default: {
-      const exhaustive: never = op;
-      return Promise.resolve({
-        ok: false,
-        error: { kind: "unknown", message: `unknown op: ${String(exhaustive)}` },
-      });
-    }
-  }
+      absolute_path: ({ path }) => run<string, FileError>(env.absolutePath(path)),
+      join_path: ({ parts }) => run<string, FileError>(env.joinPath([...parts])),
+      read_text_file: ({ path }) => run<string, FileError>(env.readTextFile(path)),
+      read_text_lines: ({ path, maxLines }) =>
+        run<string[], FileError>(
+          env.readTextLines(path, maxLines === undefined ? undefined : { maxLines }),
+        ),
+      read_binary_file: ({ path }) =>
+        run<string, FileError>(
+          env.readBinaryFile(path).then((outcome) =>
+            outcome.ok
+              ? {
+                  ok: true as const,
+                  value: Buffer.from(outcome.value).toString("base64"),
+                }
+              : { ok: false as const, error: outcome.error },
+          ),
+        ),
+      write_file: ({ path, content, encoding }) => {
+        const bytes = encoding === "base64" ? Buffer.from(content, "base64") : content;
+        return run<void, FileError>(env.writeFile(path, bytes));
+      },
+      append_file: ({ path, content, encoding }) => {
+        const bytes = encoding === "base64" ? Buffer.from(content, "base64") : content;
+        return run<void, FileError>(env.appendFile(path, bytes));
+      },
+      rename_file: ({ sourcePath, destinationPath }) =>
+        run<void, FileError>(env.renameFile(sourcePath, destinationPath)),
+      file_info: ({ path }) => run<FileInfo, FileError>(env.fileInfo(path)),
+      list_dir: ({ path }) => run<FileInfo[], FileError>(env.listDir(path)),
+      canonical_path: ({ path }) => run<string, FileError>(env.canonicalPath(path)),
+      exists: ({ path }) => run<boolean, FileError>(env.exists(path)),
+      create_dir: ({ path, recursive }) =>
+        run<void, FileError>(env.createDir(path, { recursive: recursive ?? true })),
+      remove: ({ path, recursive, force }) =>
+        run<void, FileError>(
+          env.remove(path, { recursive: recursive ?? false, force: force ?? false }),
+        ),
+      create_temp_dir: ({ prefix }) => run<string, FileError>(env.createTempDir(prefix)),
+      create_temp_file: ({ prefix }) =>
+        run<string, FileError>(env.createTempFile(prefix === undefined ? {} : { prefix })),
+      exec: ({ command, cwd, env: opEnv, timeout, inheritEnv }) => {
+        const controller = new AbortController();
+        ctx.aborters.set(id, () => controller.abort());
+        return run<{ stdout: string; stderr: string; exitCode: number }, ExecutionError>(
+          env.exec(command, {
+            ...(cwd === undefined ? {} : { cwd }),
+            ...(opEnv === undefined ? {} : { env: opEnv }),
+            ...(timeout === undefined ? {} : { timeout }),
+            ...(inheritEnv === undefined ? {} : { inheritEnv }),
+            abortSignal: controller.signal,
+            onStdout: (text) => ctx.send(EnvStream.make({ id, kind: "stdout", text })),
+            onStderr: (text) => ctx.send(EnvStream.make({ id, kind: "stderr", text })),
+          }),
+        );
+      },
+    }),
+  );
 };
 
 /**

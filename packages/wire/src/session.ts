@@ -116,6 +116,19 @@ export const SessionCommand = S.Union([
 ]);
 export type SessionCommand = S.Schema.Type<typeof SessionCommand>;
 
+/**
+ * The session commands that never start a session or wake an env (ADR 0004):
+ * browsing a thread is free, and a stopped Box stays stopped until a prompt.
+ * The shared session-command dispatch (worker/session-commands.ts) serves
+ * these from the registry/catalog alone when no session host exists.
+ */
+export const READ_ONLY_COMMANDS: ReadonlySet<SessionCommand["_tag"]> = new Set([
+  "get_entries",
+  "get_state",
+  "get_available_models",
+  "get_available_thinking_levels",
+]);
+
 // ---------------------------------------------------------------------------
 // Command responses (server → console)
 // ---------------------------------------------------------------------------

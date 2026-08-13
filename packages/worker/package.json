@@ -18,6 +18,10 @@
     "./daemon": {
       "types": "./src/daemon-entry.ts",
       "import": "./src/daemon-entry.ts"
+    },
+    "./fake-provider": {
+      "types": "./src/fake-provider.ts",
+      "import": "./src/fake-provider.ts"
     }
   },
   "scripts": {

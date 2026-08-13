@@ -17,6 +17,7 @@ import {
   type AppMessage,
 } from "./message.ts";
 import type { Model } from "./model.ts";
+import { decodeSessionEvent } from "./projection.ts";
 import { Wire } from "./wire.ts";
 
 export const subscriptions = Subscription.make<Model, AppMessage, Wire>()(() => ({
@@ -26,7 +27,12 @@ export const subscriptions = Subscription.make<Model, AppMessage, Wire>()(() => 
         Stream.callback<AppMessage>((queue) =>
           Effect.gen(function* () {
             const offEvent = client.on("event", (payload) => {
-              Queue.offerUnsafe(queue, WireEvent({ threadId: payload.threadId, event: payload.event }));
+              // Decode at the boundary: the wire's TS-typed event becomes the
+              // console's schema projection (ADR 0005) before anything folds it.
+              Queue.offerUnsafe(
+                queue,
+                WireEvent({ threadId: payload.threadId, event: decodeSessionEvent(payload.event) }),
+              );
             });
             const offChanged = client.on("thread_changed", (thread) => {
               Queue.offerUnsafe(queue, ThreadChanged({ thread }));

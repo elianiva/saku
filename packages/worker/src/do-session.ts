@@ -16,6 +16,9 @@
  * to do (unlike the jsonl backend). Writes are serialized through a promise
  * tail, mirroring `JsonlSessionStorage`, because the sequence numbers must
  * be assigned in log order.
+ *
+ * The KvStore seam is effect-based; this file is pi's promise seam, so each
+ * kv call crosses once with `Effect.runPromise` at this boundary.
  */
 
 import {
@@ -40,7 +43,9 @@ import {
   type SessionStorage,
 } from "@earendil-works/pi-agent-core";
 
-import type { KvStore } from "@saku/store";
+import { Effect } from "effect";
+
+import type { KvStoreShape } from "@saku/store";
 import { type SessionMutation, SessionState } from "./session-state.ts";
 
 export interface DoSessionMetadata extends SessionMetadata {
@@ -83,7 +88,7 @@ const parseMutation = (key: string, value: Uint8Array): SessionMutation => {
 };
 
 /** A KvStore scoped to one session's key prefix. */
-const prefixedKv = (kv: KvStore, prefix: string): KvStore => ({
+const prefixedKv = (kv: KvStoreShape, prefix: string): KvStoreShape => ({
   get: (key) => kv.get(`${prefix}${key}`),
   put: (key, value) => kv.put(`${prefix}${key}`, value),
   delete: (key) => kv.delete(`${prefix}${key}`),
@@ -96,28 +101,28 @@ const prefixedKv = (kv: KvStore, prefix: string): KvStore => ({
  * pi's jsonl storage — only the persistence medium differs.
  */
 export class DoSessionStorage implements SessionStorage<DoSessionMetadata> {
-  private readonly kv: KvStore;
+  private readonly kv: KvStoreShape;
   private readonly metadata: DoSessionMetadata;
   private readonly state: SessionState;
   /** Serializes mutations so sequence numbers are assigned in log order. */
   private tail: Promise<unknown> = Promise.resolve();
 
   /** Internal: build via `create`/`load`/the repo. */
-  constructor(kv: KvStore, metadata: DoSessionMetadata, state: SessionState) {
+  constructor(kv: KvStoreShape, metadata: DoSessionMetadata, state: SessionState) {
     this.kv = kv;
     this.metadata = metadata;
     this.state = state;
   }
 
   /** Create a fresh session: metadata first, then an empty log. */
-  static async create(kv: KvStore, metadata: DoSessionMetadata): Promise<DoSessionStorage> {
-    await kv.put("meta", encode(JSON.stringify(metadata)));
+  static async create(kv: KvStoreShape, metadata: DoSessionMetadata): Promise<DoSessionStorage> {
+    await Effect.runPromise(kv.put("meta", encode(JSON.stringify(metadata))));
     return new DoSessionStorage(kv, metadata, new SessionState());
   }
 
   /** Load a session by replaying its log. */
-  static async load(kv: KvStore, id: string): Promise<DoSessionStorage> {
-    const metaValue = await kv.get("meta");
+  static async load(kv: KvStoreShape, id: string): Promise<DoSessionStorage> {
+    const metaValue = await Effect.runPromise(kv.get("meta"));
     if (metaValue === undefined) {
       throw new SessionError("not_found", `Session not found: ${id}`);
     }
@@ -126,7 +131,7 @@ export class DoSessionStorage implements SessionStorage<DoSessionMetadata> {
       throw new SessionError("invalid_entry", `Session id does not match metadata: ${id}`);
     }
     const state = new SessionState();
-    const loaded = await kv.list({ prefix: "log/" });
+    const loaded = await Effect.runPromise(kv.list({ prefix: "log/" }));
     const mutations = [...loaded].sort((a, b) => Number(a.key.slice(4)) - Number(b.key.slice(4)));
     for (const mutation of mutations) {
       state.applyMutation(parseMutation(mutation.key, mutation.value));
@@ -313,7 +318,9 @@ export class DoSessionStorage implements SessionStorage<DoSessionMetadata> {
 
   /** Serialize one mutation to the log (ordered through the tail). */
   async appendMutation(mutation: SessionMutation): Promise<void> {
-    await this.kv.put(logKey(mutationSeq(mutation)), encode(JSON.stringify(mutation)));
+    await Effect.runPromise(
+      this.kv.put(logKey(mutationSeq(mutation)), encode(JSON.stringify(mutation))),
+    );
   }
 }
 
@@ -330,9 +337,9 @@ const mutationSeq = (mutation: SessionMutation): number =>
  * session, and pi's conformance suite passes against this backend.
  */
 export class DoSessionRepo implements SessionRepo<DoSessionMetadata> {
-  private readonly kv: KvStore;
+  private readonly kv: KvStoreShape;
 
-  constructor(kv: KvStore) {
+  constructor(kv: KvStoreShape) {
     this.kv = kv;
   }
 
@@ -340,7 +347,7 @@ export class DoSessionRepo implements SessionRepo<DoSessionMetadata> {
     const id = options.id ?? crypto.randomUUID().replaceAll("-", "");
     validateSessionId(id);
     const prefix = sessionPrefix(id);
-    if ((await this.kv.get(`${prefix}meta`)) !== undefined) {
+    if ((await Effect.runPromise(this.kv.get(`${prefix}meta`))) !== undefined) {
       throw new SessionError("already_exists", `Session already exists: ${id}`);
     }
     const metadata: DoSessionMetadata = {
@@ -362,7 +369,7 @@ export class DoSessionRepo implements SessionRepo<DoSessionMetadata> {
   }
 
   async list(): Promise<DoSessionMetadata[]> {
-    const entries = await this.kv.list({ prefix: "session/" });
+    const entries = await Effect.runPromise(this.kv.list({ prefix: "session/" }));
     const all: DoSessionMetadata[] = [];
     for (const entry of entries) {
       if (entry.key.endsWith("/meta")) {
@@ -374,9 +381,9 @@ export class DoSessionRepo implements SessionRepo<DoSessionMetadata> {
 
   async delete(metadata: DoSessionMetadata): Promise<void> {
     const prefix = sessionPrefix(metadata.id);
-    const keys = await this.kv.list({ prefix });
+    const keys = await Effect.runPromise(this.kv.list({ prefix }));
     for (const entry of keys) {
-      await this.kv.delete(entry.key);
+      await Effect.runPromise(this.kv.delete(entry.key));
     }
   }
 
@@ -391,7 +398,7 @@ export class DoSessionRepo implements SessionRepo<DoSessionMetadata> {
     const childId = options.id ?? crypto.randomUUID().replaceAll("-", "");
     validateSessionId(childId);
     const childPrefix = sessionPrefix(childId);
-    if ((await this.kv.get(`${childPrefix}meta`)) !== undefined) {
+    if ((await Effect.runPromise(this.kv.get(`${childPrefix}meta`))) !== undefined) {
       throw new SessionError("already_exists", `Session already exists: ${childId}`);
     }
     const metadata: DoSessionMetadata = {
@@ -401,7 +408,7 @@ export class DoSessionRepo implements SessionRepo<DoSessionMetadata> {
       // Forks default their parent to the source session (jsonl parity).
       parentSessionId: options.parentSessionId ?? source.id,
     };
-    await this.kv.put(`${childPrefix}meta`, encode(JSON.stringify(metadata)));
+    await Effect.runPromise(this.kv.put(`${childPrefix}meta`, encode(JSON.stringify(metadata))));
     const mutations = sourceStorage.forkMutations(options);
     const childStorage = new DoSessionStorage(
       prefixedKv(this.kv, childPrefix),

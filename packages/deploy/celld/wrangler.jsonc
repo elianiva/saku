@@ -6,12 +6,10 @@
   "durable_objects": {
     "bindings": [
       { "name": "HUB", "class_name": "SakuHubDO" },
-      { "name": "THREAD", "class_name": "SakuThreadDO" }
-    ]
+      { "name": "THREAD", "class_name": "SakuThreadDO" },
+    ],
   },
-  "migrations": [
-    { "tag": "v1", "new_sqlite_classes": ["SakuHubDO", "SakuThreadDO"] }
-  ],
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SakuHubDO", "SakuThreadDO"] }],
   "vars": {
     // The deployment secret consoles present in `hello` — set a real
     // value (dev/self-hosted trust domain: these vars are plaintext in
@@ -24,6 +22,6 @@
     "SAKU_ENV_URL": "",
     "SAKU_ENV_TOKEN": "",
     "SAKU_IDLE_STOP_MS": "300000",
-    "SAKU_FAKE_MODEL": "1"
-  }
+    "SAKU_FAKE_MODEL": "1",
+  },
 }

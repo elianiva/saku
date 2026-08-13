@@ -7,7 +7,10 @@
  *   would be daemon-owned, out of v1 scope)
  * - `models.json` — custom providers (api keys, base urls, model lists) and
  *   overlays over builtin providers
- * - pi's builtin provider catalog (`@earendil-works/pi-ai/providers/all`)
+ * - the opencode-go provider (`@earendil-works/pi-ai/providers/opencode-go`)
+ *   — the only builtin provider saku registers; everything else (openai,
+ *   anthropic, gemini, …) is deliberately out of scope until a model picker
+ *   exists
  *
  * No extension providers, no network model refresh. The env override
  * `PI_CODING_AGENT_DIR` redirects auth.json/models.json.
@@ -16,12 +19,10 @@
 import { dirname } from "node:path";
 import { Context, Effect, FileSystem, Layer, Result, Schema } from "effect";
 import {
-  createAssistantMessageEventStream,
   createModels,
   createProvider,
   type Api,
   type ApiKeyAuth,
-  type AssistantMessage,
   type AuthInteraction,
   type Credential,
   type CredentialInfo,
@@ -33,10 +34,11 @@ import {
   type ProviderStreams,
 } from "@earendil-works/pi-ai";
 import { getApiProvider, registerBuiltInApiProviders } from "@earendil-works/pi-ai/compat";
-import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
+import { opencodeGoProvider } from "@earendil-works/pi-ai/providers/opencode-go";
 import type { WireModelInfo } from "@saku/wire";
 
 import { isNotFound } from "@saku/store";
+import { fakeProvider } from "./fake-provider.ts";
 import { getAuthJsonPath, getModelsJsonPath } from "./paths.ts";
 import {
   getMissingConfigValueEnvVarNames,
@@ -63,26 +65,36 @@ class AuthJsonCredentialStore implements CredentialStore {
     this.data = initial;
   }
 
-  static async load(path: string, fs: FileSystem.FileSystem): Promise<AuthJsonCredentialStore> {
-    const content = await Effect.runPromise(fs.readFileString(path).pipe(Effect.result));
-    if (Result.isFailure(content)) {
-      // A missing auth.json is the default install; anything else is worth
-      // knowing (the daemon never mutates credentials in v1, so a malformed
-      // file is the user's to fix).
-      if (!isNotFound(content.failure)) {
-        console.error(`[worker] failed to read auth.json: ${String(content.failure)}`);
+  static load(
+    path: string,
+    fs: FileSystem.FileSystem,
+  ): Effect.Effect<AuthJsonCredentialStore, never> {
+    return Effect.gen(function* () {
+      // Any read failure lands in the Result: missing auth.json is the default
+      // install, an unreadable file is worth knowing — both yield an empty store.
+      const content = yield* fs.readFileString(path).pipe(
+        Effect.map(Result.succeed),
+        Effect.catch((error) => Effect.succeed(Result.fail(error))),
+      );
+      if (Result.isFailure(content)) {
+        // A missing auth.json is the default install; anything else is worth
+        // knowing (the daemon never mutates credentials in v1, so a malformed
+        // file is the user's to fix).
+        if (!isNotFound(content.failure)) {
+          console.error(`[worker] failed to read auth.json: ${String(content.failure)}`);
+        }
+        return new AuthJsonCredentialStore(path, fs, {});
+      }
+      const parsed = Result.try(() => JSON.parse(content.success) as unknown);
+      if (Result.isFailure(parsed)) {
+        console.error(`[worker] failed to read auth.json: ${String(parsed.failure)}`);
+        return new AuthJsonCredentialStore(path, fs, {});
+      }
+      if (typeof parsed.success === "object" && parsed.success !== null) {
+        return new AuthJsonCredentialStore(path, fs, parsed.success as Record<string, Credential>);
       }
       return new AuthJsonCredentialStore(path, fs, {});
-    }
-    const parsed = Result.try(() => JSON.parse(content.success) as unknown);
-    if (Result.isFailure(parsed)) {
-      console.error(`[worker] failed to read auth.json: ${String(parsed.failure)}`);
-      return new AuthJsonCredentialStore(path, fs, {});
-    }
-    if (typeof parsed.success === "object" && parsed.success !== null) {
-      return new AuthJsonCredentialStore(path, fs, parsed.success as Record<string, Credential>);
-    }
-    return new AuthJsonCredentialStore(path, fs, {});
+    });
   }
 
   async read(providerId: string): Promise<Credential | undefined> {
@@ -132,31 +144,57 @@ class AuthJsonCredentialStore implements CredentialStore {
 // models.json → providers
 // ---------------------------------------------------------------------------
 
-interface ModelsJsonModel {
-  id: string;
-  name?: string;
-  api?: string;
-  baseUrl?: string;
-  reasoning?: boolean;
-  contextWindow?: number;
-  maxTokens?: number;
-  input?: ("text" | "image")[];
-  cost?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number };
-  headers?: Record<string, string>;
-  samplingParams?: Record<string, unknown>;
-}
+/** A models.json configuration problem (missing api/baseUrl, unknown api implementation, empty provider). */
+export class ModelsJsonError extends Schema.TaggedError<ModelsJsonError>()("ModelsJsonError", {
+  message: Schema.String,
+}) {}
 
-interface ModelsJsonProviderConfig {
-  name?: string;
-  baseUrl?: string;
-  apiKey?: string;
-  api?: string;
-  headers?: Record<string, string>;
-  models?: ModelsJsonModel[];
-  modelOverrides?: Record<string, Partial<Omit<ModelsJsonModel, "id">>>;
-}
+const ModelsJsonModelFields = {
+  name: Schema.optional(Schema.String),
+  api: Schema.optional(Schema.String),
+  baseUrl: Schema.optional(Schema.String),
+  reasoning: Schema.optional(Schema.Boolean),
+  contextWindow: Schema.optional(Schema.Number),
+  maxTokens: Schema.optional(Schema.Number),
+  input: Schema.optional(Schema.Array(Schema.Literals(["text", "image"]))),
+  cost: Schema.optional(
+    Schema.Struct({
+      input: Schema.optional(Schema.Number),
+      output: Schema.optional(Schema.Number),
+      cacheRead: Schema.optional(Schema.Number),
+      cacheWrite: Schema.optional(Schema.Number),
+    }),
+  ),
+  headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  samplingParams: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+};
 
-type ModelsJson = { providers: Record<string, ModelsJsonProviderConfig> };
+const ModelsJsonModel = Schema.Struct({ id: Schema.String, ...ModelsJsonModelFields });
+
+type ModelsJsonModel = Schema.Schema.Type<typeof ModelsJsonModel>;
+
+const ModelsJsonProviderConfig = Schema.Struct({
+  name: Schema.optional(Schema.String),
+  baseUrl: Schema.optional(Schema.String),
+  apiKey: Schema.optional(Schema.String),
+  api: Schema.optional(Schema.String),
+  headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  models: Schema.optional(Schema.Array(ModelsJsonModel)),
+  // Overrides apply to a builtin provider's existing models, so id is not part of them.
+  modelOverrides: Schema.optional(
+    Schema.Record(Schema.String, Schema.Struct(ModelsJsonModelFields)),
+  ),
+});
+
+type ModelsJsonProviderConfig = Schema.Schema.Type<typeof ModelsJsonProviderConfig>;
+
+const ModelsJsonSchema = Schema.Struct({
+  providers: Schema.Record(Schema.String, ModelsJsonProviderConfig),
+});
+
+type ModelsJson = Schema.Schema.Type<typeof ModelsJsonSchema>;
+
+const DECODE_MODELS_JSON = Schema.decodeUnknownSync(ModelsJsonSchema);
 
 const DEFAULT_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 
@@ -165,53 +203,71 @@ const modelFromJson = (
   definition: ModelsJsonModel,
   config: ModelsJsonProviderConfig,
   env: Record<string, string>,
-): Model<Api> => {
-  const api = (definition.api ?? config.api) as Api | undefined;
-  if (api === undefined) {
-    throw new Error(
-      `Provider ${providerId}, model ${definition.id}: no "api" specified. Set at provider or model level.`,
-    );
-  }
-  const baseUrl = definition.baseUrl ?? config.baseUrl;
-  if (baseUrl === undefined) {
-    throw new Error(`Provider ${providerId}: "baseUrl" is required when defining custom models.`);
-  }
-  const headers = resolveHeaders(definition.headers, env);
-  return {
-    id: definition.id,
-    name: definition.name ?? definition.id,
-    api,
-    provider: providerId,
-    baseUrl,
-    reasoning: definition.reasoning ?? false,
-    input: definition.input ?? ["text"],
-    cost: { ...DEFAULT_COST, ...definition.cost },
-    contextWindow: definition.contextWindow ?? 128_000,
-    maxTokens: definition.maxTokens ?? 16_384,
-    ...(headers === undefined ? {} : { headers }),
-    ...(definition.samplingParams === undefined
-      ? {}
-      : { samplingParams: definition.samplingParams }),
-  };
-};
-
-const streamsFor = (models: readonly Model<Api>[]): Partial<Record<Api, ProviderStreams>> => {
-  const streams: Partial<Record<Api, ProviderStreams>> = {};
-  for (const model of models) {
-    if (streams[model.api] !== undefined) continue;
-    const implementation = getApiProvider(model.api);
-    if (implementation === undefined) {
-      throw new Error(
-        `Provider ${model.provider}, model ${model.id}: no stream implementation for api "${model.api}".`,
+): Effect.Effect<Model<Api>, ModelsJsonError> =>
+  Effect.gen(function* () {
+    const api = (definition.api ?? config.api) as Api | undefined;
+    if (api === undefined) {
+      return yield* Effect.fail(
+        new ModelsJsonError({
+          message: `Provider ${providerId}, model ${definition.id}: no "api" specified. Set at provider or model level.`,
+        }),
       );
     }
-    streams[model.api] = {
-      stream: implementation.stream as ProviderStreams["stream"],
-      streamSimple: implementation.streamSimple as ProviderStreams["streamSimple"],
+    const baseUrl = definition.baseUrl ?? config.baseUrl;
+    if (baseUrl === undefined) {
+      return yield* Effect.fail(
+        new ModelsJsonError({
+          message: `Provider ${providerId}: "baseUrl" is required when defining custom models.`,
+        }),
+      );
+    }
+    const headers = resolveHeaders(definition.headers, env);
+    return {
+      id: definition.id,
+      name: definition.name ?? definition.id,
+      api,
+      provider: providerId,
+      baseUrl,
+      reasoning: definition.reasoning ?? false,
+      input: [...(definition.input ?? ["text"])],
+      cost: {
+        ...DEFAULT_COST,
+        input: definition.cost?.input ?? DEFAULT_COST.input,
+        output: definition.cost?.output ?? DEFAULT_COST.output,
+        cacheRead: definition.cost?.cacheRead ?? DEFAULT_COST.cacheRead,
+        cacheWrite: definition.cost?.cacheWrite ?? DEFAULT_COST.cacheWrite,
+      },
+      contextWindow: definition.contextWindow ?? 128_000,
+      maxTokens: definition.maxTokens ?? 16_384,
+      ...(headers === undefined ? {} : { headers }),
+      ...(definition.samplingParams === undefined
+        ? {}
+        : { samplingParams: definition.samplingParams }),
     };
-  }
-  return streams;
-};
+  });
+
+const streamsFor = (
+  models: readonly Model<Api>[],
+): Effect.Effect<Partial<Record<Api, ProviderStreams>>, ModelsJsonError> =>
+  Effect.gen(function* () {
+    const streams: Partial<Record<Api, ProviderStreams>> = {};
+    for (const model of models) {
+      if (streams[model.api] !== undefined) continue;
+      const implementation = getApiProvider(model.api);
+      if (implementation === undefined) {
+        return yield* Effect.fail(
+          new ModelsJsonError({
+            message: `Provider ${model.provider}, model ${model.id}: no stream implementation for api "${model.api}".`,
+          }),
+        );
+      }
+      streams[model.api] = {
+        stream: implementation.stream as ProviderStreams["stream"],
+        streamSimple: implementation.streamSimple as ProviderStreams["streamSimple"],
+      };
+    }
+    return streams;
+  });
 
 /**
  * ApiKeyAuth for models.json custom providers: a stored credential wins,
@@ -261,106 +317,6 @@ const apiKeyAuthFor = (
 };
 
 // ---------------------------------------------------------------------------
-// The scripted provider (SAKU_FAKE_MODEL)
-// ---------------------------------------------------------------------------
-
-const FAKE_PROVIDER = "saku-fake";
-const FAKE_MODEL = "test";
-
-const fakeText = (): AssistantMessage => ({
-  role: "assistant",
-  content: [{ type: "text", text: "Hello from the saku-fake model." }],
-  api: "pi-messages",
-  provider: FAKE_PROVIDER,
-  model: FAKE_MODEL,
-  usage: {
-    input: 10,
-    output: 5,
-    cacheRead: 0,
-    cacheWrite: 0,
-    totalTokens: 15,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-  },
-  stopReason: "stop",
-  timestamp: Date.now(),
-});
-
-/** The first answer of a turn asks for a bash tool call; the follow-up is
- * text-only, so a turn ends after one real tool round-trip. */
-const fakeToolCall = (): AssistantMessage => ({
-  role: "assistant",
-  content: [
-    { type: "text", text: "Let me look around first." },
-    {
-      type: "toolCall",
-      id: "fake-tool-1",
-      name: "bash",
-      arguments: { command: "sleep 2 && echo fake-tool-ran" },
-    },
-  ],
-  api: "pi-messages",
-  provider: FAKE_PROVIDER,
-  model: FAKE_MODEL,
-  usage: {
-    input: 10,
-    output: 5,
-    cacheRead: 0,
-    cacheWrite: 0,
-    totalTokens: 15,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-  },
-  stopReason: "stop",
-  timestamp: Date.now(),
-});
-
-const fakeApiKeyAuth = (): ApiKeyAuth => ({
-  name: "API key",
-  login: async () => ({ type: "api_key" as const, key: "fake" }),
-  check: async () => ({ type: "api_key" as const, source: "configured API key" }),
-  resolve: async () => ({ auth: { apiKey: "fake" }, source: "configured API key" }),
-});
-
-/** The scripted provider: a canned stream, no network. First stream call of
- * a turn carries the tool call, later calls answer with text. */
-const fakeProvider = (): Provider => {
-  const model: Model<Api> = {
-    id: FAKE_MODEL,
-    name: "test",
-    api: "pi-messages",
-    provider: FAKE_PROVIDER,
-    baseUrl: "https://fake.invalid",
-    reasoning: false,
-    input: ["text"],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 128_000,
-    maxTokens: 16_384,
-  };
-  let calls = 0;
-  const streams: ProviderStreams = {
-    stream: () => {
-      const stream = createAssistantMessageEventStream();
-      calls += 1;
-      stream.end(calls % 2 === 1 ? fakeToolCall() : fakeText());
-      return stream;
-    },
-    streamSimple: () => {
-      const stream = createAssistantMessageEventStream();
-      calls += 1;
-      stream.end(calls % 2 === 1 ? fakeToolCall() : fakeText());
-      return stream;
-    },
-  };
-  return createProvider({
-    id: FAKE_PROVIDER,
-    name: "saku-fake",
-    baseUrl: "https://fake.invalid",
-    auth: { apiKey: fakeApiKeyAuth() },
-    models: [model],
-    api: streams,
-  });
-};
-
-// ---------------------------------------------------------------------------
 // The catalog service
 // ---------------------------------------------------------------------------
 
@@ -395,30 +351,35 @@ export const ModelCatalogLive = (
       // The daemon's own environment resolves models.json `$VAR`/`!cmd` values.
       const env = process.env as Record<string, string>;
       registerBuiltInApiProviders();
-      const credentials = yield* Effect.promise(() =>
-        AuthJsonCredentialStore.load(options.authPath ?? getAuthJsonPath(), fs),
+      const credentials = yield* AuthJsonCredentialStore.load(
+        options.authPath ?? getAuthJsonPath(),
+        fs,
       );
       const models = createModels({ credentials });
 
-      for (const provider of builtinProviders()) {
-        models.setProvider(provider);
-      }
+      // The one builtin provider: opencode-go (the local OpenCode gateway).
+      // The fake provider rides SAKU_FAKE_MODEL below; models.json custom
+      // providers are user-defined and unaffected.
+      models.setProvider(opencodeGoProvider());
 
       const config = yield* loadModelsJsonFrom(fs, options.modelsPath ?? getModelsJsonPath());
       for (const [providerId, providerConfig] of Object.entries(config.providers)) {
         const base = models.getProvider(providerId);
-        try {
-          if (base === undefined) {
-            models.setProvider(buildCustomProvider(providerId, providerConfig, env));
-          } else {
-            const replacement = overlayBuiltinProvider(providerId, base, providerConfig, env);
-            if (replacement !== undefined) models.setProvider(replacement);
-          }
-        } catch (error) {
-          yield* Effect.logWarning(
-            `models.json: skipping provider "${providerId}": ${String(error)}`,
-          );
-        }
+        yield* (
+          base === undefined
+            ? buildCustomProvider(providerId, providerConfig, env).pipe(
+                Effect.map((provider) => models.setProvider(provider)),
+              )
+            : overlayBuiltinProvider(providerId, base, providerConfig, env).pipe(
+                Effect.map((replacement) => {
+                  if (replacement !== undefined) models.setProvider(replacement);
+                }),
+              )
+        ).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning(`models.json: skipping provider "${providerId}": ${String(error)}`),
+          ),
+        );
       }
 
       // The scripted provider (dev fixture): a canned stream that answers
@@ -454,23 +415,19 @@ const loadModelsJsonFrom = (
     const raw = yield* fs.readFileString(path).pipe(
       Effect.catch((error) => {
         // No models.json is the default install; anything else is worth knowing.
-        if (isNotFound(error)) return Effect.succeed("");
+        if (isNotFound(error)) return Effect.succeed(undefined);
         return Effect.logWarning(`failed to read models.json: ${String(error)}`).pipe(
-          Effect.as(""),
+          Effect.as(undefined),
         );
       }),
     );
-    const parsed = Result.try(() => JSON.parse(raw) as unknown);
+    if (raw === undefined) return { providers: {} };
+    const parsed = Result.try(() => DECODE_MODELS_JSON(raw));
     if (Result.isFailure(parsed)) {
       yield* Effect.logWarning(`models.json is not valid JSON: ${String(parsed.failure)}`);
+      return { providers: {} };
     }
-    if (Result.isSuccess(parsed) && typeof parsed.success === "object" && parsed.success !== null) {
-      const providers = (parsed.success as { providers?: unknown }).providers;
-      if (typeof providers === "object" && providers !== null) {
-        return { providers: providers as ModelsJson["providers"] };
-      }
-    }
-    return { providers: {} };
+    return parsed.success;
   });
 
 /** A models.json provider that is not a builtin: full construction. */
@@ -478,25 +435,28 @@ const buildCustomProvider = (
   providerId: string,
   config: ModelsJsonProviderConfig,
   env: Record<string, string>,
-): Provider => {
-  const models = (config.models ?? []).map((definition) =>
-    modelFromJson(providerId, definition, config, env),
-  );
-  if (models.length === 0) {
-    throw new Error("no models defined");
-  }
-  const auth: ProviderAuth = { apiKey: apiKeyAuthFor(providerId, config, env) };
-  const headers = resolveHeaders(config.headers, env);
-  return createProvider({
-    id: providerId,
-    name: config.name ?? providerId,
-    ...(config.baseUrl === undefined ? {} : { baseUrl: config.baseUrl }),
-    ...(headers === undefined ? {} : { headers }),
-    auth,
-    models,
-    api: streamsFor(models),
+): Effect.Effect<Provider, ModelsJsonError> =>
+  Effect.gen(function* () {
+    const models: Model<Api>[] = [];
+    for (const definition of config.models ?? []) {
+      models.push(yield* modelFromJson(providerId, definition, config, env));
+    }
+    if (models.length === 0) {
+      return yield* Effect.fail(new ModelsJsonError({ message: "no models defined" }));
+    }
+    const auth: ProviderAuth = { apiKey: apiKeyAuthFor(providerId, config, env) };
+    const headers = resolveHeaders(config.headers, env);
+    const streams = yield* streamsFor(models);
+    return createProvider({
+      id: providerId,
+      name: config.name ?? providerId,
+      ...(config.baseUrl === undefined ? {} : { baseUrl: config.baseUrl }),
+      ...(headers === undefined ? {} : { headers }),
+      auth,
+      models,
+      api: streams,
+    });
   });
-};
 
 /**
  * models.json overlay over a builtin provider: base url, headers, model list
@@ -507,52 +467,60 @@ const overlayBuiltinProvider = (
   base: Provider,
   config: ModelsJsonProviderConfig,
   env: Record<string, string>,
-): Provider | undefined => {
-  const resolvedHeaders = resolveHeaders(config.headers, env);
-  const baseModels = base.getModels();
-  let models = baseModels.map((model) => ({
-    ...model,
-    baseUrl: config.baseUrl ?? model.baseUrl,
-    ...(resolvedHeaders === undefined ? {} : { headers: resolvedHeaders }),
-  }));
-  for (const definition of config.models ?? []) {
-    const existingIndex = models.findIndex((model) => model.id === definition.id);
-    const built = modelFromJson(providerId, definition, config, env);
-    if (existingIndex >= 0) {
-      models[existingIndex] = built;
-    } else {
-      models.push(built);
+): Effect.Effect<Provider | undefined, ModelsJsonError> =>
+  Effect.gen(function* () {
+    const resolvedHeaders = resolveHeaders(config.headers, env);
+    const baseModels = base.getModels();
+    let models = baseModels.map((model) => ({
+      ...model,
+      baseUrl: config.baseUrl ?? model.baseUrl,
+      ...(resolvedHeaders === undefined ? {} : { headers: resolvedHeaders }),
+    }));
+    for (const definition of config.models ?? []) {
+      const existingIndex = models.findIndex((model) => model.id === definition.id);
+      const built = yield* modelFromJson(providerId, definition, config, env);
+      if (existingIndex >= 0) {
+        models[existingIndex] = built;
+      } else {
+        models.push(built);
+      }
     }
-  }
-  for (const [modelId, override] of Object.entries(config.modelOverrides ?? {})) {
-    const index = models.findIndex((model) => model.id === modelId);
-    const current = models[index];
-    if (index < 0 || current === undefined) continue;
-    models[index] = {
-      ...current,
-      name: override.name ?? current.name,
-      reasoning: override.reasoning ?? current.reasoning,
-      contextWindow: override.contextWindow ?? current.contextWindow,
-      maxTokens: override.maxTokens ?? current.maxTokens,
-      baseUrl: override.baseUrl ?? current.baseUrl,
-      ...(override.headers === undefined ? {} : { headers: override.headers }),
-      input: override.input ?? current.input,
-      cost: { ...current.cost, ...override.cost },
-    };
-  }
-  const changed =
-    config.baseUrl !== undefined ||
-    resolvedHeaders !== undefined ||
-    (config.models?.length ?? 0) > 0 ||
-    Object.keys(config.modelOverrides ?? {}).length > 0;
-  if (!changed) return undefined;
-  return createProvider({
-    id: providerId,
-    name: config.name ?? base.name,
-    ...(config.baseUrl === undefined ? {} : { baseUrl: config.baseUrl }),
-    ...(resolvedHeaders === undefined ? {} : { headers: resolvedHeaders }),
-    auth: base.auth,
-    models,
-    api: streamsFor(models),
+    for (const [modelId, override] of Object.entries(config.modelOverrides ?? {})) {
+      const index = models.findIndex((model) => model.id === modelId);
+      const current = models[index];
+      if (index < 0 || current === undefined) continue;
+      models[index] = {
+        ...current,
+        name: override.name ?? current.name,
+        reasoning: override.reasoning ?? current.reasoning,
+        contextWindow: override.contextWindow ?? current.contextWindow,
+        maxTokens: override.maxTokens ?? current.maxTokens,
+        baseUrl: override.baseUrl ?? current.baseUrl,
+        ...(override.headers === undefined ? {} : { headers: override.headers }),
+        input: [...(override.input ?? current.input)],
+        cost: {
+          ...current.cost,
+          input: override.cost?.input ?? current.cost.input,
+          output: override.cost?.output ?? current.cost.output,
+          cacheRead: override.cost?.cacheRead ?? current.cost.cacheRead,
+          cacheWrite: override.cost?.cacheWrite ?? current.cost.cacheWrite,
+        },
+      };
+    }
+    const changed =
+      config.baseUrl !== undefined ||
+      resolvedHeaders !== undefined ||
+      (config.models?.length ?? 0) > 0 ||
+      Object.keys(config.modelOverrides ?? {}).length > 0;
+    if (!changed) return undefined;
+    const streams = yield* streamsFor(models);
+    return createProvider({
+      id: providerId,
+      name: config.name ?? base.name,
+      ...(config.baseUrl === undefined ? {} : { baseUrl: config.baseUrl }),
+      ...(resolvedHeaders === undefined ? {} : { headers: resolvedHeaders }),
+      auth: base.auth,
+      models,
+      api: streams,
+    });
   });
-};

@@ -1,41 +1,56 @@
 /**
- * KvStore tests: the storage seam (memory + file backends).
+ * KvStore tests: the storage service (memory + file backend layers).
  */
 
 import { describe, expect, it } from "vitest";
 import { NodeFileSystem } from "@effect/platform-node";
-import { Effect, FileSystem } from "effect";
+import { Effect, FileSystem, Layer } from "effect";
 
-import { fileKv, memoryKv } from "../src/index.ts";
+import { KvStore } from "../src/index.ts";
 
 const encode = (text: string): Uint8Array => new TextEncoder().encode(text);
 const decode = (value: Uint8Array): string => new TextDecoder().decode(value);
 
-describe("memoryKv", () => {
+/** Run an effect that needs a KvStore against a backend layer. */
+const run = <A>(layer: Layer.Layer<KvStore>, effect: Effect.Effect<A, never, KvStore>): Promise<A> =>
+  Effect.runPromise(effect.pipe(Effect.provide(layer)));
+
+describe("KvStore.memory()", () => {
   it("round-trips put/get/list/delete", async () => {
-    const kv = memoryKv();
-    expect(await kv.get("meta")).toBeUndefined();
-    await kv.put("meta", encode("hello"));
-    expect(decode((await kv.get("meta"))!)).toBe("hello");
-    expect((await kv.list({ prefix: "log/" })).length).toBe(0);
-    await kv.put("log/0001", encode("one"));
-    await kv.put("log/0002", encode("two"));
-    const listed = await kv.list({ prefix: "log/" });
-    expect(listed.map((e) => e.key).sort()).toEqual(["log/0001", "log/0002"]);
-    await kv.delete("log/0001");
-    expect((await kv.list({ prefix: "log/" })).map((e) => e.key)).toEqual(["log/0002"]);
-    expect(await kv.get("log/0001")).toBeUndefined();
+    await run(
+      KvStore.memory(),
+      Effect.gen(function* () {
+        const kv = yield* KvStore;
+        expect(yield* kv.get("meta")).toBeUndefined();
+        yield* kv.put("meta", encode("hello"));
+        expect(decode((yield* kv.get("meta"))!)).toBe("hello");
+        expect(yield* kv.list({ prefix: "log/" })).toHaveLength(0);
+        yield* kv.put("log/0001", encode("one"));
+        yield* kv.put("log/0002", encode("two"));
+        const listed = yield* kv.list({ prefix: "log/" });
+        expect(listed.map((e) => e.key).sort()).toEqual(["log/0001", "log/0002"]);
+        yield* kv.delete("log/0001");
+        expect((yield* kv.list({ prefix: "log/" })).map((e) => e.key)).toEqual(["log/0002"]);
+        expect(yield* kv.get("log/0001")).toBeUndefined();
+      }),
+    );
   });
 
-  it("isolates instances", async () => {
-    const a = memoryKv();
-    const b = memoryKv();
-    await a.put("meta", encode("a"));
-    expect(await b.get("meta")).toBeUndefined();
+  it("isolates builds: each provided layer is a fresh store", async () => {
+    const put = Effect.gen(function* () {
+      const kv = yield* KvStore;
+      yield* kv.put("meta", encode("a"));
+    });
+    const get = Effect.gen(function* () {
+      const kv = yield* KvStore;
+      expect(yield* kv.get("meta")).toBeUndefined();
+    });
+    await run(KvStore.memory(), put);
+    await run(KvStore.memory(), get);
   });
 });
 
-describe("fileKv", () => {
+describe("KvStore.file()", () => {
   it("round-trips through the filesystem (survives a restart)", async () => {
     const fs = await Effect.runPromise(
       Effect.provide(NodeFileSystem.layer)(
@@ -44,23 +59,26 @@ describe("fileKv", () => {
         }),
       ),
     );
-    const root = await Effect.runPromise(
-      Effect.provide(NodeFileSystem.layer)(
-        Effect.gen(function* () {
-          const fsService = yield* FileSystem.FileSystem;
-          return yield* fsService.makeTempDirectory({ prefix: "saku-kv-" });
-        }),
-      ),
+    const root = await fs.makeTempDirectory({ prefix: "saku-kv-" }).pipe(Effect.runPromise);
+    const runFile = <A>(effect: Effect.Effect<A, never, KvStore>): Promise<A> =>
+      run(KvStore.file(fs, root), effect);
+    await runFile(
+      Effect.gen(function* () {
+        const kv = yield* KvStore;
+        yield* kv.put("meta", encode("persisted"));
+        yield* kv.put("log/0001", encode('{"kind":"lane"}'));
+      }),
     );
-    const first = fileKv(fs, root);
-    await first.put("meta", encode("persisted"));
-    await first.put("log/0001", encode('{"kind":"lane"}'));
     // A fresh store over the same root sees the writes.
-    const second = fileKv(fs, root);
-    expect(decode((await second.get("meta"))!)).toBe("persisted");
-    expect((await second.list({ prefix: "log/" })).map((e) => e.key)).toEqual(["log/0001"]);
-    await second.delete("log/0001");
-    expect((await first.list({ prefix: "log/" })).length).toBe(0);
+    await runFile(
+      Effect.gen(function* () {
+        const kv = yield* KvStore;
+        expect(decode((yield* kv.get("meta"))!)).toBe("persisted");
+        expect((yield* kv.list({ prefix: "log/" })).map((e) => e.key)).toEqual(["log/0001"]);
+        yield* kv.delete("log/0001");
+        expect(yield* kv.list({ prefix: "log/" })).toHaveLength(0);
+      }),
+    );
     // Best-effort cleanup.
     await fs.remove(root, { recursive: true, force: true }).pipe(Effect.runPromise);
   });

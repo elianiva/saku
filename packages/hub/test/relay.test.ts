@@ -15,7 +15,13 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect, Exit, FileSystem, Scope } from "effect";
-import { makeEnvDaemon, makeEnvRelayClient, nodeSocket, RemoteEnv, type EnvDaemonShape } from "@saku/env";
+import {
+  makeEnvDaemon,
+  makeEnvRelayClient,
+  nodeSocket,
+  RemoteEnv,
+  type EnvDaemonShape,
+} from "@saku/env";
 
 import { makeHubRelay, type HubRelayShape } from "../src/index.ts";
 
@@ -90,7 +96,8 @@ describe("hub relay", () => {
 
   it("pipes a worker's RemoteEnv to the registered daemon: hello + exec through the relay", async () => {
     await register();
-    const env = new RemoteEnv({ socket: nodeSocket,
+    const env = new RemoteEnv({
+      socket: nodeSocket,
       url: relay.url,
       token: ENV_TOKEN,
       cwd: workdir,
@@ -108,7 +115,8 @@ describe("hub relay", () => {
 
   it("rejects an attach with a bad relay token", async () => {
     await register();
-    const env = new RemoteEnv({ socket: nodeSocket,
+    const env = new RemoteEnv({
+      socket: nodeSocket,
       url: relay.url,
       token: ENV_TOKEN,
       cwd: workdir,
@@ -118,7 +126,8 @@ describe("hub relay", () => {
   });
 
   it("fails an attach for an env that never registered", async () => {
-    const env = new RemoteEnv({ socket: nodeSocket,
+    const env = new RemoteEnv({
+      socket: nodeSocket,
       url: relay.url,
       token: ENV_TOKEN,
       cwd: workdir,
@@ -150,7 +159,8 @@ describe("hub relay", () => {
   });
 
   it("pipes a worker that attached before the daemon registered", async () => {
-    const env = new RemoteEnv({ socket: nodeSocket,
+    const env = new RemoteEnv({
+      socket: nodeSocket,
       url: relay.url,
       token: ENV_TOKEN,
       cwd: workdir,

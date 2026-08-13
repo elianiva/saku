@@ -108,7 +108,7 @@ one style. Do not over-engineer this file.
    comment on the promise-cache seam; `wireCore()` comment on `runSync` safety.
 2. Read `static-provisioner.ts` + `worker.ts`; apply only pattern-matching fixes.
 3. Deploy suite: `pnpm --filter @saku/deploy typecheck && pnpm --filter @saku/deploy
-   test` — the integration test drives the real hub DO through `makeStack`, so the
+test` — the integration test drives the real hub DO through `makeStack`, so the
    push path is exercised.
 
 ## References

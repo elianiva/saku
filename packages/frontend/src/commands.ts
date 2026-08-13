@@ -2,7 +2,8 @@
  * Wire commands (commands.ts): every wire operation as a foldkit Command —
  * an Effect against the `Wire` service, landing back in the app as a
  * message (success or failure). Errors never escape as defects; they are
- * projected into `*Failed` messages so the banner can show them.
+ * projected into `*Failed` messages so the banner can show them. Every
+ * command body fails only with `WireError`, so `catchTag` is precise.
  */
 
 import { Effect, Schema as S } from "effect";
@@ -24,15 +25,8 @@ import {
   TrailFailed,
   TrailLoaded,
 } from "./message.ts";
+import { decodeEntry, type EntryProjection } from "./projection.ts";
 import { Wire } from "./wire.ts";
-
-const messageOf = (error: unknown): string => {
-  if (typeof error === "object" && error !== null && "message" in error) {
-    const candidate = error.message;
-    if (typeof candidate === "string" && candidate.length > 0) return candidate;
-  }
-  return String(error);
-};
 
 /** Connect (or reconnect) the wire client. */
 export const WireConnectCmd = Command.define("WireConnect", {
@@ -41,7 +35,11 @@ export const WireConnectCmd = Command.define("WireConnect", {
     const { client } = yield* Wire;
     const hello = yield* client.connect();
     return Connected({ hello });
-  }).pipe(Effect.catch((error) => Effect.succeed(ConnectFailed({ message: messageOf(error) })))),
+  }).pipe(
+    Effect.catchTag("WireError", (error) =>
+      Effect.succeed(ConnectFailed({ message: error.message })),
+    ),
+  ),
 });
 
 /** List the registry (rail). */
@@ -51,7 +49,11 @@ export const ListThreadsCmd = Command.define("ListThreads", {
     const { client } = yield* Wire;
     const threads = yield* client.listThreads();
     return ThreadsListed({ threads });
-  }).pipe(Effect.catch((error) => Effect.succeed(ThreadsFailed({ message: messageOf(error) })))),
+  }).pipe(
+    Effect.catchTag("WireError", (error) =>
+      Effect.succeed(ThreadsFailed({ message: error.message })),
+    ),
+  ),
 });
 
 /** Quick start: create the thread from the prompt and set it to work. */
@@ -67,7 +69,11 @@ export const QuickStartCmd = Command.define("QuickStart", {
       yield* client.prompt(created.id, text);
       const thread = yield* client.getThread(created.id);
       return ThreadCreated({ thread });
-    }).pipe(Effect.catch((error) => Effect.succeed(CreateFailed({ message: messageOf(error) })))),
+    }).pipe(
+      Effect.catchTag("WireError", (error) =>
+        Effect.succeed(CreateFailed({ message: error.message })),
+      ),
+    ),
 });
 
 /** Delete a thread (registry record + worker storage). */
@@ -79,7 +85,11 @@ export const DeleteThreadCmd = Command.define("DeleteThread", {
       const { client } = yield* Wire;
       yield* client.deleteThread(id);
       return ThreadDeleted({ id });
-    }).pipe(Effect.catch((error) => Effect.succeed(DeleteFailed({ message: messageOf(error) })))),
+    }).pipe(
+      Effect.catchTag("WireError", (error) =>
+        Effect.succeed(DeleteFailed({ message: error.message })),
+      ),
+    ),
 });
 
 /** Load a thread's entry trail (reads never start a session, ADR 0004). */
@@ -90,8 +100,15 @@ export const LoadTrailCmd = Command.define("LoadTrail", {
     Effect.gen(function* () {
       const { client } = yield* Wire;
       const result = yield* client.getEntries(id, 0);
-      return TrailLoaded({ id, entries: result.entries, tailSeq: result.tailSeq });
-    }).pipe(Effect.catch((error) => Effect.succeed(TrailFailed({ message: messageOf(error) })))),
+      const entries = result.entries
+        .map(decodeEntry)
+        .filter((entry): entry is EntryProjection => entry !== undefined);
+      return TrailLoaded({ id, entries, tailSeq: result.tailSeq });
+    }).pipe(
+      Effect.catchTag("WireError", (error) =>
+        Effect.succeed(TrailFailed({ message: error.message })),
+      ),
+    ),
 });
 
 /** Send the composer's text to the thread. */
@@ -103,7 +120,11 @@ export const PromptCmd = Command.define("Prompt", {
       const { client } = yield* Wire;
       yield* client.prompt(id, text);
       return PromptAcked();
-    }).pipe(Effect.catch((error) => Effect.succeed(SendFailed({ message: messageOf(error) })))),
+    }).pipe(
+      Effect.catchTag("WireError", (error) =>
+        Effect.succeed(SendFailed({ message: error.message })),
+      ),
+    ),
 });
 
 /** Abort the in-flight run. */
@@ -115,7 +136,7 @@ export const AbortCmd = Command.define("Abort", {
       const { client } = yield* Wire;
       yield* client.abort(id);
       return AbortDone();
-    }).pipe(Effect.catch(() => Effect.succeed(AbortDone()))),
+    }).pipe(Effect.catchTag("WireError", () => Effect.succeed(AbortDone()))),
 });
 
 /**

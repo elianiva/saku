@@ -18,7 +18,7 @@
  * hub's `IdleStopController`), and the fire path runs here.
  */
 
-import { Effect } from "effect";
+import { Effect, Match, Option, Schema } from "effect";
 import {
   makeHub,
   makeHubRegistry,
@@ -28,15 +28,17 @@ import {
   makeWireCore,
   makeBoxApi,
   workerdSocket,
+  type HubError,
   type HubShape,
   type HubRelayCoreShape,
   type SocketLike,
   type WireCoreShape,
 } from "@saku/hub/core";
+import { ThreadState, type SessionWireEvent } from "@saku/wire";
 
-import { doStorageKv } from "./kv.ts";
+import { KvStore } from "@saku/store";
 import { varOrDefault, type DeploymentEnv } from "./env.ts";
-import { threadIdleStop, threadWorkerRef, type HubPush } from "./rpc.ts";
+import { threadIdleStop, threadWorkerRef } from "./rpc.ts";
 import { staticProvisioner } from "./static-provisioner.ts";
 import { ENV_BUNDLE_BASE64 } from "./generated/env-bundle.ts";
 
@@ -67,6 +69,37 @@ const provisionerFor = (env: DeploymentEnv) =>
     ? staticProvisioner(env)
     : boxProvisioner(env);
 
+/**
+ * The `/push` contract, validated at the boundary: the thread DOs'
+ * payloads (`HubPush` in rpc.ts) as a schema. The push channel
+ * discriminates on `type` (rpc.ts), while TaggedStruct decodes `_tag` —
+ * `encodeKeys` renames the encoded key so the wire shape validates and
+ * the decoded type stays `_tag`-tagged for the Match below. The session
+ * event rides as opaque `unknown` — pi's event types stay opaque on the
+ * wire (ADR 0005), the hub forwards them uninterpreted. The report
+ * fields use `optionalKey` (exact optional) so the decoded report
+ * matches `WorkerReport` under `exactOptionalPropertyTypes`.
+ */
+const HubPushSchema = Schema.Union([
+  Schema.TaggedStruct("report", {
+    threadId: Schema.String,
+    report: Schema.Struct({
+      state: Schema.optionalKey(ThreadState),
+      sessionId: Schema.optionalKey(Schema.Union([Schema.Null, Schema.String])),
+      name: Schema.optionalKey(Schema.String),
+      tailSeq: Schema.optionalKey(Schema.Number),
+    }),
+  }).pipe(Schema.encodeKeys({ _tag: "type" })),
+  Schema.TaggedStruct("sessionEvent", {
+    threadId: Schema.String,
+    event: Schema.Unknown,
+    tailSeq: Schema.Number,
+  }).pipe(Schema.encodeKeys({ _tag: "type" })),
+  Schema.TaggedStruct("idleStopFired", { threadId: Schema.String }).pipe(
+    Schema.encodeKeys({ _tag: "type" }),
+  ),
+]);
+
 export class SakuHubDO {
   private hubPromise: Promise<HubShape> | undefined;
   private wire: WireCoreShape | undefined;
@@ -95,35 +128,49 @@ export class SakuHubDO {
   }
   /** The hub core over DO storage, built once per activation (async: the
    * registry and skills store read DO storage at construction). */
+  private buildHubShape(): Effect.Effect<HubShape, HubError, never> {
+    const state = this.state;
+    const env = this.env;
+    const idleStop = threadIdleStop(env);
+    const idleStopMs = Number.parseInt(
+      varOrDefault(env, "SAKU_IDLE_STOP_MS", String(IDLE_STOP_DEFAULT_MS)),
+      10,
+    );
+    return Effect.gen(function* () {
+      return yield* makeHub({
+        registry: yield* makeHubRegistry(),
+        skills: yield* makeSkillsStore(),
+        workerRef: threadWorkerRef(env),
+        provisioner: provisionerFor(env),
+        idleStopMs,
+        idleStop,
+      });
+    }).pipe(
+      // The hub's registry and skills store live on DO storage — the
+      // platform boundary (the `KvStore` service, doStorage backend).
+      Effect.provide(KvStore.doStorage(state.storage)),
+    );
+  }
+
+  /**
+   * The memoized hub shape. The cache is a promise because the DO's
+   * fetch/alarm entry points ARE promise-shaped — that is the platform
+   * seam (plain workerd, no alchemy runtime), so `Effect.runPromise`
+   * happens here, at the edge, like the CLI's `Effect.runPromise(main())`.
+   */
   private hubShape(): Promise<HubShape> {
     if (this.hubPromise === undefined) {
-      const state = this.state;
-      const env = this.env;
-      const idleStop = threadIdleStop(env);
-      const idleStopMs = Number.parseInt(
-        varOrDefault(env, "SAKU_IDLE_STOP_MS", String(IDLE_STOP_DEFAULT_MS)),
-        10,
-      );
-      this.hubPromise = Effect.runPromise(
-        Effect.gen(function* () {
-          const kv = doStorageKv(state.storage);
-          return yield* makeHub({
-            registry: yield* makeHubRegistry(kv),
-            skills: yield* makeSkillsStore(kv),
-            workerRef: threadWorkerRef(env),
-            provisioner: provisionerFor(env),
-            idleStopMs,
-            idleStop,
-          });
-        }),
-      );
+      this.hubPromise = Effect.runPromise(this.buildHubShape());
     }
     return this.hubPromise;
   }
 
   private async wireCore(): Promise<WireCoreShape> {
     if (this.wire === undefined) {
-      // A DO has no process: the hello_ok pid is 0.
+      // A DO has no process: the hello_ok pid is 0. The runSync is safe
+      // because makeWireCore performs no blocking async work (its
+      // Effect.gen only builds Refs); only the hub shape above is
+      // awaited, since the registry and skills store read DO storage.
       this.wire = Effect.runSync(
         makeWireCore({ hub: await this.hubShape(), token: this.env.DEPLOYMENT_SECRET, pid: 0 }),
       );
@@ -164,11 +211,9 @@ export class SakuHubDO {
       // The connection handler lives for the socket's lifetime; failures
       // are per-connection (the socket closes, the hub keeps serving).
       const core = await this.wireCore();
-      void Effect.runPromise(Effect.scoped(core.runConnection(socket))).catch(
-        (error: unknown) => {
-          console.error(`[hub-do] connection failed: ${String(error)}`);
-        },
-      );
+      void Effect.runPromise(Effect.scoped(core.runConnection(socket))).catch((error: unknown) => {
+        console.error(`[hub-do] connection failed: ${String(error)}`);
+      });
     } else {
       this.relayCore().handleConnection(socket);
     }
@@ -176,32 +221,42 @@ export class SakuHubDO {
   }
 
   private async handlePush(request: Request): Promise<Response> {
-    let push: HubPush;
-    try {
-      push = (await request.json()) as HubPush;
-    } catch {
-      return jsonError("malformed push");
-    }
+    // Malformed JSON (the tryPromise catch) and out-of-contract shapes
+    // (decodeUnknownOption) both land on `none`: one error response.
+    const parsed = await Effect.runPromise(
+      Effect.tryPromise({
+        try: () => request.json() as Promise<unknown>,
+        catch: () => undefined,
+      }).pipe(
+        Effect.flatMap((body) =>
+          Effect.sync(() => Schema.decodeUnknownOption(HubPushSchema)(body)),
+        ),
+      ),
+    );
+    if (Option.isNone(parsed)) return jsonError("malformed push");
+    const push = parsed.value;
     const hub = await this.hubShape();
-    switch (push.type) {
-      case "report":
-        hub.events.report(push.threadId, push.report);
-        return jsonOk({});
-      case "sessionEvent":
-        hub.events.sessionEvent(push.threadId, push.event, push.tailSeq);
-        return jsonOk({});
-      case "idleStopFired":
-        return Effect.runPromise(hub.idleStopFired(push.threadId))
-          .then(() => jsonOk({}))
-          .catch((error: unknown) => jsonError(String(error)));
-      default:
-        return jsonError(`unknown push type`);
-    }
+    return Match.value(push).pipe(
+      Match.tagsExhaustive({
+        report: ({ threadId, report }) => {
+          hub.events.report(threadId, report);
+          return jsonOk({});
+        },
+        sessionEvent: ({ threadId, event, tailSeq }) => {
+          // The event is opaque to the hub (ADR 0005) — the same seam
+          // cast the wire client applies to `EventFrame.event`.
+          hub.events.sessionEvent(threadId, event as SessionWireEvent, tailSeq);
+          return jsonOk({});
+        },
+        idleStopFired: ({ threadId }) =>
+          Effect.runPromise(hub.idleStopFired(threadId))
+            .then(() => jsonOk({}))
+            .catch((error: unknown) => jsonError(String(error))),
+      }),
+    );
   }
 }
 
-const jsonOk = (payload: unknown): Response =>
-  Response.json({ ok: true, payload });
+const jsonOk = (payload: unknown): Response => Response.json({ ok: true, payload });
 
-const jsonError = (error: string): Response =>
-  Response.json({ ok: false, error }, { status: 400 });
+const jsonError = (error: string): Response => Response.json({ ok: false, error }, { status: 400 });

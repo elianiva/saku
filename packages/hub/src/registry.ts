@@ -23,7 +23,7 @@ import type { EnvHandle } from "@saku/env";
 import type { ThreadEnvState, ThreadInfo, ThreadMode, ThreadState } from "@saku/wire";
 
 import { HubError } from "./hub-error.ts";
-import type { KvStore } from "@saku/store";
+import { KvStore, type KvStoreShape } from "@saku/store";
 
 /** The hub's registry record; `ThreadInfo` is its wire projection. */
 export interface HubRecord {
@@ -86,44 +86,33 @@ const encodeRecord = (record: HubRecord): Uint8Array =>
 const decodeRecord = (value: Uint8Array): HubRecord =>
   JSON.parse(new TextDecoder().decode(value)) as HubRecord;
 
-const toHubError =
-  (message: string) =>
-  (error: unknown): HubError =>
-    new HubError({ message, cause: error });
-
 /** Persist one record; every mutation is durable before it is visible. */
-const persist = (kv: KvStore, record: HubRecord): Effect.Effect<void, HubError> =>
-  Effect.tryPromise({
-    try: () => kv.put(recordKey(record.id), encodeRecord(record)),
-    catch: toHubError(`failed to persist thread ${record.id}`),
-  });
+const persist = (kv: KvStoreShape, record: HubRecord): Effect.Effect<void, never> =>
+  kv.put(recordKey(record.id), encodeRecord(record));
 
 /** Load every record at build time; corrupt records are skipped. */
-const load = (kv: KvStore): Effect.Effect<readonly HubRecord[], HubError> =>
-  Effect.tryPromise({
-    try: async () => {
-      const entries = await kv.list({ prefix: "threads/" });
-      const records: HubRecord[] = [];
-      for (const entry of entries) {
-        try {
-          records.push(decodeRecord(entry.value));
-        } catch (error) {
+const load = (kv: KvStoreShape): Effect.Effect<readonly HubRecord[], never> =>
+  Effect.gen(function* () {
+    const entries = yield* kv.list({ prefix: "threads/" });
+    return yield* Effect.forEach(entries, (entry) =>
+      Effect.try(() => decodeRecord(entry.value)).pipe(
+        Effect.catch((error) => {
           // Corrupt record: skip (the key stays on disk for inspection).
           console.warn(`[hub] skipping corrupt registry record: ${String(error)}`);
-        }
-      }
-      return records;
-    },
-    catch: toHubError("failed to load the thread registry"),
+          return Effect.succeed(undefined);
+        }),
+      ),
+    ).pipe(Effect.map((records) => records.filter((record) => record !== undefined)));
   });
 
 /**
  * The live registry: loaded from the store when built, persisted on every
- * mutation. Returns the service value directly (the hub is constructed
- * plain — the DO adapter and the tests build it the same way).
+ * mutation. Requires the `KvStore` service — the DO adapter and the tests
+ * provide the backend layer at the boundary.
  */
-export const makeHubRegistry = (kv: KvStore): Effect.Effect<HubRegistryShape, HubError, never> =>
+export const makeHubRegistry = (): Effect.Effect<HubRegistryShape, HubError, KvStore> =>
   Effect.gen(function* () {
+    const kv = yield* KvStore;
     const loaded = yield* load(kv);
     const recordsRef = yield* Ref.make<ReadonlyMap<string, HubRecord>>(
       new Map(loaded.map((record) => [record.id, record])),
@@ -205,10 +194,7 @@ export const makeHubRegistry = (kv: KvStore): Effect.Effect<HubRegistryShape, Hu
             next.delete(threadId);
             return next;
           });
-          yield* Effect.tryPromise({
-            try: () => kv.delete(recordKey(threadId)),
-            catch: toHubError(`failed to delete thread ${threadId}`),
-          });
+          yield* kv.delete(recordKey(threadId));
           return true;
         }),
       toInfo: (threadId) =>

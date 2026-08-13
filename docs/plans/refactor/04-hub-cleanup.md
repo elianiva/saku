@@ -22,7 +22,7 @@ staged"). `hub/src/wire-core.ts` belongs to plan 02 — do not touch it.
 2. `hub.ts` `listThreads` serializes independent registry reads in a for-loop
    (review P3-10).
 3. `hub.ts` `applyReport` detects change with `JSON.stringify(before) !==
-   JSON.stringify(after)` — stringify as equivalence (review P6-22).
+JSON.stringify(after)` — stringify as equivalence (review P6-22).
 4. `hub.ts` `notify` contains listener failures with try/catch; the wire client's
    `emit` uses `Result.try` — one concept, two implementations (review P6-20).
 5. `box.ts` `pollUntilReady` polls via self-recursion + `Date.now()` deadline
@@ -82,7 +82,9 @@ export const pollUntilReady = (api, boxId, options = {}) => {
   });
   return attempt.pipe(
     Effect.retry({
-      schedule: Schedule.spaced(`${intervalMs} millis`).pipe(Schedule.compose(Schedule.recurs(Math.ceil(timeoutMs / intervalMs)))),
+      schedule: Schedule.spaced(`${intervalMs} millis`).pipe(
+        Schedule.compose(Schedule.recurs(Math.ceil(timeoutMs / intervalMs))),
+      ),
       // final error: annotate with the timeout message like today
     }),
   );
@@ -101,7 +103,7 @@ Keep the per-poll `log` option behavior.
 - Move the `HubError` import up into the import block (house style).
 - `probeDaemon`: replace `catch: (error) => error as Error` with the instanceof
   passthrough idiom (lutra `luts/store.ts:46`): `catch: (cause) => cause instanceof
-  Error ? cause : new Error(String(cause))`, or better: let the tryPromise error be
+Error ? cause : new Error(String(cause))`, or better: let the tryPromise error be
   `unknown` and let the `Effect.result` failure arm message it via `messageOf`
   (imported from `hub-error.ts` — it already exports it).
 

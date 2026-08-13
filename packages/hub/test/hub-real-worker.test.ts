@@ -15,15 +15,10 @@ import { Effect, Exit, FileSystem, Scope } from "effect";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 import { getThreadTrailRoot } from "@saku/worker";
-import { memoryKv } from "@saku/store";
+import { KvStore } from "@saku/store";
 import { makeWireClient, type ThreadInfo, type WireClient } from "@saku/wire";
 
-import {
-  makeHub,
-  makeHubRegistry,
-  makeHubServer,
-  makeSkillsStore,
-} from "../src/index.ts";
+import { makeHub, makeHubRegistry, makeHubServer, makeSkillsStore } from "../src/index.ts";
 import { inProcessWorker } from "./in-process-worker.ts";
 import { scriptedProvisioner } from "./mock-worker.ts";
 import {
@@ -67,8 +62,8 @@ beforeEach(async () => {
       const fs = yield* FileSystem.FileSystem;
       const home = yield* fs.makeTempDirectory({ prefix: "saku-hub-real-" });
       process.env.SAKU_HOME = home;
-      const registry = yield* makeHubRegistry(memoryKv());
-      const skills = yield* makeSkillsStore(memoryKv());
+      const registry = yield* makeHubRegistry().pipe(Effect.provide(KvStore.memory()));
+      const skills = yield* makeSkillsStore().pipe(Effect.provide(KvStore.memory()));
       const worker = yield* inProcessWorker({
         fs,
         catalog: workerCatalog(),

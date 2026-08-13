@@ -5,7 +5,7 @@
  *
  * This is the test twin of the thread-DO namespace binding (M4): it proves
  * the full stack — wire client ⇄ hub ⇄ SessionHost ⇄ DoSessionRepo over
- * fileKv — before the Durable Object adapter exists. The host is created
+ * `KvStore.file` — before the Durable Object adapter exists. The host is created
  * lazily on the first mutating command; read-only commands answer from
  * storage alone (a session is never started by browsing).
  *
@@ -26,7 +26,7 @@ import {
   type ThreadRecord,
   type ThreadRegistryShape,
 } from "@saku/worker";
-import { fileKv } from "@saku/store";
+import { KvStore } from "@saku/store";
 import { LocalEnv } from "@saku/env";
 import {
   AbortResponse,
@@ -193,7 +193,6 @@ export const inProcessWorker = (
         const host = yield* SessionHost.create({
           threadId,
           record,
-          kv: fileKv(fs, getThreadTrailRoot(threadId)),
           catalog,
           registry,
           sink: (event) => {
@@ -209,7 +208,11 @@ export const inProcessWorker = (
           },
           env: options.env?.(record) ?? new LocalEnv(record.cwd, fs),
           ...(options.streamFn === undefined ? {} : { streamFn: options.streamFn }),
-        }).pipe(Effect.mapError(toHubError("create host")));
+        }).pipe(
+          // The in-process trail is file-backed under the thread's directory.
+          Effect.provide(KvStore.file(fs, getThreadTrailRoot(threadId))),
+          Effect.mapError(toHubError("create host")),
+        );
         yield* Ref.set(hostRef, Option.some(host));
         yield* Ref.update(hostsRef, (hosts) => new Map(hosts).set(threadId, host));
         return host;

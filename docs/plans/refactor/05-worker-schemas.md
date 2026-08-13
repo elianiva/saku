@@ -14,7 +14,7 @@ Status: **planned** — parallel plan 05 of the refactor pass (see `README.md`).
 
 1. **Round trip** (review P1-4): `AuthJsonCredentialStore.load` is `static async` with
    `Effect.runPromise` inside; the layer wraps it back with `Effect.promise(() =>
-   load(...))` (`model-catalog.ts:60-95` and `:397`). `load` is not part of pi's
+load(...))` (`model-catalog.ts:60-95` and `:397`). `load` is not part of pi's
    `CredentialStore` interface — it should be an Effect.
 2. **models.json parsing is manual + throw-driven** (review P4-13): plain TS
    interfaces + `JSON.parse(raw) as unknown` + structural narrowing
@@ -67,12 +67,14 @@ const ModelsJsonModel = Schema.Struct({
   contextWindow: Schema.optional(Schema.Number),
   maxTokens: Schema.optional(Schema.Number),
   input: Schema.optional(Schema.Array(Schema.Literals(["text", "image"]))),
-  cost: Schema.optional(Schema.Struct({
-    input: Schema.optional(Schema.Number),
-    output: Schema.optional(Schema.Number),
-    cacheRead: Schema.optional(Schema.Number),
-    cacheWrite: Schema.optional(Schema.Number),
-  })),
+  cost: Schema.optional(
+    Schema.Struct({
+      input: Schema.optional(Schema.Number),
+      output: Schema.optional(Schema.Number),
+      cacheRead: Schema.optional(Schema.Number),
+      cacheWrite: Schema.optional(Schema.Number),
+    }),
+  ),
   headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   samplingParams: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
 });
@@ -84,12 +86,12 @@ const ModelsJsonProviderConfig = Schema.Struct({
   api: Schema.optional(Schema.String),
   headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   models: Schema.optional(Schema.Array(ModelsJsonModel)),
-  modelOverrides: Schema.optional(
-    Schema.Record(Schema.String, Schema.partial(ModelsJsonModel)),
-  ),
+  modelOverrides: Schema.optional(Schema.Record(Schema.String, Schema.partial(ModelsJsonModel))),
 });
 
-const ModelsJsonSchema = Schema.Struct({ providers: Schema.Record(Schema.String, ModelsJsonProviderConfig) });
+const ModelsJsonSchema = Schema.Struct({
+  providers: Schema.Record(Schema.String, ModelsJsonProviderConfig),
+});
 ```
 
 `loadModelsJsonFrom` → `yield* Schema.decodeUnknownOption(ModelsJsonSchema)(raw)`-ish:
@@ -124,7 +126,7 @@ const ThreadRecordSchema = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
   cwd: Schema.String,
-  mode: ThreadMode,                 // imported from @saku/wire
+  mode: ThreadMode, // imported from @saku/wire
   createdAt: Schema.Number,
   sessionId: Schema.Union([Schema.Null, Schema.String]),
   nameAuto: Schema.Boolean,
@@ -162,7 +164,7 @@ constructs `new RegistryError({message})` and must keep compiling.
   one to keep (it exercises the full tool loop); if a deploy test asserts specific
   fake output, update that assertion in the test file — deploy tests are owned by
   plan 02, so if you must change the test, coordinate: prefer keeping both variants'
-  *streams* identical by making `fakeProvider` accept the same alternation behavior
+  _streams_ identical by making `fakeProvider` accept the same alternation behavior
   and only touch `deploy/catalog.ts`. If the test breaks, note it in the plan status
   instead of editing it.
 

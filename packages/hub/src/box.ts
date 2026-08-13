@@ -11,7 +11,7 @@
  * The full platform guide is at https://docs.ascii.dev/box/platform-guide.
  */
 
-import { Effect, Schema } from "effect";
+import { Effect, Schedule, Schema } from "effect";
 
 /** A failure of the Box API (auth, limits, provisioning, transport). */
 export class BoxError extends Schema.TaggedError<BoxError>()("BoxError", {
@@ -47,7 +47,11 @@ export interface BoxApi {
     command: string,
     options?: { timeoutSeconds?: number; cwd?: string },
   ) => Effect.Effect<CommandResult, BoxError, never>;
-  readonly writeFile: (boxId: string, path: string, content: string) => Effect.Effect<void, BoxError, never>;
+  readonly writeFile: (
+    boxId: string,
+    path: string,
+    content: string,
+  ) => Effect.Effect<void, BoxError, never>;
   readonly readFile: (boxId: string, path: string) => Effect.Effect<string, BoxError, never>;
   /** Stop and archive (snapshot; billing paused). */
   readonly stop: (boxId: string) => Effect.Effect<void, BoxError, never>;
@@ -67,6 +71,14 @@ interface Envelope {
   readonly [key: string]: unknown;
 }
 
+/**
+ * Internal poll failure: the box answered but is not ready yet (the poll
+ * retries this; `while` keeps API failures from being retried).
+ */
+class PollNotReady extends Schema.TaggedError<PollNotReady>()("PollNotReady", {
+  status: Schema.String,
+}) {}
+
 /** Poll a box until it reaches `ready`/`idle` (provisioning is async). */
 export const pollUntilReady = (
   api: BoxApi,
@@ -75,20 +87,30 @@ export const pollUntilReady = (
 ): Effect.Effect<BoxInfo, BoxError, never> => {
   const intervalMs = options.intervalMs ?? 1000;
   const timeoutMs = options.timeoutMs ?? 5 * 60 * 1000;
-  const deadline = Date.now() + timeoutMs;
-  const poll = (): Effect.Effect<BoxInfo, BoxError, never> =>
-    Effect.gen(function* () {
-      const box = yield* api.getBox(boxId);
-      if (box.status === "ready" || box.status === "idle") return box;
-      if (Date.now() > deadline) {
-        return yield* Effect.fail(
-          new BoxError({ message: `box ${boxId} not ready after ${timeoutMs}ms (status ${box.status})` }),
-        );
-      }
-      yield* Effect.sleep(`${intervalMs} millis`);
-      return yield* poll();
-    });
-  return poll();
+  const attempt = Effect.gen(function* () {
+    const box = yield* api.getBox(boxId);
+    if (box.status === "ready" || box.status === "idle") return box;
+    return yield* Effect.fail(new PollNotReady({ status: box.status }));
+  });
+  return attempt.pipe(
+    // Poll every intervalMs until the deadline (Schedule.spaced + upTo;
+    // today: self-recursion with a Date.now() deadline). Only the
+    // not-ready failure is retried — API failures pass through.
+    Effect.retry({
+      schedule: Schedule.spaced(`${intervalMs} millis`).pipe(
+        Schedule.upTo({ duration: `${timeoutMs} millis` }),
+      ),
+      while: (error) => error._tag === "PollNotReady",
+    }),
+    // The schedule gave up: the deadline passed. Today's message, kept.
+    Effect.catchTag("PollNotReady", (error) =>
+      Effect.fail(
+        new BoxError({
+          message: `box ${boxId} not ready after ${timeoutMs}ms (status ${error.status})`,
+        }),
+      ),
+    ),
+  );
 };
 
 /** The client: one request function, thin typed wrappers over it. */
@@ -117,7 +139,8 @@ export const makeBoxApi = (deps: BoxApiDeps): BoxApi => {
       });
       const text = yield* Effect.tryPromise({
         try: () => response.text(),
-        catch: (error) => new BoxError({ message: `box api read failed: ${String(error)}`, body: error }),
+        catch: (error) =>
+          new BoxError({ message: `box api read failed: ${String(error)}`, body: error }),
       });
       const parsed = ((): Envelope | undefined => {
         try {
@@ -129,9 +152,10 @@ export const makeBoxApi = (deps: BoxApiDeps): BoxApi => {
       if (!response.ok) {
         return yield* Effect.fail(
           new BoxError({
-            message: parsed?.ok === false && typeof parsed?.error === "string"
-              ? (parsed.error as string)
-              : `box api ${method} ${path} failed: HTTP ${response.status}`,
+            message:
+              parsed?.ok === false && typeof parsed?.error === "string"
+                ? (parsed.error as string)
+                : `box api ${method} ${path} failed: HTTP ${response.status}`,
             status: response.status,
             body: parsed ?? text,
           }),
@@ -151,7 +175,9 @@ export const makeBoxApi = (deps: BoxApiDeps): BoxApi => {
         const box = (envelope as { box?: { id?: string; status?: string } }).box;
         const id = box?.id ?? (envelope as { id?: string }).id;
         if (id === undefined) {
-          return yield* Effect.fail(new BoxError({ message: "box created without an id", body: envelope }));
+          return yield* Effect.fail(
+            new BoxError({ message: "box created without an id", body: envelope }),
+          );
         }
         return { id, status: box?.status ?? "provisioning" };
       }),
@@ -162,7 +188,9 @@ export const makeBoxApi = (deps: BoxApiDeps): BoxApi => {
         const id = box?.id ?? boxId;
         const status = box?.status ?? (envelope as { status?: string }).status;
         if (status === undefined) {
-          return yield* Effect.fail(new BoxError({ message: `box ${boxId} without a status`, body: envelope }));
+          return yield* Effect.fail(
+            new BoxError({ message: `box ${boxId} without a status`, body: envelope }),
+          );
         }
         return { id, status };
       }),
@@ -170,7 +198,9 @@ export const makeBoxApi = (deps: BoxApiDeps): BoxApi => {
       Effect.gen(function* () {
         const envelope = yield* request("POST", `/boxes/${boxId}/commands`, {
           command,
-          ...(options?.timeoutSeconds === undefined ? {} : { timeoutSeconds: options.timeoutSeconds }),
+          ...(options?.timeoutSeconds === undefined
+            ? {}
+            : { timeoutSeconds: options.timeoutSeconds }),
           ...(options?.cwd === undefined ? {} : { cwd: options.cwd }),
         });
         const result = envelope as {
@@ -192,10 +222,15 @@ export const makeBoxApi = (deps: BoxApiDeps): BoxApi => {
       }),
     readFile: (boxId, path) =>
       Effect.gen(function* () {
-        const envelope = yield* request("GET", `/boxes/${boxId}/files?path=${encodeURIComponent(path)}`);
+        const envelope = yield* request(
+          "GET",
+          `/boxes/${boxId}/files?path=${encodeURIComponent(path)}`,
+        );
         const content = (envelope as { content?: string }).content;
         if (content === undefined) {
-          return yield* Effect.fail(new BoxError({ message: `box file ${path} without content`, body: envelope }));
+          return yield* Effect.fail(
+            new BoxError({ message: `box file ${path} without content`, body: envelope }),
+          );
         }
         return content;
       }),

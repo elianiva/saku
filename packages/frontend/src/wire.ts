@@ -18,7 +18,7 @@ export class Wire extends Context.Service<Wire, { readonly client: WireClient }>
 export const WireLive = Layer.effect(
   Wire,
   Effect.gen(function* () {
-    const config = yield* Effect.promise(resolveConfig);
+    const config = yield* resolveConfig;
     const client = yield* makeWireClient({
       url: config.url,
       token: config.token,

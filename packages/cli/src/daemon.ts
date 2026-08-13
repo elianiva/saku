@@ -11,7 +11,7 @@ import { spawn } from "node:child_process";
 import { mkdir, open, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Effect, Option } from "effect";
+import { Effect, Option, Schedule } from "effect";
 
 import { makeWireClient } from "@saku/wire";
 import { getAuthPath, getWorkerLogPath, getWorkerUrlPath } from "@saku/worker";
@@ -80,21 +80,45 @@ export const spawnDaemon = (): Effect.Effect<number, Error, never> =>
     return child.pid ?? 0;
   });
 
+/**
+ * Probe until the daemon answers: first probe + 99 retries, 100 ms apart.
+ * The error channel is the retry-exhausted probe failure (`undefined`).
+ */
+const waitForDaemon = (): Effect.Effect<DaemonStatus & { pid: number }, undefined, never> =>
+  daemonStatus().pipe(
+    Effect.filterOrFail(
+      (status): status is DaemonStatus & { pid: number } =>
+        status.running && status.pid !== undefined,
+      () => undefined,
+    ),
+    Effect.retry({ times: 99, schedule: Schedule.spaced("100 millis") }),
+  );
+
 /** Spawn if needed and wait until the socket answers. Returns the pid. */
 export const ensureDaemon = (): Effect.Effect<number, Error, never> =>
   Effect.gen(function* () {
     const status = yield* daemonStatus();
     if (status.running && status.pid !== undefined) return status.pid;
     const pid = yield* spawnDaemon();
-    for (let i = 0; i < 100; i++) {
-      yield* Effect.sleep("100 millis");
-      const now = yield* daemonStatus();
-      if (now.running && now.pid !== undefined) return now.pid;
-    }
-    return yield* Effect.fail(
-      new Error(`daemon did not come up (spawned pid ${pid}); see ${getWorkerLogPath()}`),
+    const now = yield* waitForDaemon().pipe(
+      Effect.mapError(
+        () => new Error(`daemon did not come up (spawned pid ${pid}); see ${getWorkerLogPath()}`),
+      ),
     );
+    return now.pid;
   });
+
+/** Probe until the daemon is gone: first probe + 49 retries, 100 ms apart. */
+const waitForStop = (): Effect.Effect<void, never, never> =>
+  daemonStatus().pipe(
+    Effect.filterOrFail(
+      (status) => !status.running,
+      () => undefined,
+    ),
+    Effect.retry({ times: 49, schedule: Schedule.spaced("100 millis") }),
+    // 50 probes exhausted: give up silently, like the old loop's break.
+    Effect.catch(() => Effect.void),
+  );
 
 /** Stop the daemon; returns the pid that was stopped, or none. */
 export const stopDaemon = (): Effect.Effect<Option.Option<number>, never, never> =>
@@ -104,10 +128,6 @@ export const stopDaemon = (): Effect.Effect<Option.Option<number>, never, never>
     const pid = status.pid;
     // Already gone is fine — the process was reaped between the probe and now.
     yield* Effect.try(() => process.kill(pid, "SIGTERM")).pipe(Effect.catch(() => Effect.void));
-    for (let i = 0; i < 50; i++) {
-      yield* Effect.sleep("100 millis");
-      const now = yield* daemonStatus();
-      if (!now.running) break;
-    }
-    return Option.some(status.pid);
+    yield* waitForStop();
+    return Option.some(pid);
   });

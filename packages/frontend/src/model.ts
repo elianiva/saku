@@ -11,6 +11,8 @@
 import { Schema as S } from "effect";
 import { ThreadInfo } from "@saku/wire";
 
+import { EntryProjection } from "./projection.ts";
+
 /** The wire connection lifecycle. */
 export const Conn = S.Union([
   S.TaggedStruct("connecting", {}),
@@ -27,11 +29,11 @@ export const Rail = S.Union([
 ]);
 export type Rail = S.Schema.Type<typeof Rail>;
 
-/** The active thread's entry trail. Entries are pi's — kept opaque here. */
+/** The active thread's entry trail. Entries are pi's — rendered through the console's projection. */
 export const Trail = S.Union([
   S.TaggedStruct("loading", {}),
   S.TaggedStruct("failed", { error: S.String }),
-  S.TaggedStruct("ready", { entries: S.Array(S.Unknown), tailSeq: S.Number }),
+  S.TaggedStruct("ready", { entries: S.Array(EntryProjection), tailSeq: S.Number }),
 ]);
 export type Trail = S.Schema.Type<typeof Trail>;
 

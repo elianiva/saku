@@ -19,7 +19,7 @@ import { Effect, Exit, FileSystem, Scope } from "effect";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 import { makeEnvDaemon, nodeSocket, RemoteEnv, type EnvDaemonShape } from "@saku/env";
-import { fileKv } from "@saku/store";
+import { KvStore } from "@saku/store";
 
 import { SessionHost, type HostEventSink } from "../src/session-host.ts";
 import { assistantMessage, fakeCatalog, FakeRegistry } from "./fakes.ts";
@@ -95,20 +95,21 @@ describe("SessionHost over RemoteEnv", () => {
       }).pipe(Effect.provide(NodeFileSystem.layer)),
     );
     daemon = built.daemon;
-    env = new RemoteEnv({ url: daemon.url, token: ENV_TOKEN, cwd: workdir, socket: nodeSocket, });
+    env = new RemoteEnv({ url: daemon.url, token: ENV_TOKEN, cwd: workdir, socket: nodeSocket });
     await env.connect();
     host = await Effect.runPromise(
       SessionHost.create({
         threadId: THREAD_ID,
         record: record(),
-        // The trail lives under the workdir (the remote env's workspace).
-        kv: fileKv(built.fs, join(workdir, "trail")),
         catalog: fakeCatalog(),
         registry,
         sink,
         env,
         streamFn: toolThenDoneStream("Done, the command ran."),
-      }),
+      }).pipe(
+        // The trail lives under the workdir (the remote env's workspace).
+        Effect.provide(KvStore.file(built.fs, join(workdir, "trail"))),
+      ),
     );
   });
 

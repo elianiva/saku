@@ -187,8 +187,11 @@ const settleConnect = (
         onNone: () => Effect.void,
         onSome: (deferred) =>
           Result.match(outcome, {
-            onSuccess: (hello) => Deferred.succeed(deferred, hello),
-            onFailure: (error) => Deferred.fail(deferred, error),
+            // The settle result is discarded (the boolean is the settle
+            // success) — align both arms on void so inference stays stable
+            // across programs (`Deferred` returns `Effect<boolean>`).
+            onSuccess: (hello) => Deferred.succeed(deferred, hello).pipe(Effect.asVoid),
+            onFailure: (error) => Deferred.fail(deferred, error).pipe(Effect.asVoid),
           }),
       }),
     ),

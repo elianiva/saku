@@ -5,7 +5,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { NodeFileSystem } from "@effect/platform-node";
-import { Effect, FileSystem, Option } from "effect";
+import { Effect, FileSystem, Layer, Option } from "effect";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { AssistantMessage, TextContent } from "@earendil-works/pi-ai";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
@@ -19,7 +19,7 @@ import {
   type HostState,
 } from "../src/session-host.ts";
 import { DoSessionRepo } from "../src/do-session.ts";
-import { fileKv } from "@saku/store";
+import { KvStore, type KvStoreShape } from "@saku/store";
 import { getThreadTrailRoot } from "../src/paths.ts";
 import { assistantMessage, fakeCatalog, FakeRegistry, TEST_MODEL, TEST_PROVIDER } from "./fakes.ts";
 import { StubEnv } from "./stub-env.ts";
@@ -94,6 +94,14 @@ const gated = (): { streamFn: StreamFn; release: () => void } => {
   return { streamFn: () => stream, release };
 };
 
+/** Build a KvStore value from a backend layer (the pi seam is value-shaped). */
+const buildKv = (layer: Layer.Layer<KvStore>): Promise<KvStoreShape> =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      return yield* KvStore;
+    }).pipe(Effect.provide(layer)),
+  );
+
 interface HostWorld {
   readonly host: SessionHost;
   readonly registry: FakeRegistry;
@@ -126,16 +134,15 @@ const makeHost = (
     const host = yield* SessionHost.create({
       threadId: THREAD_ID,
       record: yield* registry.get(THREAD_ID).pipe(Effect.map(Option.getOrThrow)),
-      // The test trail is file-backed under the thread's directory.
-      kv: fileKv(fs, getThreadTrailRoot(THREAD_ID)),
       catalog: fakeCatalog({ completions: options.completions }),
       registry,
       sink,
       ...(options.streamFn === undefined ? {} : { streamFn: options.streamFn }),
-      ...(options.env === undefined
-        ? { env: new StubEnv("/work") }
-        : { env: options.env }),
-    });
+      ...(options.env === undefined ? { env: new StubEnv("/work") } : { env: options.env }),
+    }).pipe(
+      // The test trail is file-backed under the thread's directory.
+      Effect.provide(KvStore.file(fs, getThreadTrailRoot(THREAD_ID))),
+    );
     return { host, registry, events, fs, kvRoot: getThreadTrailRoot(THREAD_ID) };
   });
 
@@ -392,7 +399,7 @@ describe("SessionHost", () => {
       async ({ host, fs, kvRoot }) => {
         await Effect.runPromise(host.prompt("first"));
         await waitForState(host, "idle");
-        const repo = new DoSessionRepo(fileKv(fs, kvRoot));
+        const repo = new DoSessionRepo(await buildKv(KvStore.file(fs, kvRoot)));
         const [metadata] = await repo.list();
         const session = await repo.open(metadata);
         await session.appendRecord({
@@ -410,12 +417,11 @@ describe("SessionHost", () => {
             return yield* SessionHost.create({
               threadId: THREAD_ID,
               record: yield* registry.get(THREAD_ID).pipe(Effect.map(Option.getOrThrow)),
-              kv: fileKv(fs, getThreadTrailRoot(THREAD_ID)),
               catalog: fakeCatalog(),
               registry,
               sink: () => {},
               env: new StubEnv("/work"),
-            });
+            }).pipe(Effect.provide(KvStore.file(fs, getThreadTrailRoot(THREAD_ID))));
           }).pipe(Effect.provide(NodeFileSystem.layer)),
         );
         try {

@@ -44,18 +44,20 @@ interface ListenerEntry {
 /** Adapt a workerd `WebSocket` to the hub's `SocketLike` surface. */
 export const workerdSocket = (ws: WorkerdWebSocketLike): SocketLike => {
   const listeners = new Map<string, Set<ListenerEntry>>();
-  const dispatch = (event: string) => (ev: unknown): void => {
-    const set = listeners.get(event);
-    if (set === undefined) return;
-    const data =
-      ev !== null && typeof ev === "object" && "data" in (ev as { data?: unknown })
-        ? (ev as { data?: unknown }).data
-        : ev;
-    for (const entry of [...set]) {
-      if (entry.once) set.delete(entry);
-      entry.listener(data);
-    }
-  };
+  const dispatch =
+    (event: string) =>
+    (ev: unknown): void => {
+      const set = listeners.get(event);
+      if (set === undefined) return;
+      const data =
+        ev !== null && typeof ev === "object" && "data" in (ev as { data?: unknown })
+          ? (ev as { data?: unknown }).data
+          : ev;
+      for (const entry of [...set]) {
+        if (entry.once) set.delete(entry);
+        entry.listener(data);
+      }
+    };
   const handlers = new Map<string, (ev: unknown) => void>();
   return {
     send: (data) => ws.send(data),

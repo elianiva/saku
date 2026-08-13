@@ -24,11 +24,11 @@ Everything under `packages/frontend/src/`:
 3. **Casts + unknown-poking** (review P4-14): `event as SessionWireEvent` in
    `update.ts`; `format.ts` narrows pi shapes through `EntryLike`/`MessageLike`/
    `Block` all-optional-unknown interfaces with `as unknown as` casts (~150 lines of
-   defensive poking). ADR 0005 keeps pi's types opaque *on the wire* — correct — but
+   defensive poking). ADR 0005 keeps pi's types opaque _on the wire_ — correct — but
    the console's own rendering vocabulary should be a local Schema projection
    decoded at the boundaries.
 4. **Catch-alls** (review P6-26): every command ends `.pipe(Effect.catch((error) =>
-   Effect.succeed(XFailed({ message: messageOf(error) }))))` — `WireError` is the
+Effect.succeed(XFailed({ message: messageOf(error) }))))` — `WireError` is the
    only error; `catchTag` is precise.
 
 ## Design — `projection.ts` (new)
@@ -108,23 +108,24 @@ typed, unknown pi events degrade to a named no-op branch instead of being cast.
 ```ts
 const BootstrapSchema = Schema.Struct({ url: Schema.String, token: Schema.String });
 
-export const fetchBootstrap: Effect.Effect<Option.Option<SakuConfig>, never> =
-  Effect.tryPromise({
-    try: () => fetch("/__saku").then((response) =>
-      response.ok ? response.json() as Promise<unknown> : null),
-    catch: () => null,
-  }).pipe(
-    Effect.flatMap((parsed) =>
-      parsed === null
-        ? Effect.succeed(Option.none())
-        : Effect.sync(() => Schema.decodeUnknownOption(BootstrapSchema)(parsed)),
+export const fetchBootstrap: Effect.Effect<Option.Option<SakuConfig>, never> = Effect.tryPromise({
+  try: () =>
+    fetch("/__saku").then((response) =>
+      response.ok ? (response.json() as Promise<unknown>) : null,
     ),
-  );
+  catch: () => null,
+}).pipe(
+  Effect.flatMap((parsed) =>
+    parsed === null
+      ? Effect.succeed(Option.none())
+      : Effect.sync(() => Schema.decodeUnknownOption(BootstrapSchema)(parsed)),
+  ),
+);
 
 export const resolveConfig: Effect.Effect<SakuConfig, never> = Effect.gen(function* () {
   const bootstrap = yield* fetchBootstrap;
   if (Option.isSome(bootstrap)) return bootstrap.value;
-  const saved = readSavedConfig();   // sync localStorage read; keep the try/catch here
+  const saved = readSavedConfig(); // sync localStorage read; keep the try/catch here
   if (saved !== null) return saved;
   return defaultConfig();
 });
@@ -148,21 +149,21 @@ is `Effect.sync` — untouched.
 ### 3. `subscriptions.ts` + `message.ts` (decode at the boundary)
 
 - `message.ts`: `WireEvent = Message.m("WireEvent", { threadId: S.String, event:
-  SessionEventProjection })`; `TrailLoaded.entries: S.Array(EntryProjection)`.
+SessionEventProjection })`; `TrailLoaded.entries: S.Array(EntryProjection)`.
 - `subscriptions.ts`: the `client.on("event", …)` callback decodes:
   `Queue.offerUnsafe(queue, WireEvent({ threadId: payload.threadId, event:
-  decodeSessionEvent(payload.event) }))`. `client.on("error")` — the payload is
+decodeSessionEvent(payload.event) }))`. `client.on("error")` — the payload is
   `{message}` already — unchanged. Import `decodeSessionEvent` from `projection.ts`.
 - `LoadTrailCmd` in `commands.ts`: decode entries once here —
   `entries: result.entries.map((entry) => decodeEntry(entry))` where `decodeEntry =
-  Schema.decodeUnknownOption(EntryProjection)` — hmm, entries that fail decode
+Schema.decodeUnknownOption(EntryProjection)` — hmm, entries that fail decode
   become `None`; the trail renders what it can. Decide: `Array.filterMap` to
   `Option.some` (drop undecodable) or keep `Unknown`? The projection is fully
   optional-fielded, so decode never fails in practice (any object decodes). Use
   `Schema.decodeUnknownSync` with `Effect.try`/`Result.try` fallback to `undefined`
   and filter — specify: undecodable entry → dropped with a console.warn (bounded,
   never crashes the trail). `model.ts`'s `Trail` schema: `entries:
-  S.Array(EntryProjection)`.
+S.Array(EntryProjection)`.
 
 ### 4. `update.ts` (exhaustive fold, no casts)
 
@@ -179,10 +180,11 @@ calls become direct field reads.
 ### 5. `format.ts` (projection reads; delete the poking)
 
 Every helper's input becomes `MessageProjection` / `EntryProjection`:
+
 - `asString` stays (defensive string cast of optional fields).
 - `entryOf`/`messageOf`/`isRecord` **deleted** — callers get typed values.
 - `messageRole/messageError/messageText/messageThinking/messageToolCalls/
-  messageToolResult/argsPreview/tail/stringifyLive/summaryLine` operate on the
+messageToolResult/argsPreview/tail/stringifyLive/summaryLine` operate on the
   projections: `block.type === "text"` checks stay (fields are optional strings),
   the `as unknown as Block` casts go.
 - `try/catch` in `argsPreview`/`stringifyLive` stays (JSON.stringify of unknown

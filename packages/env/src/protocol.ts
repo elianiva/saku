@@ -213,20 +213,26 @@ export const EnvPayloadSchema = {
   exec: S.Struct({ stdout: S.String, stderr: S.String, exitCode: S.Number }),
 } as const satisfies Record<EnvOp["_tag"], S.Schema<unknown>>;
 
-/** The opaque handle a worker needs to reach an env (ADR 0003). */
-export interface EnvHandle {
+/**
+ * The persisted env handle contract (ADR 0003): what the hub hands the
+ * worker after provisioning. It crosses the `/set-env-handle` RPC and
+ * the thread DO's storage, so it is schema-typed like the rest of the
+ * protocol — the JSON shape is the contract.
+ */
+export const EnvHandle = S.Struct({
   /** The env's endpoint: a `host --private` URL (Box) or the hub relay URL. */
-  readonly url: string;
+  url: S.String,
   /** The env protocol token the daemon enforces in `env_hello`. */
-  readonly token: string;
+  token: S.String,
   /** The backing Box, when the env is a sandbox thread's. */
-  readonly boxId: string | null;
+  boxId: S.Union([S.Null, S.String]),
   /**
    * Attach through the hub relay to this registered env (the local
    * machine's daemon, cloud workers) — the direct-URL path otherwise.
    */
-  readonly relay?: { readonly envId: string; readonly token: string };
-}
+  relay: S.optional(S.Struct({ envId: S.String, token: S.String })),
+});
+export type EnvHandle = S.Schema.Type<typeof EnvHandle>;
 
 /** Reconstruct pi's FileError/ExecutionError classes from a wire error. */
 export const toPiError = (error: EnvError): FileError | ExecutionError => {
@@ -235,4 +241,3 @@ export const toPiError = (error: EnvError): FileError | ExecutionError => {
   }
   return new ExecutionError(error.kind as ExecutionErrorCode, error.message);
 };
-

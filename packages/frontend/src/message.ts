@@ -8,6 +8,8 @@ import { Schema as S } from "effect";
 import { Message } from "foldkit";
 import { HelloOk, ThreadInfo } from "@saku/wire";
 
+import { EntryProjection, SessionEventProjection } from "./projection.ts";
+
 // -- connection -------------------------------------------------------------
 
 export const WireConnectRequested = Message.m("WireConnectRequested");
@@ -34,7 +36,7 @@ export const DeleteFailed = Message.m("DeleteFailed", { message: S.String });
 export const SelectRequested = Message.m("SelectRequested", { id: S.String });
 export const TrailLoaded = Message.m("TrailLoaded", {
   id: S.String,
-  entries: S.Array(S.Unknown),
+  entries: S.Array(EntryProjection),
   tailSeq: S.Number,
 });
 export const TrailFailed = Message.m("TrailFailed", { message: S.String });
@@ -52,7 +54,7 @@ export const AbortDone = Message.m("AbortDone");
 
 export const WireEvent = Message.m("WireEvent", {
   threadId: S.String,
-  event: S.Unknown,
+  event: SessionEventProjection,
 });
 export const ThreadChanged = Message.m("ThreadChanged", { thread: ThreadInfo });
 export const ServerErrorNotice = Message.m("ServerErrorNotice", { message: S.String });

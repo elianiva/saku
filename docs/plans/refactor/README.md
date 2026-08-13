@@ -19,17 +19,17 @@ change needs a file another plan owns, keep it out or leave a note — never edi
 
 ## File ownership map
 
-| Plan | File | Owning plan |
-| --- | --- | --- |
-| `01-kvstore-effect.md` | `packages/store/src/*`, `packages/worker/src/do-session.ts`, `packages/hub/src/registry.ts`, `packages/hub/src/skills.ts`, `packages/deploy/src/kv.ts`, `packages/hub/test/registry.test.ts`, `packages/worker/test/do-session.test.ts` | 01 |
-| `02-wire-server-core.md` | `packages/wire/src/server-core.ts` (new), `packages/wire/src/session.ts`, `packages/wire/package.json`, `packages/worker/src/daemon.ts`, `packages/worker/src/session-commands.ts` (new), `packages/worker/src/isolate.ts`, `packages/hub/src/wire-core.ts`, `packages/deploy/src/thread-do.ts`, `packages/deploy/src/rpc.ts`, `packages/hub/test/hub-wire.test.ts`, `packages/hub/test/hub-real-worker.test.ts`, `packages/deploy/test/deploy.test.ts` | 02 |
-| `03-session-host-decompose.md` | `packages/worker/src/session-host.ts`, `packages/worker/src/session-host-error.ts` (new), `packages/worker/src/session-machine.ts` (new), `packages/worker/src/agent-events.ts` (new), `packages/worker/test/session-host.test.ts`, `packages/worker/test/remote-host.test.ts` | 03 |
-| `04-hub-cleanup.md` | `packages/hub/src/hub-error.ts`, `packages/hub/src/hub.ts`, `packages/hub/src/box.ts`, `packages/hub/src/provisioner.ts`, `packages/hub/src/server.ts`, `packages/hub/test/hub.test.ts`, `packages/hub/test/idle-stop.test.ts`, `packages/hub/test/provisioner.test.ts`, `packages/hub/test/mock-worker.ts` | 04 |
-| `05-worker-schemas.md` | `packages/worker/src/model-catalog.ts`, `packages/worker/src/registry.ts`, `packages/worker/src/registry-error.ts`, `packages/worker/src/fake-provider.ts` (new), `packages/worker/package.json`, `packages/deploy/src/catalog.ts` | 05 |
-| `06-env-schemas.md` | `packages/env/src/daemon.ts`, `packages/env/src/protocol.ts`, `packages/env/src/local-env.ts`, `packages/env/test/env-daemon.test.ts` | 06 |
-| `07-cli-schedules.md` | `packages/cli/src/daemon.ts`, `packages/cli/src/env.ts`, `packages/cli/src/entry.ts` | 07 |
-| `08-frontend-effect.md` | everything under `packages/frontend/src/` (`config.ts`, `wire.ts`, `commands.ts`, `update.ts`, `subscriptions.ts`, `message.ts`, `model.ts`, `format.ts`, `thread-pane.ts`, `rail.ts`, `view.ts`, new `projection.ts`) | 08 |
-| `09-deploy-hubdo.md` | `packages/deploy/src/hub-do.ts`, `packages/deploy/src/static-provisioner.ts`, `packages/deploy/src/worker.ts` | 09 |
+| Plan                           | File                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Owning plan |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- |
+| `01-kvstore-effect.md`         | `packages/store/src/*`, `packages/worker/src/do-session.ts`, `packages/hub/src/registry.ts`, `packages/hub/src/skills.ts`, `packages/deploy/src/kv.ts`, `packages/hub/test/registry.test.ts`, `packages/worker/test/do-session.test.ts`                                                                                                                                                                                                                 | 01          |
+| `02-wire-server-core.md`       | `packages/wire/src/server-core.ts` (new), `packages/wire/src/session.ts`, `packages/wire/package.json`, `packages/worker/src/daemon.ts`, `packages/worker/src/session-commands.ts` (new), `packages/worker/src/isolate.ts`, `packages/hub/src/wire-core.ts`, `packages/deploy/src/thread-do.ts`, `packages/deploy/src/rpc.ts`, `packages/hub/test/hub-wire.test.ts`, `packages/hub/test/hub-real-worker.test.ts`, `packages/deploy/test/deploy.test.ts` | 02          |
+| `03-session-host-decompose.md` | `packages/worker/src/session-host.ts`, `packages/worker/src/session-host-error.ts` (new), `packages/worker/src/session-machine.ts` (new), `packages/worker/src/agent-events.ts` (new), `packages/worker/test/session-host.test.ts`, `packages/worker/test/remote-host.test.ts`                                                                                                                                                                          | 03          |
+| `04-hub-cleanup.md`            | `packages/hub/src/hub-error.ts`, `packages/hub/src/hub.ts`, `packages/hub/src/box.ts`, `packages/hub/src/provisioner.ts`, `packages/hub/src/server.ts`, `packages/hub/test/hub.test.ts`, `packages/hub/test/idle-stop.test.ts`, `packages/hub/test/provisioner.test.ts`, `packages/hub/test/mock-worker.ts`                                                                                                                                             | 04          |
+| `05-worker-schemas.md`         | `packages/worker/src/model-catalog.ts`, `packages/worker/src/registry.ts`, `packages/worker/src/registry-error.ts`, `packages/worker/src/fake-provider.ts` (new), `packages/worker/package.json`, `packages/deploy/src/catalog.ts`                                                                                                                                                                                                                      | 05          |
+| `06-env-schemas.md`            | `packages/env/src/daemon.ts`, `packages/env/src/protocol.ts`, `packages/env/src/local-env.ts`, `packages/env/test/env-daemon.test.ts`                                                                                                                                                                                                                                                                                                                   | 06          |
+| `07-cli-schedules.md`          | `packages/cli/src/daemon.ts`, `packages/cli/src/env.ts`, `packages/cli/src/entry.ts`                                                                                                                                                                                                                                                                                                                                                                    | 07          |
+| `08-frontend-effect.md`        | everything under `packages/frontend/src/` (`config.ts`, `wire.ts`, `commands.ts`, `update.ts`, `subscriptions.ts`, `message.ts`, `model.ts`, `format.ts`, `thread-pane.ts`, `rail.ts`, `view.ts`, new `projection.ts`)                                                                                                                                                                                                                                  | 08          |
+| `09-deploy-hubdo.md`           | `packages/deploy/src/hub-do.ts`, `packages/deploy/src/static-provisioner.ts`, `packages/deploy/src/worker.ts`                                                                                                                                                                                                                                                                                                                                           | 09          |
 
 Untouched files (owned by no plan — do not edit): `packages/wire/src/{client,envelope,hello,thread,skills,transport,version,index}.ts`,
 `packages/hub/src/{core,index,socket,relay-core,relay,worker-ref}.ts`,
@@ -51,8 +51,8 @@ Untouched files (owned by no plan — do not edit): `packages/wire/src/{client,e
 4. **House style**: read `CONTEXT.md` for vocabulary (Thread vs session, Console,
    wire, env…). File headers: block comment "Feature (file.ts): …" like the current
    files. Errors: `Schema.TaggedError<X>()("X", {…})`. Services: `Context.Service`
-   + `Layer.effect`. pi types stay opaque on the wire (ADR 0005) — never re-schema
-   pi's types in `@saku/wire`.
+   - `Layer.effect`. pi types stay opaque on the wire (ADR 0005) — never re-schema
+     pi's types in `@saku/wire`.
 5. **Verification commands**:
    - per package: `pnpm --filter <pkg> typecheck && pnpm --filter <pkg> test`
    - deploy (bun): `pnpm --filter @saku/deploy typecheck && pnpm --filter @saku/deploy test`
@@ -80,9 +80,9 @@ Untouched files (owned by no plan — do not edit): `packages/wire/src/{client,e
 - **Reference repos** (for idiom ground truth — cite these in PRs):
   - `~/Development/repos/opencode` — `packages/core/src/fs-util.ts` (Effect.fn +
     Effect.try → TaggedError), `packages/core/src/session/store.ts` (Context.Service
-    + Layer.effect shape), `packages/core/src/git.ts` (errors with operation
-    literals), its `AGENTS.md` (no try/catch, no `any`, bind services to named
-    variables, early returns).
+    - Layer.effect shape), `packages/core/src/git.ts` (errors with operation
+      literals), its `AGENTS.md` (no try/catch, no `any`, bind services to named
+      variables, early returns).
   - `~/Development/personal/apps/lutra` — `packages/frontend/src/editor/update.ts:218`
     (Match.tagsExhaustive + withReturnType), `editor/command.ts:98` (Effect.tryPromise
     {try, catch} → TaggedError), `editor/message.ts` (failure-set unions),
@@ -99,30 +99,30 @@ Untouched files (owned by no plan — do not edit): `packages/wire/src/{client,e
 
 ## Review → plan mapping (nothing lost)
 
-| Review finding | Plan |
-| --- | --- |
-| KvStore promise seam inverted (promise only at the pi seam) | 01 |
-| Duplicated wire-server discipline (daemon vs hub wire-core) | 02 |
-| Duplicated 16-case session-command dispatch | 02 |
-| `Effect.tryPromise(() => Effect.runPromise(...))` round trip in thread-do | 02 |
-| `catch: () => undefined` magic in rpc.ts idle-stop disarm | 02 |
-| session-host.ts at 1149 lines | 03 |
-| Hand-rolled `HostReply {ok,…}` instead of tagged union | 03 |
-| `SessionHostError` without discriminant | 03 |
-| Busy-state `.on` registrations (9 → 3) | 03 |
-| Catch-all `HubError`/`BoxError` without discriminant | 04 |
-| `hub.ts` listThreads sequential loop; JSON.stringify equivalence | 04 |
-| `pollUntilReady` recursion instead of Schedule | 04 |
-| `AuthJsonCredentialStore.load` Effect→Promise→Effect round trip | 05 |
-| models.json manual parse + throw-driven builders | 05 |
-| `JSON.parse(...) as ThreadRecord` casts | 05 |
-| Fake provider duplicated (worker vs deploy catalog) | 05 |
-| `runOp` switch → Match; `EnvHandle` has no schema | 06 |
-| `describeEntry` double runPromise | 06 |
-| Hand-rolled retry loops in cli (4×) | 07 |
-| `EnvConfig` cast decode | 07 |
-| `resolveConfig` async/Promise in frontend | 08 |
-| foldWireEvent non-exhaustive switch with silent default | 08 |
-| `event as SessionWireEvent` casts / format.ts unknown-poking | 08 |
-| `Effect.catch` catch-alls in commands | 08 |
-| hub-do promise cache + handlePush switch/cast | 09 |
+| Review finding                                                            | Plan |
+| ------------------------------------------------------------------------- | ---- |
+| KvStore promise seam inverted (promise only at the pi seam)               | 01   |
+| Duplicated wire-server discipline (daemon vs hub wire-core)               | 02   |
+| Duplicated 16-case session-command dispatch                               | 02   |
+| `Effect.tryPromise(() => Effect.runPromise(...))` round trip in thread-do | 02   |
+| `catch: () => undefined` magic in rpc.ts idle-stop disarm                 | 02   |
+| session-host.ts at 1149 lines                                             | 03   |
+| Hand-rolled `HostReply {ok,…}` instead of tagged union                    | 03   |
+| `SessionHostError` without discriminant                                   | 03   |
+| Busy-state `.on` registrations (9 → 3)                                    | 03   |
+| Catch-all `HubError`/`BoxError` without discriminant                      | 04   |
+| `hub.ts` listThreads sequential loop; JSON.stringify equivalence          | 04   |
+| `pollUntilReady` recursion instead of Schedule                            | 04   |
+| `AuthJsonCredentialStore.load` Effect→Promise→Effect round trip           | 05   |
+| models.json manual parse + throw-driven builders                          | 05   |
+| `JSON.parse(...) as ThreadRecord` casts                                   | 05   |
+| Fake provider duplicated (worker vs deploy catalog)                       | 05   |
+| `runOp` switch → Match; `EnvHandle` has no schema                         | 06   |
+| `describeEntry` double runPromise                                         | 06   |
+| Hand-rolled retry loops in cli (4×)                                       | 07   |
+| `EnvConfig` cast decode                                                   | 07   |
+| `resolveConfig` async/Promise in frontend                                 | 08   |
+| foldWireEvent non-exhaustive switch with silent default                   | 08   |
+| `event as SessionWireEvent` casts / format.ts unknown-poking              | 08   |
+| `Effect.catch` catch-alls in commands                                     | 08   |
+| hub-do promise cache + handlePush switch/cast                             | 09   |

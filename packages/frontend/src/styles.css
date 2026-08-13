@@ -23,8 +23,9 @@
   --color-foam: #56949f;
   --color-iris: #907aa9;
 
-  --font-mono: ui-monospace, "JetBrains Mono", "SF Mono", "Cascadia Code", "Fira Code",
-    Menlo, Consolas, monospace;
+  --font-mono:
+    ui-monospace, "JetBrains Mono", "SF Mono", "Cascadia Code", "Fira Code", Menlo, Consolas,
+    monospace;
 }
 
 html,

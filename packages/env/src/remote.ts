@@ -131,18 +131,25 @@ export interface RemoteEnvOptions {
 }
 
 interface Pending {
-  readonly resolve: (outcome: { ok: true; payload: unknown } | { ok: false; error: EnvErrorLike }) => void;
+  readonly resolve: (
+    outcome: { ok: true; payload: unknown } | { ok: false; error: EnvErrorLike },
+  ) => void;
   readonly onStream?: ((kind: "stdout" | "stderr", text: string) => void) | undefined;
   timer?: NodeJS.Timeout | undefined;
 }
 
-type EnvErrorLike = { readonly kind: string; readonly message: string; readonly path?: string | undefined };
+type EnvErrorLike = {
+  readonly kind: string;
+  readonly message: string;
+  readonly path?: string | undefined;
+};
 
 const CONNECTION_LOST = new ExecutionError("unknown", "env connection closed");
 
 /** pi's Result is structural ({ok, value}|{ok:false, error}); a narrow guard. */
-const isSuccess = <T, E>(outcome: PiResult<T, E>): outcome is Extract<PiResult<T, E>, { readonly ok: true }> =>
-  outcome.ok;
+const isSuccess = <T, E>(
+  outcome: PiResult<T, E>,
+): outcome is Extract<PiResult<T, E>, { readonly ok: true }> => outcome.ok;
 
 /** The FileError boundary: after `isSuccess`, the failure is a FileError. */
 const asFile = <T>(outcome: PiResult<T, FileError | ExecutionError>): PiResult<T, FileError> =>
@@ -173,7 +180,8 @@ export class RemoteEnv implements ExecutionEnv {
   constructor(options: RemoteEnvOptions) {
     this.url = options.url;
     this.token = options.token;
-    this.cwd = options.cwd ?? ((globalThis as { process?: { cwd?: () => string } }).process?.cwd?.() ?? "/");
+    this.cwd =
+      options.cwd ?? (globalThis as { process?: { cwd?: () => string } }).process?.cwd?.() ?? "/";
     this.socketFactory = options.socket;
     this.relay = options.relay;
     this.requestTimeoutMs = options.requestTimeoutMs;
@@ -295,10 +303,17 @@ export class RemoteEnv implements ExecutionEnv {
    */
   private request(
     op: EnvOpType,
-    options: { onStream?: (kind: "stdout" | "stderr", text: string) => void; timeoutMs?: number; abortSignal?: AbortSignal } = {},
+    options: {
+      onStream?: (kind: "stdout" | "stderr", text: string) => void;
+      timeoutMs?: number;
+      abortSignal?: AbortSignal;
+    } = {},
   ): Promise<{ ok: true; payload: unknown } | { ok: false; error: EnvErrorLike }> {
     if (this.socket === null || !this.connected) {
-      return Promise.resolve({ ok: false, error: { kind: "unknown", message: "env not connected" } });
+      return Promise.resolve({
+        ok: false,
+        error: { kind: "unknown", message: "env not connected" },
+      });
     }
     const id = `${++this.seq}:${crypto.randomUUID().slice(0, 8)}`;
     return new Promise((resolve) => {
@@ -307,7 +322,10 @@ export class RemoteEnv implements ExecutionEnv {
       if (effective !== undefined) {
         pending.timer = setTimeout(() => {
           this.pending.delete(id);
-          resolve({ ok: false, error: { kind: "timeout", message: `env request timed out after ${effective}ms` } });
+          resolve({
+            ok: false,
+            error: { kind: "timeout", message: `env request timed out after ${effective}ms` },
+          });
           this.socket?.send(serializeFrame({ _tag: "env_abort", id }));
         }, effective);
       }
@@ -323,7 +341,11 @@ export class RemoteEnv implements ExecutionEnv {
   /** The request→pi-Result boundary: failures become pi's error classes. */
   private async op<T>(
     op: EnvOpType,
-    options: { onStream?: (kind: "stdout" | "stderr", text: string) => void; timeoutMs?: number; abortSignal?: AbortSignal } = {},
+    options: {
+      onStream?: (kind: "stdout" | "stderr", text: string) => void;
+      timeoutMs?: number;
+      abortSignal?: AbortSignal;
+    } = {},
   ): Promise<PiResult<T, FileError | ExecutionError>> {
     const outcome = await this.request(op, options);
     if (!outcome.ok) {
@@ -374,15 +396,10 @@ export class RemoteEnv implements ExecutionEnv {
     _signal?: AbortSignal,
   ): Promise<PiResult<Uint8Array, FileError>> {
     const outcome = await this.fileOp<string>({ _tag: "read_binary_file", path });
-    return isSuccess(outcome)
-      ? ok(base64ToBytes(outcome.value))
-      : asFile(outcome);
+    return isSuccess(outcome) ? ok(base64ToBytes(outcome.value)) : asFile(outcome);
   }
 
-  async writeFile(
-    path: string,
-    content: string | Uint8Array,
-  ): Promise<PiResult<void, FileError>> {
+  async writeFile(path: string, content: string | Uint8Array): Promise<PiResult<void, FileError>> {
     const binary = typeof content !== "string";
     return this.fileOp<void>({
       _tag: "write_file",
@@ -392,10 +409,7 @@ export class RemoteEnv implements ExecutionEnv {
     });
   }
 
-  async appendFile(
-    path: string,
-    content: string | Uint8Array,
-  ): Promise<PiResult<void, FileError>> {
+  async appendFile(path: string, content: string | Uint8Array): Promise<PiResult<void, FileError>> {
     const binary = typeof content !== "string";
     return this.fileOp<void>({
       _tag: "append_file",
@@ -497,12 +511,17 @@ export class RemoteEnv implements ExecutionEnv {
         ...(options?.abortSignal === undefined ? {} : { abortSignal: options.abortSignal }),
       },
     );
-    return outcome as PiResult<{ stdout: string; stderr: string; exitCode: number }, ExecutionError>;
+    return outcome as PiResult<
+      { stdout: string; stderr: string; exitCode: number },
+      ExecutionError
+    >;
   }
 
   /** The env's health payload: workspace, pid, protocol version. */
   async health(): Promise<PiResult<{ cwd: string; pid: number; version: string }, ExecutionError>> {
-    const outcome = await this.op<{ cwd: string; pid: number; version: string }>({ _tag: "health" });
+    const outcome = await this.op<{ cwd: string; pid: number; version: string }>({
+      _tag: "health",
+    });
     return outcome as PiResult<{ cwd: string; pid: number; version: string }, ExecutionError>;
   }
 }

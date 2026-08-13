@@ -32,7 +32,9 @@ const TOKEN = "box-env-token";
  * reports the real env daemon the test started. Captures every command
  * and lifecycle call for assertions.
  */
-const fakeBox = (deps: { daemonUrl: () => string | null }): BoxApi & {
+const fakeBox = (deps: {
+  daemonUrl: () => string | null;
+}): BoxApi & {
   readonly commands: string[];
   readonly stopped: string[];
   readonly resumed: string[];
@@ -198,9 +200,7 @@ describe("makeProvisioner", () => {
     // The box's host.url now reflects the restarted daemon.
     daemonUrl = fresh.restarted.url;
     const staleHandle = { ...handle.value, url: "ws://127.0.0.1:1" };
-    const resumed = await Effect.runPromise(
-      provisioner.ensure(thread, Option.some(staleHandle)),
-    );
+    const resumed = await Effect.runPromise(provisioner.ensure(thread, Option.some(staleHandle)));
     await Effect.runPromise(Scope.close(fresh.scope, Exit.void));
     expect(Option.isSome(resumed)).toBe(true);
     if (Option.isNone(resumed)) return;

@@ -94,25 +94,39 @@ const toBytes = (content: string | Uint8Array): Uint8Array =>
 
 /**
  * Kind + size/mtime for one path. Total: symlink reads and stats are
- * themselves effect-fallbacks, so callers never see a throw.
+ * themselves effect-fallbacks, so callers never see a throw. One
+ * composed effect — the promise boundary is crossed once per call.
  */
-const describeEntry = async (fs: FileSystem.FileSystem, path: string): Promise<FileInfo> => {
-  const isLink = await Effect.runPromise(Effect.isSuccess(fs.readLink(path)));
-  if (isLink)
-    return { name: path.split(sep).pop() ?? path, path, kind: "symlink", size: 0, mtimeMs: 0 };
-  const info = await Effect.runPromise(
-    fs.stat(path).pipe(Effect.catch(() => Effect.succeed(undefined))),
+const describeEntry = (fs: FileSystem.FileSystem, path: string): Promise<FileInfo> =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const isLink = yield* Effect.isSuccess(fs.readLink(path));
+      if (isLink)
+        return {
+          name: path.split(sep).pop() ?? path,
+          path,
+          kind: "symlink" as const,
+          size: 0,
+          mtimeMs: 0,
+        };
+      const info = yield* fs.stat(path).pipe(Effect.catch(() => Effect.succeed(undefined)));
+      if (info === undefined)
+        return {
+          name: path.split(sep).pop() ?? path,
+          path,
+          kind: "file" as const,
+          size: 0,
+          mtimeMs: 0,
+        };
+      return {
+        name: path.split(sep).pop() ?? path,
+        path,
+        kind: info.type === "Directory" ? ("directory" as const) : ("file" as const),
+        size: Number(info.size),
+        mtimeMs: Option.isSome(info.mtime) ? info.mtime.value.getTime() : 0,
+      };
+    }),
   );
-  if (info === undefined)
-    return { name: path.split(sep).pop() ?? path, path, kind: "file", size: 0, mtimeMs: 0 };
-  return {
-    name: path.split(sep).pop() ?? path,
-    path,
-    kind: info.type === "Directory" ? "directory" : "file",
-    size: Number(info.size),
-    mtimeMs: Option.isSome(info.mtime) ? info.mtime.value.getTime() : 0,
-  };
-};
 
 /** Local filesystem + shell. One instance per env connection. */
 export class LocalEnv implements ExecutionEnv {
@@ -122,7 +136,11 @@ export class LocalEnv implements ExecutionEnv {
   readonly extraEnv: Record<string, string>;
 
   /** `cwd` is the workspace root; null falls back to the daemon's own cwd. */
-  constructor(cwd: string | null, fs: FileSystem.FileSystem, extraEnv: Record<string, string> = {}) {
+  constructor(
+    cwd: string | null,
+    fs: FileSystem.FileSystem,
+    extraEnv: Record<string, string> = {},
+  ) {
     this.cwd = cwd ?? process.cwd();
     this.fs = fs;
     this.extraEnv = extraEnv;

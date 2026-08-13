@@ -12,8 +12,9 @@
 import { describe, expect, it } from "vitest";
 import { Effect } from "effect";
 
+import { makeHubError } from "../src/hub-error.ts";
+
 import {
-  HubError,
   makeHub,
   makeHubRegistry,
   makeSkillsStore,
@@ -21,7 +22,7 @@ import {
   type HubShape,
 } from "../src/index.ts";
 import { scriptedProvisioner, scriptedWorker } from "./mock-worker.ts";
-import { memoryKv } from "@saku/store";
+import { KvStore } from "@saku/store";
 
 const IDLE_MS = 60;
 
@@ -49,8 +50,8 @@ interface World {
 const makeWorld = async (): Promise<World> => {
   const world = await Effect.runPromise(
     Effect.gen(function* () {
-      const registry = yield* makeHubRegistry(memoryKv());
-      const skills = yield* makeSkillsStore(memoryKv());
+      const registry = yield* makeHubRegistry().pipe(Effect.provide(KvStore.memory()));
+      const skills = yield* makeSkillsStore().pipe(Effect.provide(KvStore.memory()));
       const worker = scriptedWorker();
       const provisioner = scriptedProvisioner();
       const hub = yield* makeHub({
@@ -73,7 +74,7 @@ const makeWorld = async (): Promise<World> => {
 const scriptPrompt = (world: World, text: string): void => {
   world.worker.onCommand((threadId, command) => {
     if (command._tag !== "prompt") {
-      return Effect.fail(new HubError({ message: `unscripted command: ${command._tag}` }));
+      return Effect.fail(makeHubError("command", `unscripted command: ${command._tag}`));
     }
     world.worker.report(threadId, { state: "working" });
     world.worker.emit(threadId, { type: "settled" }, 1);

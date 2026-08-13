@@ -43,11 +43,7 @@ export {
   type RelayServerOptions,
 } from "./relay-core.ts";
 export { makeWireCore, type WireCoreOptions, type WireCoreShape } from "./wire-core.ts";
-export {
-  workerdSocket,
-  type SocketLike,
-  type WorkerdWebSocketLike,
-} from "./socket.ts";
+export { workerdSocket, type SocketLike, type WorkerdWebSocketLike } from "./socket.ts";
 export {
   type HubEventSink,
   type ThreadWorkerRef,

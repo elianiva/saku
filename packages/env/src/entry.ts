@@ -56,10 +56,12 @@ const program = Effect.gen(function* () {
   });
   log(`listening on ${daemon.url}`);
   // The CLI reads the URL from ~/.saku/env.url; create the dir first.
-  yield* fs.makeDirectory(dirname(getEnvUrlPath()), { recursive: true }).pipe(
-    Effect.catch(() => Effect.void),
-  );
-  yield* fs.writeFileString(getEnvUrlPath(), `${daemon.url}\n`).pipe(Effect.catch(() => Effect.void));
+  yield* fs
+    .makeDirectory(dirname(getEnvUrlPath()), { recursive: true })
+    .pipe(Effect.catch(() => Effect.void));
+  yield* fs
+    .writeFileString(getEnvUrlPath(), `${daemon.url}\n`)
+    .pipe(Effect.catch(() => Effect.void));
   yield* Effect.addFinalizer(() =>
     fs.remove(getEnvUrlPath(), { force: true }).pipe(
       Effect.catch(() => Effect.void),

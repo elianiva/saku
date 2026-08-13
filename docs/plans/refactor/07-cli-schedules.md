@@ -27,7 +27,8 @@ Status: **planned** — parallel plan 07 of the refactor pass (see `README.md`).
 const waitForDaemon = (): Effect.Effect<DaemonStatus, never> =>
   daemonStatus().pipe(
     Effect.filterOrFail(
-      (status): status is DaemonStatus & { pid: number } => status.running && status.pid !== undefined,
+      (status): status is DaemonStatus & { pid: number } =>
+        status.running && status.pid !== undefined,
       () => undefined,
     ),
     Effect.retry({ times: 99, schedule: Schedule.spaced("100 millis") }),
@@ -45,9 +46,12 @@ semantics (first probe + 99 retries) match today's loop exactly.
 ```ts
 const waitForStop = (): Effect.Effect<void, never> =>
   daemonStatus().pipe(
-    Effect.filterOrFail((status) => !status.running, () => undefined),
+    Effect.filterOrFail(
+      (status) => !status.running,
+      () => undefined,
+    ),
     Effect.retry({ times: 49, schedule: Schedule.spaced("100 millis") }),
-    Effect.catch(() => Effect.void),   // 50 probes exhausted: give up silently, like today's break
+    Effect.catch(() => Effect.void), // 50 probes exhausted: give up silently, like today's break
   );
 ```
 

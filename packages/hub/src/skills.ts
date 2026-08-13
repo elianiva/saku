@@ -11,7 +11,7 @@ import { Effect, Ref } from "effect";
 import type { SkillInfo, SkillScope } from "@saku/wire";
 
 import { HubError } from "./hub-error.ts";
-import type { KvStore } from "@saku/store";
+import { KvStore } from "@saku/store";
 
 export interface SkillsStoreShape {
   readonly list: () => Effect.Effect<readonly SkillInfo[], HubError>;
@@ -32,11 +32,6 @@ const encodeSkill = (skill: SkillInfo): Uint8Array =>
 const decodeSkill = (value: Uint8Array): SkillInfo =>
   JSON.parse(new TextDecoder().decode(value)) as SkillInfo;
 
-const toHubError =
-  (message: string) =>
-  (error: unknown): HubError =>
-    new HubError({ message, cause: error });
-
 /** The default name for an imported repo: `owner/repo` → `repo`. */
 export const skillNameFromSource = (source: string): string =>
   source
@@ -44,23 +39,19 @@ export const skillNameFromSource = (source: string): string =>
     .pop()
     ?.replace(/\.git$/u, "") ?? "skill";
 
-export const makeSkillsStore = (kv: KvStore): Effect.Effect<SkillsStoreShape, HubError, never> =>
+export const makeSkillsStore = (): Effect.Effect<SkillsStoreShape, HubError, KvStore> =>
   Effect.gen(function* () {
-    const loaded = yield* Effect.tryPromise({
-      try: async () => {
-        const entries = await kv.list({ prefix: "skills/" });
-        const skills: SkillInfo[] = [];
-        for (const entry of entries) {
-          try {
-            skills.push(decodeSkill(entry.value));
-          } catch (error) {
-            console.warn(`[hub] skipping corrupt skill record: ${String(error)}`);
-          }
-        }
-        return skills;
-      },
-      catch: toHubError("failed to load the skills store"),
-    });
+    const kv = yield* KvStore;
+    const entries = yield* kv.list({ prefix: "skills/" });
+    const loaded = yield* Effect.forEach(entries, (entry) =>
+      Effect.try(() => decodeSkill(entry.value)).pipe(
+        Effect.catch((error) => {
+          // Corrupt record: skip (the key stays on disk for inspection).
+          console.warn(`[hub] skipping corrupt skill record: ${String(error)}`);
+          return Effect.succeed(undefined);
+        }),
+      ),
+    ).pipe(Effect.map((skills) => skills.filter((skill) => skill !== undefined)));
     const skillsRef = yield* Ref.make<ReadonlyMap<string, SkillInfo>>(
       new Map(loaded.map((skill) => [skill.id, skill])),
     );
@@ -79,10 +70,7 @@ export const makeSkillsStore = (kv: KvStore): Effect.Effect<SkillsStoreShape, Hu
             source: input.source,
             version: null,
           };
-          yield* Effect.tryPromise({
-            try: () => kv.put(skillKey(skill.id), encodeSkill(skill)),
-            catch: toHubError(`failed to persist skill ${skill.id}`),
-          });
+          yield* kv.put(skillKey(skill.id), encodeSkill(skill));
           yield* Ref.update(skillsRef, (skills) => new Map(skills).set(skill.id, skill));
           return skill;
         }),
@@ -95,10 +83,7 @@ export const makeSkillsStore = (kv: KvStore): Effect.Effect<SkillsStoreShape, Hu
             next.delete(id);
             return next;
           });
-          yield* Effect.tryPromise({
-            try: () => kv.delete(skillKey(id)),
-            catch: toHubError(`failed to delete skill ${id}`),
-          });
+          yield* kv.delete(skillKey(id));
           return true;
         }),
     };

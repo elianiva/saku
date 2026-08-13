@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect, FileSystem, Option } from "effect";
 
-import { memoryKv, fileKv } from "@saku/store";
+import { KvStore } from "@saku/store";
 import { makeHubRegistry, type HubRegistryShape } from "../src/index.ts";
 
 const run = <A, E extends Error>(effect: Effect.Effect<A, E, never>): Promise<A> =>
@@ -19,7 +19,7 @@ let registry: HubRegistryShape;
 let home: string;
 
 beforeEach(async () => {
-  registry = await run(makeHubRegistry(memoryKv()));
+  registry = await run(makeHubRegistry().pipe(Effect.provide(KvStore.memory())));
   home = "";
 });
 
@@ -105,13 +105,14 @@ describe("makeHubRegistry", () => {
       ),
     );
     home = dir;
-    const kv = fileKv(fs, home);
-    const first = await run(makeHubRegistry(kv));
+    const runFile = <A, E>(effect: Effect.Effect<A, E, KvStore>): Promise<A> =>
+      run(effect.pipe(Effect.provide(KvStore.file(fs, home))));
+    const first = await runFile(makeHubRegistry());
     const record = await run(first.create({ name: "durable", cwd: "/work", autoName: true }));
     await run(first.setEnv(record.id, "ready"));
     await run(first.update(record.id, { sessionId: "sess-9" }));
     // A fresh registry over the same store sees the same records.
-    const second = await run(makeHubRegistry(kv));
+    const second = await runFile(makeHubRegistry());
     const reloaded = Option.getOrNull(await run(second.get(record.id)));
     expect(reloaded).toMatchObject({
       name: "durable",

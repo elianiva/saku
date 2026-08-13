@@ -25,19 +25,17 @@
  *   over auto-title reports
  */
 
-import { Effect, Option, Ref } from "effect";
+import { Effect, Option, Ref, Result, Schema } from "effect";
+import { resolveThread, ThreadInfo } from "@saku/wire";
 import type {
   ResponsePayload,
   SessionCommand,
   SkillInfo,
   SkillScope,
-  ThreadInfo,
   ThreadMode,
 } from "@saku/wire";
-import { resolveThread } from "@saku/wire";
-import { Result } from "effect";
 
-import { HubError, messageOf } from "./hub-error.ts";
+import { HubError, makeHubError, messageOf } from "./hub-error.ts";
 import type { EnvProvisioner } from "./provisioner.ts";
 import type { HubRecord, HubRegistryShape } from "./registry.ts";
 import type { SkillsStoreShape } from "./skills.ts";
@@ -123,6 +121,9 @@ const READ_ONLY_COMMANDS = new Set<SessionCommand["_tag"]>([
 
 const isReadOnly = (command: SessionCommand): boolean => READ_ONLY_COMMANDS.has(command._tag);
 
+/** Structural equality over the wire's thread view (not JSON.stringify). */
+const threadInfoEq = Schema.toEquivalence(ThreadInfo);
+
 /** Resolve a user-supplied thread id/name/prefix against the registry. */
 const resolveThreadId = (
   registry: HubRegistryShape,
@@ -132,7 +133,7 @@ const resolveThreadId = (
     const threads = yield* registry.list();
     const resolved = resolveThread(threads, input);
     if (Result.isFailure(resolved)) {
-      return yield* Effect.fail(new HubError({ message: resolved.failure }));
+      return yield* Effect.fail(makeHubError("resolution", resolved.failure));
     }
     return resolved.success.id;
   });
@@ -208,9 +209,7 @@ export const makeHub = (deps: HubDeps): Effect.Effect<HubShape, never, never> =>
           .release(threadId, Option.fromNullishOr(record.value.envHandle))
           .pipe(Effect.catch(() => Effect.void));
         // The worker's env connection is dead with the Box: clear it.
-        yield* workerRef
-          .setEnvHandle(threadId, null)
-          .pipe(Effect.catch(() => Effect.void));
+        yield* workerRef.setEnvHandle(threadId, null).pipe(Effect.catch(() => Effect.void));
         yield* registry.setEnv(threadId, "stopped");
         const after = yield* infoOf(threadId);
         emitThreadChanged(after);
@@ -223,10 +222,9 @@ export const makeHub = (deps: HubDeps): Effect.Effect<HubShape, never, never> =>
       // a throwing listener must not take the hub down.
       const listeners = Effect.runSync(Ref.get(listenersRef));
       for (const listener of listeners) {
-        try {
-          listener(event);
-        } catch (error) {
-          console.warn(`[hub] listener failed: ${messageOf(error)}`);
+        const result = Result.try(() => listener(event));
+        if (Result.isFailure(result)) {
+          console.warn(`[hub] listener failed: ${messageOf(result.failure)}`);
         }
       }
     };
@@ -269,7 +267,7 @@ export const makeHub = (deps: HubDeps): Effect.Effect<HubShape, never, never> =>
         if (
           Option.isSome(before) &&
           Option.isSome(after) &&
-          JSON.stringify(before.value) !== JSON.stringify(after.value)
+          !threadInfoEq(before.value, after.value)
         ) {
           emitThreadChanged(after.value);
         }
@@ -295,7 +293,7 @@ export const makeHub = (deps: HubDeps): Effect.Effect<HubShape, never, never> =>
       Effect.gen(function* () {
         const info = yield* registry.toInfo(threadId);
         if (Option.isNone(info)) {
-          return yield* Effect.fail(new HubError({ message: `unknown thread: ${threadId}` }));
+          return yield* Effect.fail(makeHubError("registry", `unknown thread: ${threadId}`));
         }
         return info.value;
       });
@@ -321,7 +319,7 @@ export const makeHub = (deps: HubDeps): Effect.Effect<HubShape, never, never> =>
           yield* registry.setEnv(thread.id, "error");
           const info = yield* infoOf(thread.id);
           emitThreadChanged(info);
-          return yield* Effect.fail(new HubError({ message: outcome.failure.message }));
+          return yield* Effect.fail(makeHubError("provisioner", outcome.failure.message));
         }
         if (Option.isSome(outcome.success)) {
           yield* registry.setEnvHandle(thread.id, outcome.success.value);
@@ -341,11 +339,10 @@ export const makeHub = (deps: HubDeps): Effect.Effect<HubShape, never, never> =>
       listThreads: () =>
         Effect.gen(function* () {
           const records = yield* registry.list();
-          const threads: ThreadInfo[] = [];
-          for (const record of records) {
-            threads.push(yield* infoOf(record.id));
-          }
-          return threads;
+          // Independent reads; the order of results follows the records.
+          return yield* Effect.forEach(records, (record) => infoOf(record.id), {
+            concurrency: "unbounded",
+          });
         }),
       createThread: (input) =>
         Effect.gen(function* () {
@@ -355,9 +352,7 @@ export const makeHub = (deps: HubDeps): Effect.Effect<HubShape, never, never> =>
             // Roll back: a thread whose worker cannot exist must not exist.
             yield* registry.delete(record.id);
             return yield* Effect.fail(
-              new HubError({
-                message: `failed to create worker: ${workerCreated.failure.message}`,
-              }),
+              makeHubError("worker", `failed to create worker: ${workerCreated.failure.message}`),
             );
           }
           const info = yield* infoOf(record.id);
@@ -374,7 +369,7 @@ export const makeHub = (deps: HubDeps): Effect.Effect<HubShape, never, never> =>
           const threadId = yield* resolveThreadId(registry, threadIdInput);
           const trimmed = name.trim();
           if (trimmed.length === 0) {
-            return yield* Effect.fail(new HubError({ message: "name must not be empty" }));
+            return yield* Effect.fail(makeHubError("command", "name must not be empty"));
           }
           // A user rename wins over auto-title forever (CONTEXT.md: Auto-title).
           yield* registry.update(threadId, { name: trimmed, autoName: false });
@@ -404,7 +399,7 @@ export const makeHub = (deps: HubDeps): Effect.Effect<HubShape, never, never> =>
           const threadId = yield* resolveThreadId(registry, threadIdInput);
           const record = yield* registry.get(threadId);
           if (Option.isNone(record)) {
-            return yield* Effect.fail(new HubError({ message: `unknown thread: ${threadId}` }));
+            return yield* Effect.fail(makeHubError("registry", `unknown thread: ${threadId}`));
           }
           // Reads never wake an env; everything else gates on it.
           if (!isReadOnly(command)) {
@@ -421,7 +416,7 @@ export const makeHub = (deps: HubDeps): Effect.Effect<HubShape, never, never> =>
         Effect.gen(function* () {
           const deleted = yield* skills.delete(id);
           if (!deleted) {
-            return yield* Effect.fail(new HubError({ message: `unknown skill: ${id}` }));
+            return yield* Effect.fail(makeHubError("skills", `unknown skill: ${id}`));
           }
         }),
       events,

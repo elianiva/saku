@@ -38,11 +38,7 @@ const toHubError =
     });
 
 /** Call one endpoint on the hub DO. */
-export const hubRpc = (
-  env: DeploymentEnv,
-  path: string,
-  body: unknown,
-): Promise<RpcResponse> => {
+export const hubRpc = (env: DeploymentEnv, path: string, body: unknown): Promise<RpcResponse> => {
   const stub = env.HUB.get(env.HUB.idFromName(HUB_INSTANCE));
   return stub
     .fetch(`https://hub.internal${path}`, {
@@ -122,7 +118,9 @@ export const setThreadEnvHandle = (
   }).pipe(Effect.andThen(Effect.void));
 
 /** The idle-stop controller: arm/disarm the thread DO's durable alarm. */
-export const threadIdleStop = (env: DeploymentEnv): {
+export const threadIdleStop = (
+  env: DeploymentEnv,
+): {
   readonly arm: (threadId: string) => Effect.Effect<void, HubError, never>;
   readonly disarm: (threadId: string) => Effect.Effect<void, never, never>;
 } => ({
@@ -134,8 +132,8 @@ export const threadIdleStop = (env: DeploymentEnv): {
   disarm: (threadId) =>
     Effect.tryPromise({
       try: () => threadRpc(env, threadId, "/disarm-idle", {}),
-      catch: () => undefined,
-    }).pipe(Effect.catch(() => Effect.void)),
+      catch: toHubError("disarm idle-stop"),
+    }).pipe(Effect.result, Effect.asVoid),
 });
 
 /** The push payloads a thread DO sends to the hub DO. */

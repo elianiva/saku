@@ -40,7 +40,13 @@ const TOKEN = "deploy-test-token";
 const ENV_TOKEN = "deploy-env-token";
 const IDLE_STOP_MS = 800;
 
-const { test: t, beforeAll: harnessBeforeAll, afterAll: harnessAfterAll, deploy, destroy } = Test.make({
+const {
+  test: t,
+  beforeAll: harnessBeforeAll,
+  afterAll: harnessAfterAll,
+  deploy,
+  destroy,
+} = Test.make({
   providers: Cloudflare.providers(),
   state: Cloudflare.state(),
   dev: true,
@@ -172,7 +178,8 @@ const makeThreadWatcher = (client: WireClient) => {
 
 // -- the spine --------------------------------------------------------------
 
-t("a console drives a thread through the deployed hub and thread DO",
+t(
+  "a console drives a thread through the deployed hub and thread DO",
   Effect.gen(function* () {
     const { url } = yield* stack;
     const client = yield* consoleFor(url);
@@ -195,9 +202,7 @@ t("a console drives a thread through the deployed hub and thread DO",
       (list) => list.length >= 2,
       "run entries",
     );
-    const texts = entries
-      .map((entry) => entryText(entry))
-      .join("\n");
+    const texts = entries.map((entry) => entryText(entry)).join("\n");
     expect(texts).toContain("Hello from the saku-fake model.");
 
     // The hub DO fanned the events out (state went working → idle).
@@ -215,7 +220,8 @@ t("a console drives a thread through the deployed hub and thread DO",
   }).pipe(Effect.timeout("1 minutes")),
 );
 
-t("idle-stop fires in the thread DO's alarm and the hub stops the env",
+t(
+  "idle-stop fires in the thread DO's alarm and the hub stops the env",
   Effect.gen(function* () {
     const { url } = yield* stack;
     const client = yield* consoleFor(url);
@@ -256,7 +262,8 @@ t("idle-stop fires in the thread DO's alarm and the hub stops the env",
 
 // -- the relay in the hub DO ------------------------------------------------
 
-t("the env relay lives in the hub DO: register, attach, exec",
+t(
+  "the env relay lives in the hub DO: register, attach, exec",
   Effect.gen(function* () {
     const { url } = yield* stack;
     const scope = yield* Scope.make();
@@ -291,7 +298,8 @@ t("the env relay lives in the hub DO: register, attach, exec",
 
 // -- teardown ---------------------------------------------------------------
 
-t("delete_thread removes the thread (record + worker storage)",
+t(
+  "delete_thread removes the thread (record + worker storage)",
   Effect.gen(function* () {
     const { url } = yield* stack;
     const client = yield* consoleFor(url);

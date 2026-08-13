@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
 import { Effect, Exit, Result, Scope } from "effect";
 
-import { memoryKv } from "@saku/store";
+import { KvStore } from "@saku/store";
 import {
   WIRE_VERSION,
   decodeFrame,
@@ -52,8 +52,8 @@ beforeEach(async () => {
   world = await Effect.runPromise(
     Effect.gen(function* () {
       const scope = yield* Scope.make();
-      const registry = yield* makeHubRegistry(memoryKv());
-      const skills = yield* makeSkillsStore(memoryKv());
+      const registry = yield* makeHubRegistry().pipe(Effect.provide(KvStore.memory()));
+      const skills = yield* makeSkillsStore().pipe(Effect.provide(KvStore.memory()));
       const worker = scriptedWorker();
       const hub = yield* makeHub({
         registry,

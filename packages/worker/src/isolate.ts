@@ -21,5 +21,6 @@ export {
   type HostState,
   type SessionHostOptions,
 } from "./session-host.ts";
+export { runSessionCommand, type SessionCommandDeps } from "./session-commands.ts";
 export type { ThreadRecord, ThreadRegistryShape } from "./registry.ts";
 export type { ModelCatalogShape } from "./model-catalog.ts";
