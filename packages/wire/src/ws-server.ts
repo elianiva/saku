@@ -1,0 +1,56 @@
+/**
+ * The wire's node WebSocket server (ws-server.ts): the `listenWs`/
+ * `wsUrlOf` helpers that the hub's wire server, the env relay, and the
+ * local daemon all use to serve on an ephemeral loopback port.
+ *
+ * The discipline is the one the three call sites used to duplicate:
+ * `Effect.callback<WebSocketServer, E>` with the error/listening handlers
+ * and the close-on-interrupt finalizer, plus the `server.address()`
+ * URL derivation. Startup failures (bind errors, no listening address)
+ * fail with the caller's tagged error via `onError`; the server closes on
+ * interruption and on failure.
+ *
+ * This module is node-only (`ws`) — it is exported through the
+ * `@saku/wire/server` subpath and never through the main entry, which the
+ * frontend bundles for the browser.
+ */
+
+import { WebSocketServer, type WebSocket } from "ws";
+import { Effect } from "effect";
+
+/** Listen on an ephemeral loopback port; resolves once listening. Startup failures fail with the caller's tagged error via onError. The server closes on interruption/failure. */
+export const listenWs = <E>(options: {
+  readonly onConnection: (socket: WebSocket) => void;
+  readonly onError: (error: Error) => E;
+}): Effect.Effect<WebSocketServer, E, never> =>
+  Effect.callback<WebSocketServer, E>((resume) => {
+    const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    server.on("connection", options.onConnection);
+    server.on("error", (error) => {
+      // A bind failure is a startup failure: close and fail with the
+      // caller's tagged error (the daemon's DaemonError, the hub's HubError).
+      server.close();
+      resume(Effect.fail(options.onError(error)));
+    });
+    server.on("listening", () => {
+      const address = server.address();
+      if (address === null || typeof address === "string") {
+        // Unreachable for a TCP loopback listener; still a startup failure.
+        server.close();
+        resume(Effect.fail(options.onError(new Error("no listening address"))));
+        return;
+      }
+      resume(Effect.succeed(server));
+    });
+    // The interrupt finalizer: a program that stops mid-listen takes the
+    // server down with it.
+    return Effect.sync(() => {
+      server.close();
+    });
+  });
+
+/** "ws://127.0.0.1:PORT" for a listening server ("" when unavailable). */
+export const wsUrlOf = (server: WebSocketServer): string => {
+  const address = server.address();
+  return address !== null && typeof address !== "string" ? `ws://127.0.0.1:${address.port}` : "";
+};

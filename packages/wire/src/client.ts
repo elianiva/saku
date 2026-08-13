@@ -84,8 +84,6 @@ export class WireError extends Schema.TaggedError<WireError>()("WireError", {
     "timeout",
     "decode",
     "refused",
-    "rejected",
-    "unknown_thread",
     "command_failed",
   ]),
   message: Schema.String,
@@ -155,7 +153,7 @@ const ClientEvent = Event({
 type ClientEventV = Schema.Schema.Type<typeof ClientEvent>;
 
 /** Correlate a request id with the deferred that awaits its response. */
-type Pending = ReadonlyMap<string, Deferred.Deferred<unknown, WireError>>;
+type Pending = ReadonlyMap<string, Deferred.Deferred<ResponsePayload, WireError>>;
 
 /** The in-flight handshake's deferred; None when no connect is pending. */
 type ConnectDeferred = Deferred.Deferred<HelloOk, WireError>;
@@ -175,6 +173,33 @@ interface ClientDeps {
 }
 
 const DECODE = Schema.decodeUnknownSync(WireEvent);
+
+/**
+ * The single boundary where pi's opaque payloads cross to pi's types
+ * (ADR 0005): pi's vocabulary travels the wire unvalidated — saku never
+ * re-schemas it — so the narrow to pi's own types happens here, by name,
+ * never with a bare `as` in the method bodies.
+ */
+const narrowPi = <T>(value: unknown): T => value as T;
+
+/**
+ * The single boundary where a decoded response payload is narrowed to the
+ * variant its command carries: the wire schema validates the frame, not the
+ * command↔response pairing, so a server answering the wrong variant is a
+ * decodable `decode` failure here, not an undefined read downstream.
+ */
+const narrowResponse = <K extends ResponsePayload["_tag"]>(
+  payload: ResponsePayload,
+  tag: K,
+): Effect.Effect<SessionResponse<K>, WireError, never> =>
+  payload._tag === tag
+    ? Effect.succeed(payload as SessionResponse<K>)
+    : Effect.fail(
+        new WireError({
+          code: "decode",
+          message: `expected a ${tag} response, got ${payload._tag}`,
+        }),
+      );
 
 /** Settle the pending handshake with an outcome; a stale ref is a no-op. */
 const settleConnect = (
@@ -392,11 +417,93 @@ const makeMachine = (
       }),
     );
 
+// ---------------------------------------------------------------------------
+// The command registry: one row per wire command (its schema/make, thread
+// scoping, response extractor). Every client method below is derived from
+// its row, so the request shape and the response extraction live in one
+// place per command.
+// ---------------------------------------------------------------------------
+
+interface CommandSpec<A extends object, K extends ResponsePayload["_tag"], T> {
+  /** Build the command's wire payload from the method's arguments. */
+  readonly make: (args: A) => SessionCommand | ThreadCommand | SkillCommand;
+  /** Session commands ride the frame's threadId; hub-level commands don't. */
+  readonly threadScoped: boolean;
+  /** The response variant this command's reply carries. */
+  readonly tag: K;
+  /** Extract the method's return value from the response payload. */
+  readonly extract: (payload: SessionResponse<K>) => T;
+}
+
+/** One registry row: the command's make, its scoping, and its extractor. */
+const command = <A extends object, K extends ResponsePayload["_tag"], T>(
+  threadScoped: boolean,
+  tag: K,
+  make: (args: A) => SessionCommand | ThreadCommand | SkillCommand,
+  extract: (payload: SessionResponse<K>) => T,
+): CommandSpec<A, K, T> => ({ make, threadScoped, tag, extract });
+
+/** One row per wire command; the client methods are thin derivations. */
+const COMMANDS = {
+  // -- threads (hub-level: no threadId on the frame)
+  listThreads: command(false, "list_threads", ListThreadsCommand.make, (p) => [...p.threads]),
+  createThread: command(false, "create_thread", CreateThreadCommand.make, (p) => p.thread),
+  getThread: command(false, "get_thread", GetThreadCommand.make, (p) => p.thread),
+  renameThread: command(false, "rename_thread", RenameThreadCommand.make, (p) => p.thread),
+  deleteThread: command(false, "delete_thread", DeleteThreadCommand.make, () => undefined),
+  // -- session (thread-scoped)
+  prompt: command(true, "prompt", PromptCommand.make, () => undefined),
+  steer: command(true, "steer", SteerCommand.make, () => undefined),
+  followUp: command(true, "follow_up", FollowUpCommand.make, () => undefined),
+  abort: command(true, "abort", AbortCommand.make, () => undefined),
+  setSteeringMode: command(true, "set_steering_mode", SetSteeringModeCommand.make, () => undefined),
+  setFollowUpMode: command(true, "set_follow_up_mode", SetFollowUpModeCommand.make, () => undefined),
+  compact: command(true, "compact", CompactCommand.make, (p) => narrowPi<CompactResult>(p.result)),
+  setAutoCompaction: command(
+    true,
+    "set_auto_compaction",
+    SetAutoCompactionCommand.make,
+    () => undefined,
+  ),
+  getAvailableModels: command(
+    true,
+    "get_available_models",
+    GetAvailableModelsCommand.make,
+    (p) => [...p.models],
+  ),
+  setModel: command(true, "set_model", SetModelCommand.make, (p) => p.model),
+  getAvailableThinkingLevels: command(
+    true,
+    "get_available_thinking_levels",
+    GetAvailableThinkingLevelsCommand.make,
+    (p) => [...p.levels],
+  ),
+  setThinkingLevel: command(true, "set_thinking_level", SetThinkingLevelCommand.make, (p) => p.level),
+  getEntries: command(true, "get_entries", GetEntriesCommand.make, (p) => ({
+    entries: narrowPi<Entry[]>(p.entries),
+    tailSeq: p.tailSeq,
+    leafId: p.leafId,
+  })),
+  branch: command(true, "branch", BranchCommand.make, (p) => p.leafId),
+  getSessionStats: command(
+    true,
+    "get_session_stats",
+    GetSessionStatsCommand.make,
+    (p) => narrowPi<SessionStats>(p.stats),
+  ),
+  setSessionName: command(true, "set_session_name", SetSessionNameCommand.make, () => undefined),
+  getState: command(true, "get_state", GetStateCommand.make, (p) => p.state),
+  // -- skills (hub-level)
+  listSkills: command(false, "list_skills", ListSkillsCommand.make, (p) => [...p.skills]),
+  importSkill: command(false, "import_skill", ImportSkillCommand.make, (p) => p.skill),
+  deleteSkill: command(false, "delete_skill", DeleteSkillCommand.make, () => undefined),
+};
+
 /** Resolve a correlated request; a late/abandoned id is a no-op. */
 const resolveResponse = (
   deps: ClientDeps,
   id: string,
-  outcome: Result.Result<unknown, WireError>,
+  outcome: Result.Result<ResponsePayload, WireError>,
 ): Effect.Effect<void, never, never> =>
   Ref.getAndUpdate(deps.pendingRef, (pending) => {
     const next = new Map(pending);
@@ -432,7 +539,7 @@ const handleFrame = (deps: ClientDeps, frame: WireEvent): Effect.Effect<void, ne
         // narrows it to the projected `SessionWireEvent` at this boundary.
         yield* emit(deps, "event", {
           threadId: frame.threadId,
-          event: frame.event as SessionWireEvent,
+          event: narrowPi<SessionWireEvent>(frame.event),
         });
         return;
       case "thread_changed":
@@ -657,10 +764,11 @@ export const makeWireClient = (
     const nextRequestId = (): Effect.Effect<string, never, never> =>
       Ref.updateAndGet(seqRef, (n) => n + 1).pipe(Effect.map((n) => `req_${n}`));
 
-    const request = <TPayload extends ResponsePayload>(
-      command: SessionCommand | ThreadCommand | SkillCommand,
+    const request = <A extends object, K extends ResponsePayload["_tag"], T>(
+      spec: CommandSpec<A, K, T>,
+      args: A,
       threadId?: string,
-    ): Effect.Effect<TPayload, WireError, never> =>
+    ): Effect.Effect<T, WireError, never> =>
       Effect.gen(function* () {
         const state = yield* actor.snapshot;
         if (!ClientState.$is("Connected")(state)) {
@@ -673,9 +781,9 @@ export const makeWireClient = (
           _tag: "command",
           id,
           ...(threadId === undefined ? {} : { threadId }),
-          command,
+          command: spec.make(args),
         };
-        const deferred = yield* Deferred.make<unknown, WireError>();
+        const deferred = yield* Deferred.make<ResponsePayload, WireError>();
         yield* Ref.update(pendingRef, (pending) => new Map(pending).set(id, deferred));
         yield* actor.send(ClientEvent.CommandSent({ id, frame }));
         const payload = yield* Effect.ensuring(
@@ -695,7 +803,8 @@ export const makeWireClient = (
             return next;
           }),
         );
-        return payload as TPayload;
+        const variant = yield* narrowResponse(payload, spec.tag);
+        return spec.extract(variant);
       });
 
     return {
@@ -708,97 +817,36 @@ export const makeWireClient = (
       disconnect,
       on,
       // -- thread commands
-      listThreads: () =>
-        request<SessionResponse<"list_threads">>(ListThreadsCommand.make({})).pipe(
-          Effect.map((p) => [...p.threads]),
-        ),
-      createThread: (name, options) =>
-        request<SessionResponse<"create_thread">>(
-          CreateThreadCommand.make({ name, ...options }),
-        ).pipe(Effect.map((p) => p.thread)),
-      getThread: (threadId) =>
-        request<SessionResponse<"get_thread">>(GetThreadCommand.make({ threadId })).pipe(
-          Effect.map((p) => p.thread),
-        ),
-      renameThread: (threadId, name) =>
-        request<SessionResponse<"rename_thread">>(
-          RenameThreadCommand.make({ threadId, name }),
-        ).pipe(Effect.map((p) => p.thread)),
-      deleteThread: (threadId) =>
-        request(DeleteThreadCommand.make({ threadId })).pipe(Effect.asVoid),
+      listThreads: () => request(COMMANDS.listThreads, {}),
+      createThread: (name, options) => request(COMMANDS.createThread, { name, ...options }),
+      getThread: (threadId) => request(COMMANDS.getThread, { threadId }),
+      renameThread: (threadId, name) => request(COMMANDS.renameThread, { threadId, name }),
+      deleteThread: (threadId) => request(COMMANDS.deleteThread, { threadId }),
       // -- session commands
-      prompt: (threadId, text, images) =>
-        request(PromptCommand.make({ text, images }), threadId).pipe(Effect.asVoid),
-      steer: (threadId, text) => request(SteerCommand.make({ text }), threadId).pipe(Effect.asVoid),
-      followUp: (threadId, text) =>
-        request(FollowUpCommand.make({ text }), threadId).pipe(Effect.asVoid),
-      abort: (threadId) => request(AbortCommand.make({}), threadId).pipe(Effect.asVoid),
-      setSteeringMode: (threadId, mode) =>
-        request(SetSteeringModeCommand.make({ mode }), threadId).pipe(Effect.asVoid),
-      setFollowUpMode: (threadId, mode) =>
-        request(SetFollowUpModeCommand.make({ mode }), threadId).pipe(Effect.asVoid),
+      prompt: (threadId, text, images) => request(COMMANDS.prompt, { text, images }, threadId),
+      steer: (threadId, text) => request(COMMANDS.steer, { text }, threadId),
+      followUp: (threadId, text) => request(COMMANDS.followUp, { text }, threadId),
+      abort: (threadId) => request(COMMANDS.abort, {}, threadId),
+      setSteeringMode: (threadId, mode) => request(COMMANDS.setSteeringMode, { mode }, threadId),
+      setFollowUpMode: (threadId, mode) => request(COMMANDS.setFollowUpMode, { mode }, threadId),
       compact: (threadId, customInstructions) =>
-        request<SessionResponse<"compact">>(
-          CompactCommand.make({ customInstructions }),
-          threadId,
-        ).pipe(Effect.map((p) => p.result as CompactResult)),
+        request(COMMANDS.compact, { customInstructions }, threadId),
       setAutoCompaction: (threadId, enabled) =>
-        request(SetAutoCompactionCommand.make({ enabled }), threadId).pipe(Effect.asVoid),
-      getAvailableModels: (threadId) =>
-        request<SessionResponse<"get_available_models">>(
-          GetAvailableModelsCommand.make({}),
-          threadId,
-        ).pipe(Effect.map((p) => [...p.models])),
+        request(COMMANDS.setAutoCompaction, { enabled }, threadId),
+      getAvailableModels: (threadId) => request(COMMANDS.getAvailableModels, {}, threadId),
       setModel: (threadId, provider, modelId) =>
-        request<SessionResponse<"set_model">>(
-          SetModelCommand.make({ provider, modelId }),
-          threadId,
-        ).pipe(Effect.map((p) => p.model)),
+        request(COMMANDS.setModel, { provider, modelId }, threadId),
       getAvailableThinkingLevels: (threadId) =>
-        request<SessionResponse<"get_available_thinking_levels">>(
-          GetAvailableThinkingLevelsCommand.make({}),
-          threadId,
-        ).pipe(Effect.map((p) => [...p.levels])),
-      setThinkingLevel: (threadId, level) =>
-        request<SessionResponse<"set_thinking_level">>(
-          SetThinkingLevelCommand.make({ level }),
-          threadId,
-        ).pipe(Effect.map((p) => p.level)),
-      getEntries: (threadId, sinceSeq) =>
-        request<SessionResponse<"get_entries">>(
-          GetEntriesCommand.make({ sinceSeq }),
-          threadId,
-        ).pipe(
-          Effect.map((p) => ({
-            entries: [...p.entries] as Entry[],
-            tailSeq: p.tailSeq,
-            leafId: p.leafId,
-          })),
-        ),
-      branch: (threadId, entryId) =>
-        request<SessionResponse<"branch">>(BranchCommand.make({ entryId }), threadId).pipe(
-          Effect.map((p) => p.leafId),
-        ),
-      getSessionStats: (threadId) =>
-        request<SessionResponse<"get_session_stats">>(
-          GetSessionStatsCommand.make({}),
-          threadId,
-        ).pipe(Effect.map((p) => p.stats as SessionStats)),
-      setSessionName: (threadId, name) =>
-        request(SetSessionNameCommand.make({ name }), threadId).pipe(Effect.asVoid),
-      getState: (threadId) =>
-        request<SessionResponse<"get_state">>(GetStateCommand.make({}), threadId).pipe(
-          Effect.map((p) => p.state),
-        ),
+        request(COMMANDS.getAvailableThinkingLevels, {}, threadId),
+      setThinkingLevel: (threadId, level) => request(COMMANDS.setThinkingLevel, { level }, threadId),
+      getEntries: (threadId, sinceSeq) => request(COMMANDS.getEntries, { sinceSeq }, threadId),
+      branch: (threadId, entryId) => request(COMMANDS.branch, { entryId }, threadId),
+      getSessionStats: (threadId) => request(COMMANDS.getSessionStats, {}, threadId),
+      setSessionName: (threadId, name) => request(COMMANDS.setSessionName, { name }, threadId),
+      getState: (threadId) => request(COMMANDS.getState, {}, threadId),
       // -- skills commands
-      listSkills: () =>
-        request<SessionResponse<"list_skills">>(ListSkillsCommand.make({})).pipe(
-          Effect.map((p) => [...p.skills]),
-        ),
-      importSkill: (source, scope) =>
-        request<SessionResponse<"import_skill">>(ImportSkillCommand.make({ source, scope })).pipe(
-          Effect.map((p) => p.skill),
-        ),
-      deleteSkill: (id) => request(DeleteSkillCommand.make({ id })).pipe(Effect.asVoid),
+      listSkills: () => request(COMMANDS.listSkills, {}),
+      importSkill: (source, scope) => request(COMMANDS.importSkill, { source, scope }),
+      deleteSkill: (id) => request(COMMANDS.deleteSkill, { id }),
     };
   });

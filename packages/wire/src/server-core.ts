@@ -274,3 +274,8 @@ export const makeWireServer = (
       close: closeClients,
     };
   });
+
+// The node-only WebSocket server transport — part of the `@saku/wire/server`
+// subpath, never the main entry (the frontend bundles the main entry for
+// the browser).
+export * from "./ws-server.ts";

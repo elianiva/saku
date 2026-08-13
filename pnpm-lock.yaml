@@ -257,6 +257,9 @@ importers:
       effect-machine:
         specifier: ^0.17.1
         version: 0.17.1(patch_hash=41e5a12985b7ef157de81323140485a06ea12a028ba1e4d35b13e521444698b1)(effect@4.0.0-rc.108)
+      ws:
+        specifier: ^8.18.0
+        version: 8.21.3
     devDependencies:
       '@types/ws':
         specifier: ^8.18.0
@@ -270,9 +273,6 @@ importers:
       vitest:
         specifier: ^4.1.9
         version: 4.1.10(@opentelemetry/api@1.9.0)(@types/node@26.2.0)(@vitest/browser-preview@4.1.10)(vite@8.2.1(@types/node@26.2.0)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.0))
-      ws:
-        specifier: ^8.18.0
-        version: 8.21.3
 
   packages/worker:
     dependencies:

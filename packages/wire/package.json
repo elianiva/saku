@@ -24,13 +24,13 @@
   "dependencies": {
     "@earendil-works/pi-agent-core": "^0.84.1",
     "effect": "rc",
-    "effect-machine": "^0.17.1"
+    "effect-machine": "^0.17.1",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/ws": "^8.18.0",
     "tsdown": "^0.22.12",
     "typescript": "^5.9.0",
-    "vitest": "^4.1.9",
-    "ws": "^8.18.0"
+    "vitest": "^4.1.9"
   }
 }
