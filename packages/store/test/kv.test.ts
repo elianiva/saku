@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 import { NodeFileSystem } from "@effect/platform-node";
-import { Effect, FileSystem, Layer } from "effect";
+import { Effect, FileSystem, Layer, Option } from "effect";
 
 import { KvStore } from "../src/index.ts";
 
@@ -23,9 +23,9 @@ describe("KvStore.memory()", () => {
       KvStore.memory(),
       Effect.gen(function* () {
         const kv = yield* KvStore;
-        expect(yield* kv.get("meta")).toBeUndefined();
+        expect(Option.isNone(yield* kv.get("meta"))).toBe(true);
         yield* kv.put("meta", encode("hello"));
-        expect(decode((yield* kv.get("meta"))!)).toBe("hello");
+        expect(decode(Option.getOrThrow(yield* kv.get("meta")))).toBe("hello");
         expect(yield* kv.list({ prefix: "log/" })).toHaveLength(0);
         yield* kv.put("log/0001", encode("one"));
         yield* kv.put("log/0002", encode("two"));
@@ -33,7 +33,7 @@ describe("KvStore.memory()", () => {
         expect(listed.map((e) => e.key).sort()).toEqual(["log/0001", "log/0002"]);
         yield* kv.delete("log/0001");
         expect((yield* kv.list({ prefix: "log/" })).map((e) => e.key)).toEqual(["log/0002"]);
-        expect(yield* kv.get("log/0001")).toBeUndefined();
+        expect(Option.isNone(yield* kv.get("log/0001"))).toBe(true);
       }),
     );
   });
@@ -45,7 +45,7 @@ describe("KvStore.memory()", () => {
     });
     const get = Effect.gen(function* () {
       const kv = yield* KvStore;
-      expect(yield* kv.get("meta")).toBeUndefined();
+      expect(Option.isNone(yield* kv.get("meta"))).toBe(true);
     });
     await run(KvStore.memory(), put);
     await run(KvStore.memory(), get);
@@ -75,7 +75,7 @@ describe("KvStore.file()", () => {
     await runFile(
       Effect.gen(function* () {
         const kv = yield* KvStore;
-        expect(decode((yield* kv.get("meta"))!)).toBe("persisted");
+        expect(decode(Option.getOrThrow(yield* kv.get("meta")))).toBe("persisted");
         expect((yield* kv.list({ prefix: "log/" })).map((e) => e.key)).toEqual(["log/0001"]);
         yield* kv.delete("log/0001");
         expect(yield* kv.list({ prefix: "log/" })).toHaveLength(0);

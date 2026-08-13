@@ -11,9 +11,9 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@effect/platform-browser": "4.0.0-beta.106",
+    "@effect/platform-browser": "rc",
     "@saku/wire": "workspace:*",
-    "effect": "4.0.0-beta.106",
+    "effect": "rc",
     "foldkit": "0.141.2",
     "tailwindcss": "^4.3.3"
   },

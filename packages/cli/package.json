@@ -24,7 +24,7 @@
     "@saku/env": "workspace:*",
     "@saku/wire": "workspace:*",
     "@saku/worker": "workspace:*",
-    "effect": "4.0.0-beta.106"
+    "effect": "rc"
   },
   "devDependencies": {
     "@types/bun": "^1.2.0",

@@ -20,13 +20,13 @@
     "@saku/wire": "workspace:*",
     "@saku/worker": "workspace:*",
     "alchemy": "2.0.0-beta.72",
-    "effect": "4.0.0-beta.106",
+    "effect": "rc",
     "effect-machine": "0.17.1"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250601.0",
-    "@effect/platform-bun": "4.0.0-beta.105",
-    "@effect/platform-node": "4.0.0-beta.105",
+    "@effect/platform-bun": "rc",
+    "@effect/platform-node": "rc",
     "@types/node": "^26.2.0",
     "@types/ws": "^8.18.0",
     "bun-types": "^1.3.8",

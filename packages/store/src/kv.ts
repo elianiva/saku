@@ -24,14 +24,16 @@
  *
  * Values are opaque byte strings; keys are forward-slash paths ("log/0001").
  * Writes are individually atomic (a crash leaves a prefix of the log, which
- * is exactly what the session storage's replay expects).
+ * is exactly what the session storage's replay expects). Reads answer with
+ * `Option`: a missing key is `Option.none`, never `undefined` — null/undefined
+ * are banned on this seam.
  *
  * The seam is effect-based with error channel `never`: storage defects kill
  * the caller, which is what DO storage does. The promise boundary is the pi
  * seam (`do-session.ts`), not here — no promise crosses this file.
  */
 
-import { Array, Context, Effect, FileSystem, Layer } from "effect";
+import { Array, Context, Effect, FileSystem, Layer, Option } from "effect";
 
 import { isNotFound } from "./fs.ts";
 
@@ -42,7 +44,7 @@ export interface KvEntry {
 
 /** The storage shape. DO storage adapters implement this (CF: trivially). */
 export interface KvStoreShape {
-  readonly get: (key: string) => Effect.Effect<Uint8Array | undefined, never>;
+  readonly get: (key: string) => Effect.Effect<Option.Option<Uint8Array>, never>;
   readonly put: (key: string, value: Uint8Array) => Effect.Effect<void, never>;
   readonly delete: (key: string) => Effect.Effect<void, never>;
   readonly list: (options: { prefix: string }) => Effect.Effect<readonly KvEntry[], never>;
@@ -72,7 +74,7 @@ export class KvStore extends Context.Service<KvStore, KvStoreShape>()("KvStore")
     return Layer.sync(KvStore, () => {
       const map = new Map<string, Uint8Array>();
       return {
-        get: (key) => Effect.succeed(map.get(key)),
+        get: (key) => Effect.succeed(Option.fromUndefinedOr(map.get(key))),
         put: (key, value) =>
           Effect.sync(() => {
             map.set(key, new Uint8Array(value));
@@ -100,11 +102,11 @@ export class KvStore extends Context.Service<KvStore, KvStoreShape>()("KvStore")
     return Layer.sync(KvStore, () => ({
       get: (key) =>
         fs.readFileString(keyPath(root, key)).pipe(
-          Effect.map((text) => encode(text)),
-          // A missing key is a normal `undefined`; any other storage defect
-          // dies — the seam's failure posture is "defects kill the caller".
+          Effect.map((text) => Option.some(encode(text))),
+          // A missing key is `Option.none`; any other storage defect dies —
+          // the seam's failure posture is "defects kill the caller".
           Effect.catchEager((error) =>
-            isNotFound(error) ? Effect.succeed(undefined) : Effect.die(error),
+            isNotFound(error) ? Effect.succeed(Option.none()) : Effect.die(error),
           ),
         ),
       put: (key, value) =>
@@ -145,12 +147,9 @@ export class KvStore extends Context.Service<KvStore, KvStoreShape>()("KvStore")
       get: (key) =>
         Effect.tryPromise(async () => {
           const value = await storage.get(key);
-          return value instanceof Uint8Array ? value : undefined;
+          return value instanceof Uint8Array ? Option.some(value) : Option.none();
         }).pipe(Effect.orDie),
-      put: (key, value) =>
-        Effect.tryPromise(async () => {
-          await storage.put(key, value);
-        }).pipe(Effect.orDie),
+      put: (key, value) => Effect.tryPromise(() => storage.put(key, value)).pipe(Effect.orDie),
       delete: (key) =>
         Effect.tryPromise(async () => {
           await storage.delete(key);
@@ -195,10 +194,12 @@ const listFiles = (
           const path = `${dir}/${name}`;
           const key = `${prefix}${name}`;
           return fs.stat(path).pipe(
-            Effect.catchEager(() => Effect.succeed(undefined)),
+            // A stat race (the file vanished between listing and stat) reads
+            // as absent — the whole subtree contributes nothing.
+            Effect.option,
             Effect.flatMap((stat) => {
-              if (stat === undefined) return Effect.succeed([]);
-              if (stat.type === "Directory") return listFiles(fs, root, path, `${key}/`);
+              if (Option.isNone(stat)) return Effect.succeed([]);
+              if (stat.value.type === "Directory") return listFiles(fs, root, path, `${key}/`);
               return Effect.succeed([{ key, path }]);
             }),
           );

@@ -43,7 +43,7 @@ import {
   type SessionStorage,
 } from "@earendil-works/pi-agent-core";
 
-import { Effect } from "effect";
+import { Effect, Option } from "effect";
 
 import type { KvStoreShape } from "@saku/store";
 import { type SessionMutation, SessionState } from "./session-state.ts";
@@ -123,10 +123,10 @@ export class DoSessionStorage implements SessionStorage<DoSessionMetadata> {
   /** Load a session by replaying its log. */
   static async load(kv: KvStoreShape, id: string): Promise<DoSessionStorage> {
     const metaValue = await Effect.runPromise(kv.get("meta"));
-    if (metaValue === undefined) {
+    if (Option.isNone(metaValue)) {
       throw new SessionError("not_found", `Session not found: ${id}`);
     }
-    const metadata = JSON.parse(decode(metaValue)) as DoSessionMetadata;
+    const metadata = JSON.parse(decode(metaValue.value)) as DoSessionMetadata;
     if (metadata.id !== id) {
       throw new SessionError("invalid_entry", `Session id does not match metadata: ${id}`);
     }
@@ -347,7 +347,7 @@ export class DoSessionRepo implements SessionRepo<DoSessionMetadata> {
     const id = options.id ?? crypto.randomUUID().replaceAll("-", "");
     validateSessionId(id);
     const prefix = sessionPrefix(id);
-    if ((await Effect.runPromise(this.kv.get(`${prefix}meta`))) !== undefined) {
+    if (Option.isSome(await Effect.runPromise(this.kv.get(`${prefix}meta`)))) {
       throw new SessionError("already_exists", `Session already exists: ${id}`);
     }
     const metadata: DoSessionMetadata = {
@@ -398,7 +398,7 @@ export class DoSessionRepo implements SessionRepo<DoSessionMetadata> {
     const childId = options.id ?? crypto.randomUUID().replaceAll("-", "");
     validateSessionId(childId);
     const childPrefix = sessionPrefix(childId);
-    if ((await Effect.runPromise(this.kv.get(`${childPrefix}meta`))) !== undefined) {
+    if (Option.isSome(await Effect.runPromise(this.kv.get(`${childPrefix}meta`)))) {
       throw new SessionError("already_exists", `Session already exists: ${childId}`);
     }
     const metadata: DoSessionMetadata = {

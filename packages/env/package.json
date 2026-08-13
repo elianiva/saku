@@ -30,9 +30,9 @@
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "^0.84.1",
-    "@effect/platform-node": "4.0.0-beta.105",
+    "@effect/platform-node": "rc",
     "@saku/wire": "workspace:*",
-    "effect": "4.0.0-beta.106",
+    "effect": "rc",
     "ws": "^8.18.0"
   },
   "devDependencies": {

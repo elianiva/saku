@@ -136,6 +136,11 @@ never` hand-rolls; casting an event to its expected type before folding.
   the hub's `notify` used try/catch while the wire client's `emit` used
   `Result.try` — one concept, two implementations. _Don't_: try/catch around
   listeners.
+- **Optional reads** — seam shapes answer with `Option`: a missing kv key is
+  `Option.none`, never `undefined`. _Why_: an `undefined` sentinel forces every
+  consumer to re-invent the same narrow/check dance and lets `?? fallback`
+  conflate "absent" with "present but falsy". _Don't_: `Foo | undefined`
+  returns from service shapes.
 - **Boundary settling** — `Effect.result` / `Effect.option` / `Effect.catchTag`.
   _Don't_: `catch: (error) => error as Error` casts without `instanceof`; a
   non-Error coerced to an Error uses `new Data.Error({ message: … })`, never
@@ -156,7 +161,7 @@ never` hand-rolls; casting an event to its expected type before folding.
   not `await` + `Effect.runSync` mixed mid-function. The fetch seam's try/catch
   is the boundary that stringifies tagged errors for the wire — nothing untagged
   is constructed there.
-- Refactors add **no new dependencies**: `effect@4.0.0-beta.106` + workspace
+- Refactors add **no new dependencies**: `effect@rc` + workspace
   packages only.
 
 ## File shape

@@ -25,13 +25,13 @@
     "@saku/env": "workspace:*",
     "@saku/store": "workspace:*",
     "@saku/wire": "workspace:*",
-    "effect": "4.0.0-beta.106",
+    "effect": "rc",
     "ws": "^8.18.0"
   },
   "devDependencies": {
     "@earendil-works/pi-agent-core": "^0.84.1",
     "@earendil-works/pi-ai": "^0.84.1",
-    "@effect/platform-node": "4.0.0-beta.105",
+    "@effect/platform-node": "rc",
     "@saku/worker": "workspace:*",
     "@types/ws": "^8.18.0",
     "tsdown": "^0.22.12",
