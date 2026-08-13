@@ -37,6 +37,8 @@ export {
 export {
   ThreadRegistry,
   ThreadRegistryLive,
+  ThreadRecordSchema,
+  type HostRegistryShape,
   type ThreadRecord,
   type ThreadRegistryShape,
 } from "./registry.ts";

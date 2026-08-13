@@ -19,7 +19,6 @@
 import { dirname } from "node:path";
 import { Context, Effect, FileSystem, Layer, Result, Schema } from "effect";
 import {
-  createModels,
   createProvider,
   type Api,
   type ApiKeyAuth,
@@ -28,24 +27,23 @@ import {
   type CredentialInfo,
   type CredentialStore,
   type Model,
-  type MutableModels,
   type Provider,
   type ProviderAuth,
   type ProviderStreams,
 } from "@earendil-works/pi-ai";
 import { getApiProvider, registerBuiltInApiProviders } from "@earendil-works/pi-ai/compat";
-import { opencodeGoProvider } from "@earendil-works/pi-ai/providers/opencode-go";
-import type { WireModelInfo } from "@saku/wire";
 
 import { isNotFound } from "@saku/store";
-import { fakeProvider } from "./fake-provider.ts";
 import { getAuthJsonPath, getModelsJsonPath } from "./paths.ts";
+import { createModelCatalog, type ModelCatalogShape } from "./model-catalog-factory.ts";
 import {
   getMissingConfigValueEnvVarNames,
   isCommandConfigValue,
   resolveConfigValue,
   resolveHeaders,
 } from "./config-value.ts";
+
+export type { ModelCatalogShape } from "./model-catalog-factory.ts";
 
 // ---------------------------------------------------------------------------
 // auth.json → CredentialStore
@@ -325,16 +323,6 @@ export interface CatalogOptions {
   modelsPath?: string;
 }
 
-export interface ModelCatalogShape {
-  /** The shared `MutableModels` collection (also feeds core's compaction helpers). */
-  readonly models: MutableModels;
-  /** Models whose providers have complete auth configuration. */
-  readonly available: () => Effect.Effect<readonly Model<Api>[], never>;
-  readonly hasAuth: (providerId: string) => Effect.Effect<boolean, never>;
-  readonly getModel: (providerId: string, modelId: string) => Model<Api> | undefined;
-  readonly toWireInfo: (model: Model<Api>) => WireModelInfo;
-}
-
 /** The threads' shared model runtime: builtins + models.json, auth-aware. */
 export class ModelCatalog extends Context.Service<ModelCatalog, ModelCatalogShape>()(
   "ModelCatalog",
@@ -355,24 +343,22 @@ export const ModelCatalogLive = (
         options.authPath ?? getAuthJsonPath(),
         fs,
       );
-      const models = createModels({ credentials });
-
-      // The one builtin provider: opencode-go (the local OpenCode gateway).
-      // The fake provider rides SAKU_FAKE_MODEL below; models.json custom
-      // providers are user-defined and unaffected.
-      models.setProvider(opencodeGoProvider());
+      // The shared construction: opencode-go + the scripted fixture over
+      // the auth source (model-catalog-factory.ts, the one SAKU_FAKE_MODEL
+      // check). models.json providers are added below.
+      const catalog = createModelCatalog({ auth: { credentials }, env });
 
       const config = yield* loadModelsJsonFrom(fs, options.modelsPath ?? getModelsJsonPath());
       for (const [providerId, providerConfig] of Object.entries(config.providers)) {
-        const base = models.getProvider(providerId);
+        const base = catalog.models.getProvider(providerId);
         yield* (
           base === undefined
             ? buildCustomProvider(providerId, providerConfig, env).pipe(
-                Effect.map((provider) => models.setProvider(provider)),
+                Effect.map((provider) => catalog.models.setProvider(provider)),
               )
             : overlayBuiltinProvider(providerId, base, providerConfig, env).pipe(
                 Effect.map((replacement) => {
-                  if (replacement !== undefined) models.setProvider(replacement);
+                  if (replacement !== undefined) catalog.models.setProvider(replacement);
                 }),
               )
         ).pipe(
@@ -382,28 +368,7 @@ export const ModelCatalogLive = (
         );
       }
 
-      // The scripted provider (dev fixture): a canned stream that answers
-      // every prompt — no paid model needed to exercise the full loop. On
-      // when SAKU_FAKE_MODEL is set in the daemon's environment.
-      if (env.SAKU_FAKE_MODEL !== undefined && env.SAKU_FAKE_MODEL !== "") {
-        models.setProvider(fakeProvider());
-      }
-
-      return ModelCatalog.of({
-        models,
-        available: () => Effect.tryPromise(() => models.getAvailable()),
-        hasAuth: (providerId) =>
-          Effect.tryPromise(() => models.checkAuth(providerId))
-            .pipe(Effect.map((check) => check !== undefined))
-            .pipe(Effect.catchEager(() => Effect.succeed(false))),
-        getModel: (providerId, modelId) => models.getModel(providerId, modelId),
-        toWireInfo: (model) => ({
-          provider: model.provider,
-          id: model.id,
-          contextWindow: model.contextWindow,
-          reasoning: model.reasoning,
-        }),
-      });
+      return ModelCatalog.of(catalog);
     }),
   );
 

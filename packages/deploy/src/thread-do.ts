@@ -31,9 +31,9 @@ import {
   SessionHostError,
   RegistryError,
   runSessionCommand,
+  type HostRegistryShape,
   type ModelCatalogShape,
   type ThreadRecord,
-  type ThreadRegistryShape,
 } from "@saku/worker/isolate";
 import { type ResponsePayload, type SessionCommand } from "@saku/wire";
 import type { HubEventSink, WorkerReport } from "@saku/hub/core";
@@ -41,6 +41,15 @@ import { KvStore } from "@saku/store";
 
 import { varOrDefault, type DeploymentEnv } from "./env.ts";
 import { deploymentCatalog } from "./catalog.ts";
+import {
+  decodeCommandPayload,
+  decodeCreatePayload,
+  decodeSetEnvHandlePayload,
+  jsonError,
+  jsonOk,
+  readBody,
+  rpcErrorOf,
+} from "./do-protocol.ts";
 import { pushToHub } from "./rpc.ts";
 import { IDLE_STOP_DEFAULT_MS } from "./hub-do.ts";
 
@@ -126,10 +135,14 @@ export class SakuThreadDO {
           await this.state.storage.deleteAlarm();
           return jsonOk({});
         default:
-          return jsonError(`unknown path: ${path}`);
+          return jsonError("malformed", `unknown path: ${path}`);
       }
     } catch (error) {
-      return jsonError(error instanceof Error ? error.message : String(error));
+      // The tagged `CommandError` (SessionHostError | RegistryError) rejects
+      // through the boundary; the envelope keeps its kind, so the hub never
+      // matches on message text.
+      const { kind, message } = rpcErrorOf(error);
+      return jsonError(kind, message);
     }
   }
 
@@ -143,9 +156,9 @@ export class SakuThreadDO {
   // -- handlers -------------------------------------------------------------
 
   private async handleCreate(request: Request): Promise<Response> {
-    const body = (await request.json()) as { record?: ThreadRecord };
-    const record = body.record;
-    if (record === undefined) return jsonError("missing record");
+    const body = await readBody(request, decodeCreatePayload);
+    if (Option.isNone(body)) return jsonError("malformed", "malformed /create payload");
+    const record = body.value.record;
     await this.state.storage.put(RECORD_KEY, record);
     await this.state.storage.put(THREAD_ID_KEY, record.id);
     this.record = record;
@@ -169,8 +182,9 @@ export class SakuThreadDO {
   }
 
   private async handleSetEnvHandle(request: Request): Promise<Response> {
-    const body = (await request.json()) as { handle?: EnvHandle | null };
-    const handle = body.handle ?? null;
+    const body = await readBody(request, decodeSetEnvHandlePayload);
+    if (Option.isNone(body)) return jsonError("malformed", "malformed /set-env-handle payload");
+    const handle = body.value.handle;
     await this.state.storage.put(ENV_HANDLE_KEY, handle);
     this.envHandle = handle;
     // A different endpoint (a resumed Box gets a new host URL) means the
@@ -190,14 +204,14 @@ export class SakuThreadDO {
   }
 
   private async handleCommand(request: Request): Promise<Response> {
-    const body = (await request.json()) as { command?: SessionCommand };
-    const command = body.command;
-    if (command === undefined) return jsonError("missing command");
+    const body = await readBody(request, decodeCommandPayload);
+    if (Option.isNone(body)) return jsonError("malformed", "malformed /command payload");
+    const command = body.value.command;
     const record = await this.loadRecord();
-    if (record === undefined) return jsonError("unknown thread");
+    if (record === undefined) return jsonError("malformed", "unknown thread");
     // The tagged `CommandError` (SessionHostError | RegistryError) rejects
-    // through the boundary; the fetch catch below stringifies it for the
-    // wire.
+    // through the boundary; the fetch catch above serializes its kind into
+    // the envelope.
     const result = await Effect.runPromise(this.runCommand(record, command));
     return jsonOk({ payload: result.payload, tailSeq: result.tailSeq });
   }
@@ -336,21 +350,21 @@ export class SakuThreadDO {
   }
 
   /**
-   * The host's registry view: the record + state pushes reported to the
-   * hub (the hub owns the durable registry; this is the push channel).
+   * The host's registry view: the narrow seam (get/update/setState) —
+   * the record + state pushes reported to the hub (the hub owns the
+   * durable registry; this is the push channel). The hub/daemon own
+   * thread creation and deletion; the host only ever reads its own
+   * record, back-fills its sessionId, and pushes liveness states.
    */
-  private registryShape(record: ThreadRecord): ThreadRegistryShape {
+  private registryShape(record: ThreadRecord): HostRegistryShape {
     const self = this;
     const push = (report: WorkerReport): void => {
       pushToHub(self.deployment, { type: "report", threadId: record.id, report });
     };
     const current = (): ThreadRecord => self.record ?? record;
     return {
-      list: () => Effect.succeed([current()]),
       get: (threadId) =>
         Effect.succeed(threadId === record.id ? Option.some(current()) : Option.none()),
-      create: () =>
-        Effect.fail(new RegistryError({ message: "thread DO: the hub owns thread creation" })),
       update: (threadId, patch) =>
         Effect.gen(function* () {
           if (threadId !== record.id) return Option.none();
@@ -373,15 +387,9 @@ export class SakuThreadDO {
         Effect.sync(() => {
           push({ state });
         }),
-      delete: () => Effect.succeed(false),
-      toInfo: () => Effect.succeed(Option.none()),
     };
   }
 }
 
 const envKeyOf = (handle: EnvHandle | null): string =>
   handle === null ? "none" : `${handle.url}|${handle.token}|${handle.relay?.envId ?? ""}`;
-
-const jsonOk = (payload: unknown): Response => Response.json({ ok: true, payload });
-
-const jsonError = (error: string): Response => Response.json({ ok: false, error }, { status: 400 });

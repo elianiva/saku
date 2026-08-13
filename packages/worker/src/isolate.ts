@@ -4,7 +4,8 @@
  * thread DO needs and nothing that binds to node.
  *
  * The module graph here is workerd-clean: `SessionHost` + `DoSessionRepo`
- * over the `KvStore` seam, `buildTools`, and the host/registry types. The
+ * over the `KvStore` seam, `buildTools`, the host/registry types, the
+ * registry record schema, and the shared catalog construction. The
  * node-bound wiring (file trails, `LocalEnv`, the model catalog over
  * auth.json, the daemon itself) lives in the package's main entry; a DO
  * passes its own storage (`KvStore` over DO storage) and its own env
@@ -22,5 +23,10 @@ export {
   type SessionHostOptions,
 } from "./session-host.ts";
 export { runSessionCommand, type SessionCommandDeps } from "./session-commands.ts";
-export type { ThreadRecord, ThreadRegistryShape } from "./registry.ts";
-export type { ModelCatalogShape } from "./model-catalog.ts";
+export {
+  createModelCatalog,
+  type ModelCatalogAuthSource,
+  type ModelCatalogShape,
+} from "./model-catalog-factory.ts";
+export { ThreadRecordSchema, type ThreadRecord } from "./registry-record.ts";
+export type { HostRegistryShape, ThreadRegistryShape } from "./registry.ts";

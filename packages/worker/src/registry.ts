@@ -9,37 +9,38 @@
  * filesystem failures are `RegistryError`.
  */
 
-import { Context, Effect, FileSystem, Layer, Option, Ref, Schema } from "effect";
+import { Context, Effect, FileSystem, Layer, Option, Ref } from "effect";
 import { ThreadMode, type ThreadInfo, type ThreadState } from "@saku/wire";
 
 import { isNotFound } from "@saku/store";
 import { getThreadDir, getThreadFile } from "./paths.ts";
 import { RegistryError } from "./registry-error.ts";
+import {
+  DECODE_THREAD_RECORD,
+  ThreadRecordSchema,
+  type ThreadRecord,
+} from "./registry-record.ts";
 
-const ThreadRecordSchema = Schema.Struct({
-  id: Schema.String,
-  name: Schema.String,
-  cwd: Schema.String,
-  /** Hands policy, pinned at creation. */
-  mode: ThreadMode,
-  createdAt: Schema.Number,
-  /** Pi session id, stable across daemon restarts; set on first touch. */
-  sessionId: Schema.Union([Schema.Null, Schema.String]),
-  /** The name is an auto-generated prompt snippet awaiting auto-title (CONTEXT.md: Quick start, Auto-title). */
-  nameAuto: Schema.Boolean,
-});
+export { ThreadRecordSchema, type ThreadRecord } from "./registry-record.ts";
 
 /**
- * A thread's registry record: id, name, cwd, mode, session id, auto-title
- * flag — what the daemon persists to `threads/<id>/thread.json`.
+ * The host's registry view: the narrow slice of the registry a
+ * `SessionHost` drives (get/update/setState). The thread DO implements
+ * exactly this; the daemon adapts its full registry over it. Hosts never
+ * create/delete threads or project wire info — the hub/daemon own those.
  */
-export type ThreadRecord = Schema.Schema.Type<typeof ThreadRecordSchema>;
-
-const DECODE_THREAD_RECORD = Schema.decodeUnknownSync(ThreadRecordSchema);
-
-export interface ThreadRegistryShape {
-  readonly list: () => Effect.Effect<readonly ThreadRecord[], RegistryError>;
+export interface HostRegistryShape {
   readonly get: (threadId: string) => Effect.Effect<Option.Option<ThreadRecord>, RegistryError>;
+  readonly update: (
+    threadId: string,
+    patch: Partial<Pick<ThreadRecord, "name" | "sessionId" | "nameAuto">>,
+  ) => Effect.Effect<Option.Option<ThreadRecord>, RegistryError>;
+  /** Liveness state derived by hosts; not persisted (re-derived at boot). */
+  readonly setState: (threadId: string, state: ThreadState) => Effect.Effect<void, never>;
+}
+
+export interface ThreadRegistryShape extends HostRegistryShape {
+  readonly list: () => Effect.Effect<readonly ThreadRecord[], RegistryError>;
   readonly create: (input: {
     name: string;
     /** Defaults to the daemon's working directory (local-only semantics, ADR 0003). */
@@ -47,12 +48,6 @@ export interface ThreadRegistryShape {
     mode?: ThreadMode;
     autoName?: boolean;
   }) => Effect.Effect<ThreadRecord, RegistryError>;
-  readonly update: (
-    threadId: string,
-    patch: Partial<Pick<ThreadRecord, "name" | "sessionId" | "nameAuto">>,
-  ) => Effect.Effect<Option.Option<ThreadRecord>, RegistryError>;
-  /** Liveness state derived by hosts; not persisted (re-derived at boot). */
-  readonly setState: (threadId: string, state: ThreadState) => Effect.Effect<void, never>;
   /** Delete the record AND the thread's directory (sessions included). */
   readonly delete: (threadId: string) => Effect.Effect<boolean, RegistryError>;
   /** Wire projection: registry view + derived state. */

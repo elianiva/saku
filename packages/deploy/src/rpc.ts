@@ -10,27 +10,24 @@
  */
 
 import { Effect, Schema } from "effect";
-import type { SessionWireEvent } from "@saku/wire";
 import type { EnvHandle } from "@saku/env/remote";
 import {
   HubError,
+  type HubRecord,
   type ThreadWorkerRef,
   type WorkerCommandResult,
   type WorkerReport,
 } from "@saku/hub/core";
+import type { ThreadRecord } from "@saku/worker/isolate";
 
 import { HUB_INSTANCE, type DeploymentEnv } from "./env.ts";
+import type { HubPush, RpcEnvelope } from "./do-protocol.ts";
 
-/** A JSON response from a DO endpoint. */
-interface RpcResponse {
-  readonly ok: boolean;
-  readonly payload?: unknown;
-  readonly error?: string;
-}
-
-/** A failed DO-to-DO call: the endpoint, the status, and the hub/thread error text. */
+/** A failed DO-to-DO call: the endpoint, the error kind, and the message. */
 export class RpcError extends Schema.TaggedError<RpcError>()("RpcError", {
   path: Schema.String,
+  /** The failure's discriminator (a SessionHostError kind, a RegistryError op, "malformed"). */
+  kind: Schema.String,
   message: Schema.String,
   status: Schema.optional(Schema.Number),
   cause: Schema.optional(Schema.Unknown),
@@ -46,7 +43,7 @@ const toHubError =
     });
 
 /** Call one endpoint on the hub DO. */
-export const hubRpc = (env: DeploymentEnv, path: string, body: unknown): Promise<RpcResponse> => {
+export const hubRpc = (env: DeploymentEnv, path: string, body: unknown): Promise<RpcEnvelope> => {
   const stub = env.HUB.get(env.HUB.idFromName(HUB_INSTANCE));
   return stub
     .fetch(`https://hub.internal${path}`, {
@@ -55,11 +52,13 @@ export const hubRpc = (env: DeploymentEnv, path: string, body: unknown): Promise
       body: JSON.stringify(body),
     })
     .then(async (response) => {
-      const parsed = (await response.json()) as RpcResponse;
+      const parsed = (await response.json()) as RpcEnvelope;
       if (!response.ok || !parsed.ok) {
+        const error = parsed.ok ? undefined : parsed.error;
         throw new RpcError({
           path,
-          message: parsed.error ?? `hub rpc ${path} failed (${response.status})`,
+          kind: error?.kind ?? "malformed",
+          message: error?.message ?? `hub rpc ${path} failed (${response.status})`,
           status: response.status,
         });
       }
@@ -73,7 +72,7 @@ export const threadRpc = (
   threadId: string,
   path: string,
   body: unknown,
-): Promise<RpcResponse> => {
+): Promise<RpcEnvelope> => {
   const stub = env.THREAD.get(env.THREAD.idFromName(threadId));
   return stub
     .fetch(`https://thread.internal${path}`, {
@@ -82,11 +81,13 @@ export const threadRpc = (
       body: JSON.stringify(body),
     })
     .then(async (response) => {
-      const parsed = (await response.json()) as RpcResponse;
+      const parsed = (await response.json()) as RpcEnvelope;
       if (!response.ok || !parsed.ok) {
+        const error = parsed.ok ? undefined : parsed.error;
         throw new RpcError({
           path,
-          message: parsed.error ?? `thread rpc ${path} failed (${response.status})`,
+          kind: error?.kind ?? "malformed",
+          message: error?.message ?? `thread rpc ${path} failed (${response.status})`,
           status: response.status,
         });
       }
@@ -94,11 +95,27 @@ export const threadRpc = (
     });
 };
 
+/**
+ * The worker's record for the `/create` RPC: the hub's registry record
+ * projected onto the worker's `ThreadRecord` contract (the thread DO
+ * decodes `/create` against `ThreadRecordSchema`). The hub's cwd is null
+ * for sandbox threads; the worker's is a path.
+ */
+const workerRecordOf = (record: HubRecord): ThreadRecord => ({
+  id: record.id,
+  name: record.name,
+  cwd: record.cwd ?? "/",
+  mode: record.mode,
+  createdAt: record.createdAt,
+  sessionId: record.sessionId,
+  nameAuto: record.autoName,
+});
+
 /** The hub's `ThreadWorkerRef` over the thread-DO namespace. */
 export const threadWorkerRef = (env: DeploymentEnv): ThreadWorkerRef => ({
   create: (threadId, record) =>
     Effect.tryPromise({
-      try: () => threadRpc(env, threadId, "/create", { record }),
+      try: () => threadRpc(env, threadId, "/create", { record: workerRecordOf(record) }),
       catch: toHubError("create thread worker"),
     }).pipe(Effect.andThen(Effect.void)),
   delete: (threadId) =>
@@ -151,17 +168,6 @@ export const threadIdleStop = (
       catch: toHubError("disarm idle-stop"),
     }).pipe(Effect.result, Effect.asVoid),
 });
-
-/** The push payloads a thread DO sends to the hub DO. */
-export type HubPush =
-  | { readonly type: "report"; readonly threadId: string; readonly report: WorkerReport }
-  | {
-      readonly type: "sessionEvent";
-      readonly threadId: string;
-      readonly event: SessionWireEvent;
-      readonly tailSeq: number;
-    }
-  | { readonly type: "idleStopFired"; readonly threadId: string };
 
 /** Push a report/event/idle-stop firing to the hub (best-effort). */
 export const pushToHub = (env: DeploymentEnv, push: HubPush): void => {

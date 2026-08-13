@@ -18,7 +18,7 @@
  * hub's `IdleStopController`), and the fire path runs here.
  */
 
-import { Effect, Match, Option, Schema } from "effect";
+import { Effect, Match, Option } from "effect";
 import {
   makeHub,
   makeHubRegistry,
@@ -34,11 +34,12 @@ import {
   type SocketLike,
   type WireCoreShape,
 } from "@saku/hub/core";
-import { ThreadState, type SessionWireEvent } from "@saku/wire";
+import type { SessionWireEvent } from "@saku/wire";
 
 import { KvStore } from "@saku/store";
 import { varOrDefault, type DeploymentEnv } from "./env.ts";
 import { threadIdleStop, threadWorkerRef } from "./rpc.ts";
+import { decodeHubPush, jsonError, jsonOk, readBody, rpcErrorOf } from "./do-protocol.ts";
 import { staticProvisioner } from "./static-provisioner.ts";
 import { ENV_BUNDLE_BASE64 } from "./generated/env-bundle.ts";
 
@@ -70,35 +71,9 @@ const provisionerFor = (env: DeploymentEnv) =>
     : boxProvisioner(env);
 
 /**
- * The `/push` contract, validated at the boundary: the thread DOs'
- * payloads (`HubPush` in rpc.ts) as a schema. The push channel
- * discriminates on `type` (rpc.ts), while TaggedStruct decodes `_tag` —
- * `encodeKeys` renames the encoded key so the wire shape validates and
- * the decoded type stays `_tag`-tagged for the Match below. The session
- * event rides as opaque `unknown` — pi's event types stay opaque on the
- * wire (ADR 0005), the hub forwards them uninterpreted. The report
- * fields use `optionalKey` (exact optional) so the decoded report
- * matches `WorkerReport` under `exactOptionalPropertyTypes`.
+ * The `/push` contract lives in one place (do-protocol.ts): the payload
+ * schemas, the envelope helpers, and the decoders both DOs share.
  */
-const HubPushSchema = Schema.Union([
-  Schema.TaggedStruct("report", {
-    threadId: Schema.String,
-    report: Schema.Struct({
-      state: Schema.optionalKey(ThreadState),
-      sessionId: Schema.optionalKey(Schema.Union([Schema.Null, Schema.String])),
-      name: Schema.optionalKey(Schema.String),
-      tailSeq: Schema.optionalKey(Schema.Number),
-    }),
-  }).pipe(Schema.encodeKeys({ _tag: "type" })),
-  Schema.TaggedStruct("sessionEvent", {
-    threadId: Schema.String,
-    event: Schema.Unknown,
-    tailSeq: Schema.Number,
-  }).pipe(Schema.encodeKeys({ _tag: "type" })),
-  Schema.TaggedStruct("idleStopFired", { threadId: Schema.String }).pipe(
-    Schema.encodeKeys({ _tag: "type" }),
-  ),
-]);
 
 export class SakuHubDO {
   private hubPromise: Promise<HubShape> | undefined;
@@ -196,10 +171,10 @@ export class SakuHubDO {
 
     // WebSocket surfaces: the wire (consoles) and the relay (daemons).
     if (request.headers.get("Upgrade") !== "websocket") {
-      return jsonError("expected a websocket upgrade");
+      return jsonError("malformed", "expected a websocket upgrade");
     }
     if (path !== "/ws" && path !== "/relay") {
-      return jsonError(`unknown path: ${path}`);
+      return jsonError("malformed", `unknown path: ${path}`);
     }
     const pair = new WebSocketPair();
     const client = pair[0];
@@ -223,17 +198,8 @@ export class SakuHubDO {
   private async handlePush(request: Request): Promise<Response> {
     // Malformed JSON (the tryPromise catch) and out-of-contract shapes
     // (decodeUnknownOption) both land on `none`: one error response.
-    const parsed = await Effect.runPromise(
-      Effect.tryPromise({
-        try: () => request.json() as Promise<unknown>,
-        catch: () => undefined,
-      }).pipe(
-        Effect.flatMap((body) =>
-          Effect.sync(() => Schema.decodeUnknownOption(HubPushSchema)(body)),
-        ),
-      ),
-    );
-    if (Option.isNone(parsed)) return jsonError("malformed push");
+    const parsed = await readBody(request, decodeHubPush);
+    if (Option.isNone(parsed)) return jsonError("malformed", "malformed push");
     const push = parsed.value;
     const hub = await this.hubShape();
     return Match.value(push).pipe(
@@ -251,12 +217,11 @@ export class SakuHubDO {
         idleStopFired: ({ threadId }) =>
           Effect.runPromise(hub.idleStopFired(threadId))
             .then(() => jsonOk({}))
-            .catch((error: unknown) => jsonError(String(error))),
+            .catch((error: unknown) => {
+              const { kind, message } = rpcErrorOf(error);
+              return jsonError(kind, message);
+            }),
       }),
     );
   }
 }
-
-const jsonOk = (payload: unknown): Response => Response.json({ ok: true, payload });
-
-const jsonError = (error: string): Response => Response.json({ ok: false, error }, { status: 400 });

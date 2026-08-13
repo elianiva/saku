@@ -50,7 +50,7 @@ import {
 } from "@saku/wire";
 
 import type { ModelCatalogShape } from "./model-catalog.ts";
-import type { ThreadRecord, ThreadRegistryShape } from "./registry.ts";
+import type { HostRegistryShape, ThreadRecord } from "./registry.ts";
 import { RegistryError } from "./registry-error.ts";
 import { SessionHostError, messageOf, toSessionHostError } from "./session-host-error.ts";
 
@@ -155,7 +155,7 @@ export interface HostDeps {
   readonly agent: Agent;
   readonly session: Session;
   readonly catalog: ModelCatalogShape;
-  readonly registry: ThreadRegistryShape;
+  readonly registry: HostRegistryShape;
   readonly sink: HostEventSink;
   readonly onRecordChanged: ((record: ThreadRecord) => void) | undefined;
   readonly modelRef: Ref.Ref<Model<Api> | null>;

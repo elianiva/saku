@@ -59,7 +59,7 @@ import {
   type ThreadState,
   type WireModelInfo,
 } from "@saku/wire";
-import { makeWireServer, type ServerSocket, type WireServerShape } from "@saku/wire/server";
+import { listenWs, makeWireServer, wsUrlOf, type ServerSocket, type WireServerShape } from "@saku/wire/server";
 
 import { ensureAuthToken, ensureSakuDirs } from "./auth.ts";
 import { getThreadTrailRoot, getWorkerUrlPath } from "./paths.ts";
@@ -68,6 +68,7 @@ import { LocalEnv } from "@saku/env";
 import {
   ThreadRegistry,
   ThreadRegistryLive,
+  type HostRegistryShape,
   type ThreadRecord,
   type ThreadRegistryShape,
 } from "./registry.ts";
@@ -343,7 +344,8 @@ export const makeSakuDaemon = (options: {
           // The registry's setState is an in-memory ref (not persisted, not
           // broadcast); consoles must hear working → idle, so wrap it: every
           // state push fans a thread_changed out (CONTEXT.md: Thread — state
-          // is a channel every console reads).
+          // is a channel every console reads). The host view is the narrow
+          // seam (get/update/setState) adapted over the full registry.
           const broadcastState = (
             threadId: string,
             state: ThreadState,
@@ -353,8 +355,9 @@ export const makeSakuDaemon = (options: {
               Effect.flatMap((info) => emitThreadChanged(info)),
               Effect.catch(() => Effect.void),
             );
-          const registryWithBroadcast: ThreadRegistryShape = {
-            ...registry,
+          const registryWithBroadcast: HostRegistryShape = {
+            get: (threadId) => registry.get(threadId),
+            update: (threadId, patch) => registry.update(threadId, patch),
             setState: (threadId, state) => broadcastState(threadId, state),
           };
           const host = yield* SessionHost.create({
@@ -435,47 +438,32 @@ export const makeSakuDaemon = (options: {
     yield* ensureSakuDirs(fs).pipe(Effect.mapError(startup("ensure saku dirs")));
     yield* ensureAuthToken(fs).pipe(Effect.mapError(startup("ensure auth token")));
     yield* fs.remove(urlPath, { force: true }).pipe(Effect.catch(() => Effect.void));
-    const server = yield* Effect.callback<WebSocketServer, DaemonError>((resume) => {
-      const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
-      server.on("connection", (socket) => {
+    // The ephemeral listener (shared with the hub's server, @saku/wire/server):
+    // resolves on listening, closes on interruption; socket errors are
+    // startup failures, exactly as the hand-rolled listener was.
+    const server = yield* listenWs<DaemonError>({
+      onConnection: (socket) => {
         void Effect.runFork(Effect.scoped(core.runConnection(socket as unknown as ServerSocket)));
-      });
-      server.on("error", (error) => {
+      },
+      onError: (error) => {
         log(`server error: ${error.message}`);
-        resume(
-          Effect.fail(new DaemonError({ code: "startup", message: error.message, cause: error })),
-        );
-      });
-      server.on("listening", () => {
-        const address = server.address();
-        if (address === null || typeof address === "string") {
-          resume(
-            Effect.fail(new DaemonError({ code: "startup", message: "no listening address" })),
-          );
-          return;
-        }
-        const url = `ws://127.0.0.1:${address.port}`;
-        void Effect.runFork(
-          fs
-            .writeFileString(urlPath, `${url}\n`)
-            .pipe(
-              Effect.catch((error) =>
-                Effect.sync(() => log(`failed to write ${urlPath}: ${error.message}`)),
-              ),
-            ),
-        );
-        log(`listening on ${url}`);
-        resume(Effect.succeed(server));
-      });
-      return Effect.sync(() => {
-        server.close();
-      });
+        return new DaemonError({ code: "startup", message: error.message, cause: error });
+      },
     });
+    // The URL file is written after listening (the CLI reads it to connect).
+    const url = wsUrlOf(server);
+    void Effect.runFork(
+      fs
+        .writeFileString(urlPath, `${url}\n`)
+        .pipe(
+          Effect.catch((error) =>
+            Effect.sync(() => log(`failed to write ${urlPath}: ${error.message}`)),
+          ),
+        ),
+    );
+    log(`listening on ${url}`);
     yield* Ref.set(serverRef, Option.some(server));
     yield* Effect.addFinalizer(() => close());
-    const address = server.address();
-    const url =
-      address !== null && typeof address !== "string" ? `ws://127.0.0.1:${address.port}` : "";
     return { url, close };
   });
 

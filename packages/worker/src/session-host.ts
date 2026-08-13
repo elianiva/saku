@@ -52,7 +52,7 @@ import { KvStore } from "@saku/store";
 import type { ModelCatalogShape } from "./model-catalog.ts";
 import { buildTools } from "./tools.ts";
 import { RegistryError } from "./registry-error.ts";
-import type { ThreadRecord, ThreadRegistryShape } from "./registry.ts";
+import type { HostRegistryShape, ThreadRecord } from "./registry.ts";
 import { SessionHostError, toSessionHostError } from "./session-host-error.ts";
 import { handleAgentEvent } from "./agent-events.ts";
 import {
@@ -135,7 +135,8 @@ export interface SessionHostOptions {
   /** The registry record; its sessionId is back-filled when null (first touch). */
   readonly record: ThreadRecord;
   readonly catalog: ModelCatalogShape;
-  readonly registry: ThreadRegistryShape;
+  /** The host's registry view (get/update/setState — the narrow seam). */
+  readonly registry: HostRegistryShape;
   readonly sink: HostEventSink;
   readonly onRecordChanged?: (record: ThreadRecord) => void;
   /** Test seam: the agent's stream function. Defaults to the catalog's models. */

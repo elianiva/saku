@@ -1,26 +1,26 @@
 /**
  * The deployment's model catalog (catalog.ts): `ModelCatalogShape` for a
- * thread DO — the opencode-go provider (the local OpenCode gateway, the
- * only builtin provider saku registers) with its auth resolved from the
- * deployment's bindings.
+ * thread DO — the shared construction (`createModelCatalog` in
+ * @saku/worker) with the auth source resolved from the deployment's
+ * bindings. This module is a thin binding-reader: the provider
+ * registration, the `SAKU_FAKE_MODEL` scripted fixture, and the shape
+ * live in exactly one place (worker/model-catalog-factory.ts).
  *
- * The provider reads its env var (`OPENCODE_API_KEY`) through an
- * `AuthContext` whose `env` reads the DO's bindings (the default context
- * reads `process.env`, which does not exist in a DO). openai/anthropic/
- * gemini and the other builtin providers are deliberately not registered.
+ * The opencode-go provider reads its env var (`OPENCODE_API_KEY`)
+ * through an `AuthContext` whose `env` reads the DO's bindings (the
+ * default context reads `process.env`, which does not exist in a DO).
+ * openai/anthropic/gemini and the other builtin providers are
+ * deliberately not registered.
  *
  * No models.json in a DO (no filesystem): custom providers, overlays,
- * and `!command` values are local-spine concerns. The one addition is
- * the scripted provider behind `SAKU_FAKE_MODEL` — a real provider whose
- * stream answers with canned assistant messages, for dev deployments and
- * the integration tests (no LLM key required).
+ * and `!command` values are local-spine concerns. The scripted provider
+ * behind `SAKU_FAKE_MODEL` is a real provider whose stream answers with
+ * canned assistant messages, for dev deployments and the integration
+ * tests (no LLM key required).
  */
 
-import * as Effect from "effect/Effect";
-import { createModels, type AuthContext } from "@earendil-works/pi-ai";
-import { opencodeGoProvider } from "@earendil-works/pi-ai/providers/opencode-go";
-import type { ModelCatalogShape } from "@saku/worker/isolate";
-import { fakeProvider } from "@saku/worker/fake-provider";
+import { createModelCatalog, type ModelCatalogShape } from "@saku/worker/isolate";
+import type { AuthContext } from "@earendil-works/pi-ai";
 
 import type { DeploymentEnv } from "./env.ts";
 
@@ -35,30 +35,9 @@ const deploymentAuthContext = (env: DeploymentEnv): AuthContext => ({
   fileExists: async () => false,
 });
 
-// ---------------------------------------------------------------------------
-// The catalog
-// ---------------------------------------------------------------------------
-
 /** Build the thread DO's catalog from the deployment's bindings. */
-export const deploymentCatalog = (env: DeploymentEnv): ModelCatalogShape => {
-  const models = createModels({ authContext: deploymentAuthContext(env) });
-  models.setProvider(opencodeGoProvider());
-  if ((env.SAKU_FAKE_MODEL ?? "").length > 0) {
-    models.setProvider(fakeProvider());
-  }
-  return {
-    models,
-    available: () => Effect.tryPromise(() => models.getAvailable()),
-    hasAuth: (providerId) =>
-      Effect.tryPromise(() => models.checkAuth(providerId))
-        .pipe(Effect.map((check) => check !== undefined))
-        .pipe(Effect.catchEager(() => Effect.succeed(false))),
-    getModel: (providerId, modelId) => models.getModel(providerId, modelId),
-    toWireInfo: (model) => ({
-      provider: model.provider,
-      id: model.id,
-      contextWindow: model.contextWindow,
-      reasoning: model.reasoning,
-    }),
-  };
-};
+export const deploymentCatalog = (env: DeploymentEnv): ModelCatalogShape =>
+  createModelCatalog({
+    auth: { authContext: deploymentAuthContext(env) },
+    env,
+  });
