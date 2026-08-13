@@ -28,7 +28,7 @@
  * box to `ready` — systemd brings the daemon back during resume.
  */
 
-import { Effect, Option, Result } from "effect";
+import { Effect, Option, Result, Schedule, Schema } from "effect";
 import { RemoteEnv, nodeSocket, type EnvHandle } from "@saku/env";
 import { HubError, makeHubError, messageOf } from "./hub-error.ts";
 import type { HubRecord } from "./registry.ts";
@@ -202,24 +202,34 @@ const bootstrapBox = (
     return { url, token: envToken, boxId: box.id };
   });
 
+/** The host.url read found nothing (the wrapper hasn't written it yet). */
+class HostUrlPending extends Schema.TaggedError<HostUrlPending>()("HostUrlPending", {}) {}
+
 /** Read the box's host.url, retrying until the wrapper has written it. */
-const readHostUrl = (
-  deps: ProvisionerDeps,
-  boxId: string,
-  attempts = 30,
-): Effect.Effect<string, HubError, never> =>
+const readHostUrl = (deps: ProvisionerDeps, boxId: string): Effect.Effect<string, HubError, never> =>
   Effect.gen(function* () {
     const fail = toHubError(`box ${boxId} host.url read failed`);
-    const content = yield* deps.boxApi
-      .readFile(boxId, `${BOX_ENV_DIR}/host.url`)
-      .pipe(Effect.mapError(fail));
-    const url = content.trim().split("\n")[0] ?? "";
-    if (url.length > 0) return url;
-    if (attempts <= 0) {
-      return yield* Effect.fail(makeHubError("provisioner", `box ${boxId} never wrote host.url`));
-    }
-    yield* Effect.sleep("1 seconds");
-    return yield* readHostUrl(deps, boxId, attempts - 1);
+    const attempt = Effect.gen(function* () {
+      const content = yield* deps.boxApi
+        .readFile(boxId, `${BOX_ENV_DIR}/host.url`)
+        .pipe(Effect.mapError(fail));
+      const url = content.trim().split("\n")[0] ?? "";
+      if (url.length > 0) return url;
+      return yield* Effect.fail(new HostUrlPending());
+    });
+    return yield* attempt.pipe(
+      // Poll every second until the deadline (Schedule.spaced + upTo, the
+      // box.ts pollUntilReady idiom: interruptible, deadline-bounded). Only
+      // the not-yet-written failure is retried — read failures pass through.
+      Effect.retry({
+        schedule: Schedule.spaced("1 seconds").pipe(Schedule.upTo({ duration: "30 seconds" })),
+        while: (error) => error._tag === "HostUrlPending",
+      }),
+      // The schedule gave up: the wrapper never wrote the URL. Today's message, kept.
+      Effect.catchTag("HostUrlPending", () =>
+        Effect.fail(makeHubError("provisioner", `box ${boxId} never wrote host.url`)),
+      ),
+    );
   });
 
 /** Resume a stopped box: wake it, wait, re-probe (re-read the URL if it moved). */

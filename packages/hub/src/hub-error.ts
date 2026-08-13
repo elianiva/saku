@@ -10,6 +10,9 @@
  */
 
 import { Schema } from "effect";
+// The canonical user-facing message helper lives in the wire's server core
+// (wire/src/server-core.ts); the hub re-exports it rather than re-defining it.
+export { messageOf } from "@saku/wire/server";
 
 /** The hub error categories (`HubError.kind`). */
 export type HubErrorKind =
@@ -38,7 +41,3 @@ export class HubError extends Schema.TaggedError<HubError>()("HubError", {
 /** Construct a hub error with its category (required at new sites). */
 export const makeHubError = (kind: HubErrorKind, message: string, cause?: unknown): HubError =>
   new HubError({ kind, message, cause });
-
-/** The user-facing message of any failure the hub's command handlers produce. */
-export const messageOf = (error: unknown): string =>
-  error instanceof Error ? error.message : String(error);

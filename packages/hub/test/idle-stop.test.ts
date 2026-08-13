@@ -5,21 +5,31 @@
  * is idle, reset by any activity (commands, events, worker reports), and
  * fires → the provisioner's release + env axis `stopped`, broadcast.
  *
- * Real timers with a short window (60 ms) — the semantics under test are
- * the arm/disarm/reset/fire transitions, not clock behavior.
+ * Two suites: the hub-level transitions (below) over real timers with a
+ * short window (60 ms), and the policy's contract directly (the second
+ * describe) — `makeIdleStop` driven with scripted fakes and a fake
+ * controller, covering the arm/disarm/reset/fire transitions without
+ * clock flakiness.
  */
 
 import { describe, expect, it } from "vitest";
-import { Effect, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
+
+import type { EnvHandle } from "@saku/env";
+import type { ThreadEnvState, ThreadInfo, ThreadMode, ThreadState } from "@saku/wire";
 
 import { makeHubError } from "../src/hub-error.ts";
 
 import {
   makeHub,
   makeHubRegistry,
+  makeIdleStop,
   makeSkillsStore,
   type HubEvent,
+  type HubRecord,
   type HubShape,
+  type IdleStop,
+  type IdleStopController,
 } from "../src/index.ts";
 import { scriptedProvisioner, scriptedWorker } from "./mock-worker.ts";
 import { KvStore } from "@saku/store";
@@ -147,5 +157,208 @@ describe("idle-stop", () => {
     await sleep(IDLE_MS / 2);
     expect(world.provisioner.released.length).toBe(1);
     await waitFor(() => world.provisioner.released.length === 2);
+  });
+});
+
+/**
+ * The policy's contract, driven directly (no hub): `makeIdleStop` with
+ * scripted registry/provisioner/workerRef fakes and a fake controller
+ * (the thread DO's durable-alarm seam) — the arm gates, the reset, and
+ * the fire path, without the hub's wiring in between.
+ */
+describe("makeIdleStop — the policy directly", () => {
+  const THREAD = "thread_policy";
+  const HANDLE: EnvHandle = { url: "ws://127.0.0.1:1", token: "env-token", boxId: "bx_policy" };
+
+  interface PolicyWorld {
+    readonly idleStop: IdleStop;
+    readonly released: Array<{ threadId: string; handle: EnvHandle | null }>;
+    readonly handles: Array<{ threadId: string; handle: EnvHandle | null }>;
+    readonly envs: Array<{ threadId: string; env: ThreadEnvState }>;
+    readonly changed: ThreadInfo[];
+  }
+
+  /** Build the policy with scripted fakes (the registry answers the gates). */
+  const makePolicy = (options: {
+    mode?: ThreadMode;
+    env?: ThreadEnvState;
+    state?: ThreadState;
+    controller?: IdleStopController;
+    idleStopMs?: number;
+  }): Promise<PolicyWorld> => {
+    const record: HubRecord = {
+      id: THREAD,
+      name: "boxed",
+      cwd: null,
+      mode: options.mode ?? "sandbox",
+      autoName: false,
+      createdAt: 0,
+      sessionId: null,
+      env: options.env ?? "ready",
+      envHandle: HANDLE,
+    };
+    const released: PolicyWorld["released"] = [];
+    const handles: PolicyWorld["handles"] = [];
+    const envs: PolicyWorld["envs"] = [];
+    const changed: ThreadInfo[] = [];
+    const registry = {
+      get: () => Effect.succeed(Option.some(record)),
+      toInfo: () =>
+        Effect.succeed(
+          Option.some({
+            id: record.id,
+            name: record.name,
+            cwd: record.cwd,
+            mode: record.mode,
+            state: options.state ?? "idle",
+            env: record.env,
+            sessionId: null,
+            tailSeq: 0,
+          } satisfies ThreadInfo),
+        ),
+      setEnv: (threadId: string, env: ThreadEnvState) =>
+        Effect.sync(() => {
+          record.env = env;
+          envs.push({ threadId, env });
+          return Option.some(record);
+        }),
+    };
+    return run(
+      makeIdleStop({
+        registry,
+        provisioner: {
+          release: (threadId, handle) =>
+            Effect.sync(() => {
+              released.push({ threadId, handle: Option.getOrNull(handle) });
+            }),
+        },
+        workerRef: {
+          setEnvHandle: (threadId, handle) =>
+            Effect.sync(() => {
+              handles.push({ threadId, handle });
+            }),
+        },
+        infoOf: (threadId) =>
+          Effect.gen(function* () {
+            const info = yield* registry.toInfo(threadId);
+            if (Option.isNone(info)) {
+              return yield* Effect.fail(makeHubError("registry", `unknown thread: ${threadId}`));
+            }
+            return info.value;
+          }),
+        emitThreadChanged: (thread) => changed.push(thread),
+        idleStopMs: options.idleStopMs ?? IDLE_MS,
+        controller: options.controller,
+      }).pipe(Effect.map((idleStop) => ({ idleStop, released, handles, envs, changed }))),
+    );
+  };
+
+  /** A fake controller recording arm/disarm (the thread DO's alarm seam). */
+  const fakeController = () => {
+    const armed: string[] = [];
+    const disarmed: string[] = [];
+    return {
+      controller: {
+        arm: (threadId: string) =>
+          Effect.sync(() => {
+            armed.push(threadId);
+          }),
+        disarm: (threadId: string) =>
+          Effect.sync(() => {
+            disarmed.push(threadId);
+          }),
+      },
+      armed,
+      disarmed,
+    };
+  };
+
+  it("arms a ready idle sandbox thread (the controller gets the arm)", async () => {
+    const controller = fakeController();
+    const { idleStop } = await makePolicy({ controller: controller.controller });
+    await run(idleStop.arm(THREAD));
+    expect(controller.armed).toEqual([THREAD]);
+  });
+
+  it("never arms a local thread", async () => {
+    const controller = fakeController();
+    const { idleStop } = await makePolicy({ controller: controller.controller, mode: "local" });
+    await run(idleStop.arm(THREAD));
+    expect(controller.armed).toEqual([]);
+  });
+
+  it("never arms a non-ready env", async () => {
+    for (const env of ["stopped", "error", "provisioning"] as const) {
+      const controller = fakeController();
+      const { idleStop } = await makePolicy({ controller: controller.controller, env });
+      await run(idleStop.arm(THREAD));
+      expect(controller.armed).toEqual([]);
+    }
+  });
+
+  it("never arms mid-run (the run's own reports re-arm)", async () => {
+    const controller = fakeController();
+    const { idleStop } = await makePolicy({ controller: controller.controller, state: "working" });
+    await run(idleStop.arm(THREAD));
+    expect(controller.armed).toEqual([]);
+  });
+
+  it("disarms through the controller", async () => {
+    const controller = fakeController();
+    const { idleStop } = await makePolicy({ controller: controller.controller });
+    await run(idleStop.disarm(THREAD));
+    expect(controller.disarmed).toEqual([THREAD]);
+  });
+
+  it("resets the window on activity: a re-arm pushes the deadline out", async () => {
+    const { idleStop, released } = await makePolicy({});
+    await run(idleStop.arm(THREAD));
+    await sleep(IDLE_MS / 2);
+    // Activity resets the window: the first deadline passes, the second hasn't.
+    await run(idleStop.arm(THREAD));
+    await sleep(IDLE_MS / 2);
+    expect(released).toHaveLength(0);
+    await waitFor(() => released.length === 1);
+  });
+
+  it("disarming clears the hub timer", async () => {
+    const { idleStop, released } = await makePolicy({});
+    await run(idleStop.arm(THREAD));
+    await run(idleStop.disarm(THREAD));
+    await sleep(IDLE_MS * 2);
+    expect(released).toHaveLength(0);
+  });
+
+  it("fires: releases the env, clears the worker's handle, flips the axis, broadcasts", async () => {
+    const { idleStop, released, handles, envs, changed } = await makePolicy({});
+    await run(idleStop.fire(THREAD));
+    expect(released).toEqual([{ threadId: THREAD, handle: HANDLE }]);
+    expect(handles).toEqual([{ threadId: THREAD, handle: null }]);
+    expect(envs).toEqual([{ threadId: THREAD, env: "stopped" }]);
+    expect(changed).toHaveLength(1);
+    expect(changed[0].env).toBe("stopped");
+  });
+
+  it("does not fire mid-run (a command won the race): disarm, no release", async () => {
+    const controller = fakeController();
+    const { idleStop, released } = await makePolicy({
+      controller: controller.controller,
+      state: "working",
+    });
+    await run(idleStop.fire(THREAD));
+    expect(controller.disarmed).toEqual([THREAD]);
+    // The re-arm attempt is a no-op while the run is in flight (arm's own
+    // gate skips working threads); the run's reports re-arm when it settles.
+    expect(controller.armed).toEqual([]);
+    expect(released).toHaveLength(0);
+  });
+
+  it("fires nothing for a local thread", async () => {
+    const { idleStop, released, handles, envs, changed } = await makePolicy({ mode: "local" });
+    await run(idleStop.fire(THREAD));
+    expect(released).toHaveLength(0);
+    expect(handles).toHaveLength(0);
+    expect(envs).toHaveLength(0);
+    expect(changed).toHaveLength(0);
   });
 });

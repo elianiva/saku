@@ -13,6 +13,12 @@
  */
 
 export { HubError, messageOf } from "./hub-error.ts";
+export {
+  makeIdleStop,
+  type IdleStop,
+  type IdleStopController,
+  type IdleStopDeps,
+} from "./idle-stop.ts";
 export { makeHubRegistry, type HubRecord, type HubRegistryShape } from "./registry.ts";
 export { makeSkillsStore, skillNameFromSource, type SkillsStoreShape } from "./skills.ts";
 export {
@@ -56,5 +62,4 @@ export {
   type HubEvent,
   type HubListener,
   type HubShape,
-  type IdleStopController,
 } from "./hub.ts";

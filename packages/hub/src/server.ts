@@ -11,13 +11,15 @@
  * behind the single domain.
  *
  * Startup failures are defects by design, matching the `makeSakuDaemon`
- * contract: a server that cannot bind fails hard (see the
- * `resume(Effect.fail(new HubError({ kind: "startup", … })))` below) —
- * the process's fatal path, never a silent half-up server.
+ * contract: a server that cannot bind fails hard (the `listenWs` error
+ * path maps to `HubError` kind `startup`) — the process's fatal path,
+ * never a silent half-up server.
  */
 
-import { WebSocketServer, type WebSocket } from "ws";
+import type { WebSocket, WebSocketServer } from "ws";
 import { Effect, Option, Ref, Scope } from "effect";
+
+import { listenWs, wsUrlOf } from "@saku/wire/server";
 
 import type { HubShape } from "./hub.ts";
 import { HubError } from "./hub-error.ts";
@@ -105,37 +107,23 @@ export const makeHubServer = (
 
     // -- startup -------------------------------------------------------------
 
-    const server = yield* Effect.callback<WebSocketServer, HubError>((resume) => {
-      const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
-      server.on("connection", (socket) => {
-        void Effect.runFork(Effect.scoped(core.runConnection(asSocketLike(socket))));
-      });
-      server.on("error", (error) => {
+    // listenWs owns the server's lifecycle: it resolves once the server is
+    // listening and closes it when the scope closes (interruption).
+    const server = yield* listenWs<HubError>({
+      onConnection: (socket) => {
+        // The connection handler lives for the socket's lifetime; the scope
+        // closes with the socket (the runConnection finalizer drops the client).
+        void Effect.runFork(core.runConnection(asSocketLike(socket)).pipe(Effect.scoped));
+      },
+      onError: (error) => {
         log(`server error: ${error.message}`);
-        resume(
-          Effect.fail(new HubError({ kind: "startup", message: error.message, cause: error })),
-        );
-      });
-      server.on("listening", () => {
-        const address = server.address();
-        if (address === null || typeof address === "string") {
-          resume(Effect.fail(new HubError({ kind: "startup", message: "no listening address" })));
-          return;
-        }
-        const url = `ws://127.0.0.1:${address.port}`;
-        resume(Effect.succeed(server));
-      });
-      return Effect.sync(() => {
-        server.close();
-      });
+        return new HubError({ kind: "startup", message: error.message, cause: error });
+      },
     });
     yield* Ref.set(serverRef, Option.some(server));
     yield* Effect.addFinalizer(() => close());
-    const address = server.address();
-    const url =
-      address !== null && typeof address !== "string" ? `ws://127.0.0.1:${address.port}` : "";
     return {
-      url,
+      url: wsUrlOf(server),
       relayUrl: Option.isSome(relay) ? relay.value.url : null,
       close,
     };

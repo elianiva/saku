@@ -23,10 +23,15 @@
  *   registry caches and broadcast `thread_changed` when the wire view
  *   actually changed; a user rename (autoName = false) permanently wins
  *   over auto-title reports
+ *
+ * The idle-stop policy (ADR 0003) lives in idle-stop.ts: the hub arms and
+ * disarms the window here on every activity signal (reports, events, the
+ * env gate, teardown) and delegates its public `idleStopFired` trigger to
+ * the policy's fire path.
  */
 
-import { Effect, Option, Ref, Result, Schema } from "effect";
-import { resolveThread, ThreadInfo } from "@saku/wire";
+import { Effect, Option, Result, Schema } from "effect";
+import { READ_ONLY_COMMANDS, resolveThread, ThreadInfo } from "@saku/wire";
 import type {
   ResponsePayload,
   SessionCommand,
@@ -36,10 +41,14 @@ import type {
 } from "@saku/wire";
 
 import { HubError, makeHubError, messageOf } from "./hub-error.ts";
+import { makeIdleStop, type IdleStopController } from "./idle-stop.ts";
 import type { EnvProvisioner } from "./provisioner.ts";
 import type { HubRecord, HubRegistryShape } from "./registry.ts";
 import type { SkillsStoreShape } from "./skills.ts";
 import type { HubEventSink, ThreadWorkerRef, WorkerReport } from "./worker-ref.ts";
+
+/** Arm/disarm one thread's idle-stop window (the policy is the hub's). */
+export type { IdleStopController } from "./idle-stop.ts";
 
 /** Everything the hub pushes to its subscribers (the server's fan-out). */
 export type HubEvent =
@@ -105,20 +114,6 @@ export interface HubDeps {
   readonly idleStop?: IdleStopController;
 }
 
-/** Arm/disarm one thread's idle-stop window (the hub owns the policy). */
-export interface IdleStopController {
-  readonly arm: (threadId: string) => Effect.Effect<void, HubError, never>;
-  readonly disarm: (threadId: string) => Effect.Effect<void, never, never>;
-}
-
-/** The reads that never start a session or wake an env (ADR 0004). */
-const READ_ONLY_COMMANDS = new Set<SessionCommand["_tag"]>([
-  "get_entries",
-  "get_state",
-  "get_available_models",
-  "get_available_thinking_levels",
-]);
-
 const isReadOnly = (command: SessionCommand): boolean => READ_ONLY_COMMANDS.has(command._tag);
 
 /** Structural equality over the wire's thread view (not JSON.stringify). */
@@ -141,87 +136,15 @@ const resolveThreadId = (
 export const makeHub = (deps: HubDeps): Effect.Effect<HubShape, never, never> =>
   Effect.gen(function* () {
     const { registry, skills, workerRef, provisioner } = deps;
-    // Idle-stop: the timer is armed when a sandbox thread is idle with a
-    // ready env, disarmed on activity, and fires → the hub stops the Box
-    // (ADR 0003: the worker arms the timer; the hub pulls the trigger —
-    // the DO alarm of M4 replaces this hub-side timer, same semantics,
-    // via the `idleStop` controller).
-    const idleStopMs = deps.idleStopMs ?? 5 * 60 * 1000;
-    const controller = deps.idleStop;
-    const idleTimersRef = yield* Ref.make<Map<string, NodeJS.Timeout>>(new Map());
-
-    const armIdleStop = (threadId: string): Effect.Effect<void, HubError, never> =>
-      Effect.gen(function* () {
-        const record = yield* registry.get(threadId);
-        if (Option.isNone(record)) return;
-        // Local envs never stop (ADR 0003).
-        if (record.value.mode !== "sandbox" || record.value.env !== "ready") return;
-        // Never while a run is in flight: the run's own reports re-arm.
-        const state = yield* registry.toInfo(threadId);
-        if (Option.isSome(state) && state.value.state !== "idle") return;
-        if (controller !== undefined) {
-          // The thread DO's durable alarm: setAlarm replaces, clears, fires.
-          yield* controller.arm(threadId);
-          return;
-        }
-        // Any activity resets the window: clear and re-arm.
-        const timers = yield* Ref.get(idleTimersRef);
-        const existing = timers.get(threadId);
-        if (existing !== undefined) clearTimeout(existing);
-        const timer = setTimeout(() => {
-          void Effect.runFork(fireIdleStop(threadId));
-        }, idleStopMs);
-        yield* Ref.update(idleTimersRef, (timers) => new Map(timers).set(threadId, timer));
-      });
-
-    const disarmIdleStop = (threadId: string): Effect.Effect<void, never, never> =>
-      Effect.gen(function* () {
-        if (controller !== undefined) {
-          yield* controller.disarm(threadId);
-          return;
-        }
-        const timers = yield* Ref.get(idleTimersRef);
-        const timer = timers.get(threadId);
-        if (timer === undefined) return;
-        clearTimeout(timer);
-        yield* Ref.update(idleTimersRef, (timers) => {
-          const next = new Map(timers);
-          next.delete(threadId);
-          return next;
-        });
-      });
-
-    /** The idle-stop trigger: stop the Box, flip the env axis, broadcast. */
-    const fireIdleStop = (threadId: string): Effect.Effect<void, HubError, never> =>
-      Effect.gen(function* () {
-        yield* disarmIdleStop(threadId);
-        const record = yield* registry.get(threadId);
-        if (Option.isNone(record)) return;
-        // Never mid-run: a command could have started between the timer
-        // firing and this effect running.
-        const info = yield* registry.toInfo(threadId);
-        if (Option.isSome(info) && info.value.state !== "idle") {
-          yield* armIdleStop(threadId);
-          return;
-        }
-        if (record.value.mode !== "sandbox" || record.value.env !== "ready") return;
-        yield* provisioner
-          .release(threadId, Option.fromNullishOr(record.value.envHandle))
-          .pipe(Effect.catch(() => Effect.void));
-        // The worker's env connection is dead with the Box: clear it.
-        yield* workerRef.setEnvHandle(threadId, null).pipe(Effect.catch(() => Effect.void));
-        yield* registry.setEnv(threadId, "stopped");
-        const after = yield* infoOf(threadId);
-        emitThreadChanged(after);
-      });
-
-    const listenersRef = yield* Ref.make<ReadonlySet<HubListener>>(new Set());
+    // Listeners are sync callbacks (the server forks its own broadcasts);
+    // one plain synchronous set, shared by notify/subscribe/unsubscribe —
+    // no runSync/runFork discipline split on the same structure.
+    const listeners = new Set<HubListener>();
 
     const notify = (event: HubEvent): void => {
-      // Listeners are sync callbacks (the server forks its own broadcasts);
-      // a throwing listener must not take the hub down.
-      const listeners = Effect.runSync(Ref.get(listenersRef));
-      for (const listener of listeners) {
+      // A throwing listener must not take the hub down. The snapshot keeps
+      // a listener that unsubscribes itself mid-notify from starving others.
+      for (const listener of [...listeners]) {
         const result = Result.try(() => listener(event));
         if (Result.isFailure(result)) {
           console.warn(`[hub] listener failed: ${messageOf(result.failure)}`);
@@ -232,6 +155,30 @@ export const makeHub = (deps: HubDeps): Effect.Effect<HubShape, never, never> =>
     const emitThreadChanged = (thread: ThreadInfo): void => {
       notify({ type: "thread_changed", thread });
     };
+
+    const infoOf = (threadId: string): Effect.Effect<ThreadInfo, HubError, never> =>
+      Effect.gen(function* () {
+        const info = yield* registry.toInfo(threadId);
+        if (Option.isNone(info)) {
+          return yield* Effect.fail(makeHubError("registry", `unknown thread: ${threadId}`));
+        }
+        return info.value;
+      });
+
+    // Idle-stop: the timer is armed when a sandbox thread is idle with a
+    // ready env, disarmed on activity, and fires → the hub stops the Box
+    // (ADR 0003: the worker arms the timer; the hub pulls the trigger —
+    // the DO alarm of M4 replaces this hub-side timer, same semantics,
+    // via the `idleStop` controller).
+    const idleStop = yield* makeIdleStop({
+      registry,
+      provisioner,
+      workerRef,
+      infoOf,
+      emitThreadChanged,
+      idleStopMs: deps.idleStopMs ?? 5 * 60 * 1000,
+      controller: deps.idleStop,
+    });
 
     /** Apply a worker report; broadcast when the wire view changed. */
     const applyReport = (
@@ -259,9 +206,9 @@ export const makeHub = (deps: HubDeps): Effect.Effect<HubShape, never, never> =>
         }
         // Idle-stop: arm when the worker reports idle, disarm while working.
         if (report.state === "working") {
-          yield* disarmIdleStop(threadId);
+          yield* idleStop.disarm(threadId);
         } else if (report.state === "idle") {
-          yield* armIdleStop(threadId);
+          yield* idleStop.arm(threadId);
         }
         const after = yield* registry.toInfo(threadId);
         if (
@@ -275,28 +222,21 @@ export const makeHub = (deps: HubDeps): Effect.Effect<HubShape, never, never> =>
 
     const events: HubEventSink = {
       sessionEvent: (threadId, event, tailSeq) => {
+        // Fire-and-forget pushes: a failing arm (the controller's alarm
+        // channel) must not surface as an unhandled fiber error.
         void Effect.runFork(
           Effect.gen(function* () {
             yield* registry.setTailSeq(threadId, tailSeq);
             // Any event is activity: reset the idle timer.
-            yield* armIdleStop(threadId);
+            yield* idleStop.arm(threadId);
             notify({ type: "session_event", threadId, event });
-          }),
+          }).pipe(Effect.catch(() => Effect.void)),
         );
       },
       report: (threadId, report) => {
-        void Effect.runFork(applyReport(threadId, report));
+        void Effect.runFork(applyReport(threadId, report).pipe(Effect.catch(() => Effect.void)));
       },
     };
-
-    const infoOf = (threadId: string): Effect.Effect<ThreadInfo, HubError, never> =>
-      Effect.gen(function* () {
-        const info = yield* registry.toInfo(threadId);
-        if (Option.isNone(info)) {
-          return yield* Effect.fail(makeHubError("registry", `unknown thread: ${threadId}`));
-        }
-        return info.value;
-      });
 
     /** The env gate: a non-ready env is provisioned before the command runs. */
     const ensureEnv = (thread: HubRecord): Effect.Effect<void, HubError, never> =>
@@ -308,10 +248,10 @@ export const makeHub = (deps: HubDeps): Effect.Effect<HubShape, never, never> =>
             .setEnvHandle(thread.id, Option.getOrNull(Option.fromNullishOr(thread.envHandle)))
             .pipe(Effect.catch(() => Effect.void));
           // Activity on a ready env resets the idle timer.
-          yield* armIdleStop(thread.id);
+          yield* idleStop.arm(thread.id);
           return;
         }
-        yield* disarmIdleStop(thread.id);
+        yield* idleStop.disarm(thread.id);
         const outcome = yield* provisioner
           .ensure(thread, Option.fromNullishOr(thread.envHandle))
           .pipe(Effect.result);
@@ -332,7 +272,7 @@ export const makeHub = (deps: HubDeps): Effect.Effect<HubShape, never, never> =>
         const info = yield* infoOf(thread.id);
         emitThreadChanged(info);
         // The thread is idle until the command runs: arm the timer now.
-        yield* armIdleStop(thread.id);
+        yield* idleStop.arm(thread.id);
       });
 
     return {
@@ -385,7 +325,7 @@ export const makeHub = (deps: HubDeps): Effect.Effect<HubShape, never, never> =>
           // Best-effort teardown: the record is gone either way.
           yield* workerRef.delete(threadId).pipe(Effect.catch(() => Effect.void));
           if (Option.isSome(record)) {
-            yield* disarmIdleStop(threadId);
+            yield* idleStop.disarm(threadId);
             yield* provisioner
               .release(threadId, Option.fromNullishOr(record.value.envHandle))
               .pipe(Effect.catch(() => Effect.void));
@@ -420,24 +360,18 @@ export const makeHub = (deps: HubDeps): Effect.Effect<HubShape, never, never> =>
           }
         }),
       events,
-      idleStopFired: (threadId) => fireIdleStop(threadId),
+      idleStopFired: (threadId) => idleStop.fire(threadId),
       subscribe: (listener) => {
-        const set = Effect.runSync(Ref.get(listenersRef));
-        const next = new Set(set);
-        next.add(listener);
-        void Effect.runFork(Ref.set(listenersRef, next));
+        listeners.add(listener);
         return () => {
-          const current = Effect.runSync(Ref.get(listenersRef));
-          const without = new Set(current);
-          without.delete(listener);
-          void Effect.runFork(Ref.set(listenersRef, without));
+          listeners.delete(listener);
         };
       },
       close: () =>
         Effect.gen(function* () {
-          const timers = yield* Ref.get(idleTimersRef);
-          for (const timer of timers.values()) clearTimeout(timer);
-          yield* Ref.set(idleTimersRef, new Map());
+          // The policy's hub-side timers are cleared here (the controller's
+          // durable alarms die with the thread DOs).
+          yield* idleStop.close;
           yield* workerRef.close().pipe(Effect.catch(() => Effect.void));
         }),
     };

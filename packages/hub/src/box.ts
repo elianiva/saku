@@ -93,9 +93,9 @@ export const pollUntilReady = (
     return yield* Effect.fail(new PollNotReady({ status: box.status }));
   });
   return attempt.pipe(
-    // Poll every intervalMs until the deadline (Schedule.spaced + upTo;
-    // today: self-recursion with a Date.now() deadline). Only the
-    // not-ready failure is retried — API failures pass through.
+    // Poll every intervalMs until the deadline (Schedule.spaced + upTo:
+    // interruptible, deadline-bounded — the Clock can fake it in tests).
+    // Only the not-ready failure is retried — API failures pass through.
     Effect.retry({
       schedule: Schedule.spaced(`${intervalMs} millis`).pipe(
         Schedule.upTo({ duration: `${timeoutMs} millis` }),
