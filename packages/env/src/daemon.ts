@@ -41,6 +41,7 @@ import {
   EnvHello,
   EnvHelloOk,
   EnvOp,
+  EnvPayloadSchema,
   EnvRequest,
   EnvResponseError,
   EnvResponseOk,
@@ -91,6 +92,15 @@ export interface EnvConnectionContext {
 
 const decodeOp = (value: unknown): Result.Result<EnvOpType, string> =>
   Result.try(() => DECODE_OP(value)).pipe(Result.mapError(String));
+
+/**
+ * Encode one op's response payload with the protocol's payload table
+ * (protocol.ts) — the daemon's responses are checked against the same
+ * table the client decodes with, so a payload that drifts from the
+ * contract fails here, at the boundary, instead of at a client's cast.
+ */
+const encodePayload = (op: EnvOpType, payload: unknown): unknown =>
+  Schema.encodeUnknownSync(EnvPayloadSchema[op._tag])(payload);
 
 /**
  * One env operation, executed against the connection's LocalEnv. `exec`
@@ -165,8 +175,13 @@ const runOp = (
           env.remove(path, { recursive: recursive ?? false, force: force ?? false }),
         ),
       create_temp_dir: ({ prefix }) => run<string, FileError>(env.createTempDir(prefix)),
-      create_temp_file: ({ prefix }) =>
-        run<string, FileError>(env.createTempFile(prefix === undefined ? {} : { prefix })),
+      create_temp_file: ({ prefix, suffix }) =>
+        run<string, FileError>(
+          env.createTempFile({
+            ...(prefix === undefined ? {} : { prefix }),
+            ...(suffix === undefined ? {} : { suffix }),
+          }),
+        ),
       exec: ({ command, cwd, env: opEnv, timeout, inheritEnv }) => {
         const controller = new AbortController();
         ctx.aborters.set(id, () => controller.abort());
@@ -301,7 +316,13 @@ export const handleEnvConnection = (
       void Promise.resolve(runOp(env, id, op.success, { cwd, pid: process.pid, aborters, send }))
         .then((outcome) => {
           if (outcome.ok) {
-            send(EnvResponseOk.make({ id, ok: true, payload: outcome.payload }));
+            send(
+              EnvResponseOk.make({
+                id,
+                ok: true,
+                payload: encodePayload(op.success, outcome.payload),
+              }),
+            );
           } else {
             send(EnvResponseError.make({ id, ok: false, error: outcome.error }));
           }

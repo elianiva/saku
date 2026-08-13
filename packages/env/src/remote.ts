@@ -15,29 +15,48 @@
  * client attaches to a registered env (`relay_attach`) before its
  * `env_hello`, and the hub pipes the rest.
  *
- * The socket is an explicit dependency (`socket`): `RemoteEnv` itself is
- * isolate-clean and runs in a Durable Object (where the socket is a
- * workerd `WebSocket`, see `workerdSocket`) and on node (where it is a
- * `ws` socket, see `nodeSocket` in remote-node.ts). The env protocol is
- * the same over both.
+ * The socket is an explicit dependency (`socket`): `RemoteEnv` itself
+ * runs in a Durable Object (where the socket is a workerd `WebSocket`,
+ * see `workerdSocket`/`workerdSocketFactory`) and on node (where it is a
+ * `ws` socket, see `nodeSocket`) — both from the unified socket module
+ * (socket.ts). The env protocol is the same over both.
+ *
+ * The op and payload shapes come from one table (protocol.ts): requests
+ * are built as `EnvOp` values, response payloads are decoded against
+ * `EnvPayloadSchema` at the boundary — no casts of the wire's own
+ * formats.
  */
 
 import {
   ENV_VERSION,
+  EnvAbort,
   EnvHello,
   EnvHelloOk,
+  EnvPayloadSchema,
   EnvRequest,
   EnvResponseError,
   EnvResponseOk,
   EnvStream,
+  EnvErrorFrame,
   RelayAttach,
   toPiError,
-  type EnvErrorFrame,
   type EnvHandle,
   type EnvOp as EnvOpType,
 } from "./protocol.ts";
+import {
+  workerdSocket,
+  workerdSocketFactory,
+  type SocketLike,
+  type WorkerdWebSocketLike,
+} from "./socket.ts";
 
-export type { EnvHandle } from "./protocol.ts";
+export {
+  workerdSocket,
+  workerdSocketFactory,
+  type SocketLike,
+  type WorkerdWebSocketLike,
+} from "./socket.ts";
+export { EnvHandle } from "./protocol.ts";
 import {
   ExecutionError,
   err,
@@ -48,7 +67,7 @@ import {
   type Result as PiResult,
   type ShellExecOptions,
 } from "@earendil-works/pi-agent-core";
-import { Schema } from "effect";
+import { Option, Schema } from "effect";
 import { decodeFrame, parseFrame, serializeFrame } from "@saku/wire";
 
 /**
@@ -71,78 +90,19 @@ export class EnvConnectionError extends Schema.TaggedError<EnvConnectionError>()
   },
 ) {}
 
-/**
- * The socket surface RemoteEnv needs: `on` listeners for the four
- * connection events, `send` for frames, `close` to drop. Both `ws`
- * sockets (node) and workerd `WebSocket`s satisfy it through adapters.
- */
-export interface SocketLike {
-  readonly send: (data: string) => void;
-  readonly close: () => void;
-  readonly on: (
-    event: "open" | "message" | "error" | "close",
-    listener: (data: unknown) => void,
-  ) => void;
-}
-
-/** The minimal workerd `WebSocket` surface the adapter needs. */
-export interface WorkerdWebSocketLike {
-  readonly send: (data: string) => void;
-  readonly close: () => void;
-  readonly addEventListener: (
-    event: string,
-    listener: (event: { readonly data?: unknown }) => void,
-  ) => void;
-}
-
-/** Adapt a workerd `WebSocket` to the `SocketLike` surface (DOs, celld). */
-export const workerdSocket = (ws: WorkerdWebSocketLike): SocketLike => ({
-  send: (data) => ws.send(data),
-  close: () => ws.close(),
-  on: (event, listener) => {
-    if (event === "message") {
-      ws.addEventListener("message", (ev) => listener(ev.data));
-    } else if (event === "error") {
-      ws.addEventListener("error", () =>
-        listener(new EnvConnectionError({ kind: "socket_error", message: "websocket error" })),
-      );
-    } else if (event === "close") {
-      ws.addEventListener("close", () => listener(undefined));
-    } else {
-      ws.addEventListener("open", () => listener(undefined));
-    }
-  },
-});
-
-/** A workerd socket factory for `RemoteEnv` (the DO's `socket` option). */
-export const workerdSocketFactory = (url: string): SocketLike =>
-  workerdSocket(new WebSocket(url) as unknown as WorkerdWebSocketLike);
-
-/** Binary ↔ base64 without node's Buffer (workerd has atob/btoa). */
-const bytesToBase64 = (bytes: Uint8Array): string => {
-  let binary = "";
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return btoa(binary);
-};
-
-const base64ToBytes = (encoded: string): Uint8Array => {
-  const binary = atob(encoded);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes;
-};
+/** An `env_response` frame, decoded at the socket boundary (ok/error). */
+const EnvResponse = Schema.Union([EnvResponseOk, EnvResponseError]);
+const DECODE_HELLO_OK = Schema.decodeUnknownOption(EnvHelloOk);
+const DECODE_ERROR_FRAME = Schema.decodeUnknownOption(EnvErrorFrame);
+const DECODE_STREAM = Schema.decodeUnknownOption(EnvStream);
+const DECODE_RESPONSE = Schema.decodeUnknownOption(EnvResponse);
 
 export interface RemoteEnvOptions {
   /** The daemon's endpoint: direct (host URL) or the hub's relay server. */
   readonly url: string;
   /** The env protocol token, presented in `env_hello`. */
   readonly token: string;
-  /** The socket factory: `nodeSocket` on node, `workerdSocket` in DOs. */
+  /** The socket factory: `nodeSocket` on node, `workerdSocketFactory` in DOs. */
   readonly socket: (url: string) => SocketLike;
   /** The workspace the connection's tools operate on (hello cwd). */
   readonly cwd?: string;
@@ -169,6 +129,9 @@ type EnvErrorLike = {
 
 const CONNECTION_LOST = new ExecutionError("unknown", "env connection closed");
 
+/** The node process object, when RemoteEnv runs on node (a DO has none). */
+const nodeProcess = globalThis as { process?: { cwd?: () => string } };
+
 /** pi's Result is structural ({ok, value}|{ok:false, error}); a narrow guard. */
 const isSuccess = <T, E>(
   outcome: PiResult<T, E>,
@@ -177,6 +140,9 @@ const isSuccess = <T, E>(
 /** The FileError boundary: after `isSuccess`, the failure is a FileError. */
 const asFile = <T>(outcome: PiResult<T, FileError | ExecutionError>): PiResult<T, FileError> =>
   outcome as PiResult<T, FileError>;
+
+/** The op's response payload type, read from the payload table (protocol.ts). */
+type PayloadOf<O extends EnvOpType> = (typeof EnvPayloadSchema)[O["_tag"]]["Type"];
 
 /**
  * The worker side of the env protocol. One instance per env connection
@@ -203,8 +169,7 @@ export class RemoteEnv implements ExecutionEnv {
   constructor(options: RemoteEnvOptions) {
     this.url = options.url;
     this.token = options.token;
-    this.cwd =
-      options.cwd ?? (globalThis as { process?: { cwd?: () => string } }).process?.cwd?.() ?? "/";
+    this.cwd = options.cwd ?? nodeProcess.process?.cwd?.() ?? "/";
     this.socketFactory = options.socket;
     this.relay = options.relay;
     this.requestTimeoutMs = options.requestTimeoutMs;
@@ -300,30 +265,37 @@ export class RemoteEnv implements ExecutionEnv {
     const frame = parsed as { _tag?: string };
 
     if (frame._tag === "env_hello_ok") {
-      this.onceHello?.resolve(frame as unknown as EnvHelloOk);
+      const hello = DECODE_HELLO_OK(parsed);
+      if (Option.isSome(hello)) this.onceHello?.resolve(hello.value);
       return;
     }
     if (frame._tag === "env_error") {
-      const message = (frame as unknown as EnvErrorFrame).message;
-      this.onceHello?.reject(new EnvConnectionError({ kind: "rejected", message }));
+      const error = DECODE_ERROR_FRAME(parsed);
+      if (Option.isSome(error)) {
+        this.onceHello?.reject(
+          new EnvConnectionError({ kind: "rejected", message: error.value.message }),
+        );
+      }
       return;
     }
     if (frame._tag === "env_stream") {
-      const stream = frame as unknown as EnvStream;
-      this.pending.get(stream.id)?.onStream?.(stream.kind, stream.text);
+      const stream = DECODE_STREAM(parsed);
+      if (Option.isSome(stream)) {
+        this.pending.get(stream.value.id)?.onStream?.(stream.value.kind, stream.value.text);
+      }
       return;
     }
     if (frame._tag === "env_response") {
-      const response = frame as unknown as EnvResponseOk | EnvResponseError;
-      const pending = this.pending.get(response.id);
+      const response = DECODE_RESPONSE(parsed);
+      if (Option.isNone(response)) return;
+      const pending = this.pending.get(response.value.id);
       if (pending === undefined) return;
-      this.pending.delete(response.id);
+      this.pending.delete(response.value.id);
       if (pending.timer !== undefined) clearTimeout(pending.timer);
-      if (response.ok) {
-        pending.resolve({ ok: true, payload: (response as EnvResponseOk).payload });
+      if (response.value.ok) {
+        pending.resolve({ ok: true, payload: response.value.payload });
       } else {
-        const error = (response as EnvResponseError).error;
-        pending.resolve({ ok: false, error });
+        pending.resolve({ ok: false, error: response.value.error });
       }
     }
   }
@@ -366,11 +338,11 @@ export class RemoteEnv implements ExecutionEnv {
             ok: false,
             error: { kind: "timeout", message: `env request timed out after ${effective}ms` },
           });
-          this.socket?.send(serializeFrame({ _tag: "env_abort", id }));
+          this.socket?.send(serializeFrame(EnvAbort.make({ id })));
         }, effective);
       }
       const onAbort = (): void => {
-        this.socket?.send(serializeFrame({ _tag: "env_abort", id }));
+        this.socket?.send(serializeFrame(EnvAbort.make({ id })));
       };
       options.abortSignal?.addEventListener("abort", onAbort, { once: true });
       this.pending.set(id, pending);
@@ -378,20 +350,33 @@ export class RemoteEnv implements ExecutionEnv {
     });
   }
 
-  /** The request→pi-Result boundary: failures become pi's error classes. */
-  private async op<T>(
-    op: EnvOpType,
+  /**
+   * The request→pi-Result boundary: the response payload is decoded
+   * against the op's entry in the payload table (protocol.ts), and
+   * failures become pi's error classes.
+   */
+  private async op<O extends EnvOpType>(
+    op: O,
     options: {
       onStream?: (kind: "stdout" | "stderr", text: string) => void;
       timeoutMs?: number;
       abortSignal?: AbortSignal;
     } = {},
-  ): Promise<PiResult<T, FileError | ExecutionError>> {
+  ): Promise<PiResult<PayloadOf<O>, FileError | ExecutionError>> {
     const outcome = await this.request(op, options);
     if (!outcome.ok) {
       return err(toPiError(outcome.error));
     }
-    return ok(outcome.payload as T);
+    // TS widens `EnvPayloadSchema[op._tag]` to the table's union for a
+    // generic tag; the schema the runtime decode uses is exactly the
+    // op's entry, so this is the only cast — the decode below is the
+    // boundary check that makes it safe.
+    const schema = EnvPayloadSchema[op._tag] as (typeof EnvPayloadSchema)[O["_tag"]];
+    const payload = Schema.decodeUnknownOption(schema)(outcome.payload);
+    if (Option.isNone(payload)) {
+      return err(toPiError({ kind: "invalid", message: `undecodable ${op._tag} payload` }));
+    }
+    return ok(payload.value);
   }
 
   /** Close the connection; in-flight requests fail with "env connection closed". */
@@ -404,27 +389,27 @@ export class RemoteEnv implements ExecutionEnv {
   // -- ExecutionEnv ---------------------------------------------------------
 
   /** File-channel ops: failures are FileErrors, the payload is the raw value. */
-  private fileOp<T>(op: EnvOpType): Promise<PiResult<T, FileError>> {
-    return this.op<T>(op) as Promise<PiResult<T, FileError>>;
+  private fileOp<O extends EnvOpType>(op: O): Promise<PiResult<PayloadOf<O>, FileError>> {
+    return this.op(op) as Promise<PiResult<PayloadOf<O>, FileError>>;
   }
 
   async absolutePath(path: string): Promise<PiResult<string, FileError>> {
-    return this.fileOp<string>({ _tag: "absolute_path", path });
+    return this.fileOp({ _tag: "absolute_path", path });
   }
 
   async joinPath(parts: string[]): Promise<PiResult<string, FileError>> {
-    return this.fileOp<string>({ _tag: "join_path", parts });
+    return this.fileOp({ _tag: "join_path", parts });
   }
 
   async readTextFile(path: string): Promise<PiResult<string, FileError>> {
-    return this.fileOp<string>({ _tag: "read_text_file", path });
+    return this.fileOp({ _tag: "read_text_file", path });
   }
 
   async readTextLines(
     path: string,
     options?: { maxLines?: number; abortSignal?: AbortSignal },
   ): Promise<PiResult<string[], FileError>> {
-    return this.fileOp<string[]>({
+    return this.fileOp({
       _tag: "read_text_lines",
       path,
       ...(options?.maxLines === undefined ? {} : { maxLines: options.maxLines }),
@@ -435,26 +420,26 @@ export class RemoteEnv implements ExecutionEnv {
     path: string,
     _signal?: AbortSignal,
   ): Promise<PiResult<Uint8Array, FileError>> {
-    const outcome = await this.fileOp<string>({ _tag: "read_binary_file", path });
+    const outcome = await this.fileOp({ _tag: "read_binary_file", path });
     return isSuccess(outcome) ? ok(base64ToBytes(outcome.value)) : asFile(outcome);
   }
 
   async writeFile(path: string, content: string | Uint8Array): Promise<PiResult<void, FileError>> {
     const binary = typeof content !== "string";
-    return this.fileOp<void>({
+    return this.fileOp({
       _tag: "write_file",
       path,
-      content: binary ? bytesToBase64(content as Uint8Array) : content,
+      content: binary ? bytesToBase64(content) : content,
       ...(binary ? { encoding: "base64" as const } : {}),
     });
   }
 
   async appendFile(path: string, content: string | Uint8Array): Promise<PiResult<void, FileError>> {
     const binary = typeof content !== "string";
-    return this.fileOp<void>({
+    return this.fileOp({
       _tag: "append_file",
       path,
-      content: binary ? bytesToBase64(content as Uint8Array) : content,
+      content: binary ? bytesToBase64(content) : content,
       ...(binary ? { encoding: "base64" as const } : {}),
     });
   }
@@ -463,30 +448,30 @@ export class RemoteEnv implements ExecutionEnv {
     sourcePath: string,
     destinationPath: string,
   ): Promise<PiResult<void, FileError>> {
-    return this.fileOp<void>({ _tag: "rename_file", sourcePath, destinationPath });
+    return this.fileOp({ _tag: "rename_file", sourcePath, destinationPath });
   }
 
   async fileInfo(path: string): Promise<PiResult<FileInfo, FileError>> {
-    return this.fileOp<FileInfo>({ _tag: "file_info", path });
+    return this.fileOp({ _tag: "file_info", path });
   }
 
   async listDir(path: string, _signal?: AbortSignal): Promise<PiResult<FileInfo[], FileError>> {
-    return this.fileOp<FileInfo[]>({ _tag: "list_dir", path });
+    return this.fileOp({ _tag: "list_dir", path });
   }
 
   async canonicalPath(path: string): Promise<PiResult<string, FileError>> {
-    return this.fileOp<string>({ _tag: "canonical_path", path });
+    return this.fileOp({ _tag: "canonical_path", path });
   }
 
   async exists(path: string): Promise<PiResult<boolean, FileError>> {
-    return this.fileOp<boolean>({ _tag: "exists", path });
+    return this.fileOp({ _tag: "exists", path });
   }
 
   async createDir(
     path: string,
     options?: { recursive?: boolean; abortSignal?: AbortSignal },
   ): Promise<PiResult<void, FileError>> {
-    return this.fileOp<void>({
+    return this.fileOp({
       _tag: "create_dir",
       path,
       ...(options?.recursive === undefined ? {} : { recursive: options.recursive }),
@@ -497,7 +482,7 @@ export class RemoteEnv implements ExecutionEnv {
     path: string,
     options?: { recursive?: boolean; force?: boolean; abortSignal?: AbortSignal },
   ): Promise<PiResult<void, FileError>> {
-    return this.fileOp<void>({
+    return this.fileOp({
       _tag: "remove",
       path,
       ...(options?.recursive === undefined ? {} : { recursive: options.recursive }),
@@ -506,7 +491,7 @@ export class RemoteEnv implements ExecutionEnv {
   }
 
   async createTempDir(prefix = "tmp-"): Promise<PiResult<string, FileError>> {
-    return this.fileOp<string>({
+    return this.fileOp({
       _tag: "create_temp_dir",
       ...(prefix === "tmp-" ? {} : { prefix }),
     });
@@ -516,7 +501,7 @@ export class RemoteEnv implements ExecutionEnv {
     prefix?: string;
     suffix?: string;
   }): Promise<PiResult<string, FileError>> {
-    return this.fileOp<string>({
+    return this.fileOp({
       _tag: "create_temp_file",
       ...(options?.prefix === undefined ? {} : { prefix: options.prefix }),
       ...(options?.suffix === undefined ? {} : { suffix: options.suffix }),
@@ -531,7 +516,7 @@ export class RemoteEnv implements ExecutionEnv {
     command: string,
     options?: ShellExecOptions,
   ): Promise<PiResult<{ stdout: string; stderr: string; exitCode: number }, ExecutionError>> {
-    const outcome = await this.op<{ stdout: string; stderr: string; exitCode: number }>(
+    const outcome = await this.op(
       {
         _tag: "exec",
         command,
@@ -559,9 +544,26 @@ export class RemoteEnv implements ExecutionEnv {
 
   /** The env's health payload: workspace, pid, protocol version. */
   async health(): Promise<PiResult<{ cwd: string; pid: number; version: string }, ExecutionError>> {
-    const outcome = await this.op<{ cwd: string; pid: number; version: string }>({
-      _tag: "health",
-    });
+    const outcome = await this.op({ _tag: "health" });
     return outcome as PiResult<{ cwd: string; pid: number; version: string }, ExecutionError>;
   }
 }
+
+/** Binary ↔ base64 without node's Buffer (workerd has atob/btoa). */
+const bytesToBase64 = (bytes: Uint8Array): string => {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+};
+
+const base64ToBytes = (encoded: string): Uint8Array => {
+  const binary = atob(encoded);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+};

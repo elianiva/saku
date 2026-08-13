@@ -13,6 +13,8 @@
  *   connection, the shared connection handler
  * - `remote.ts` — `RemoteEnv`: the worker's `ExecutionEnv` over the wire
  *   (direct host URL, or attached through the hub's relay)
+ * - `socket.ts` — the one socket surface: `SocketLike` + the workerd
+ *   and node `ws` adapters every connection drives
  * - `relay.ts` — the daemon's outbound registration with the hub (no open
  *   ports on the user's machine)
  */
@@ -33,13 +35,13 @@ export {
   EnvPayloadSchema,
   EnvFileInfo,
   EnvFileKind,
+  EnvHandle,
   toPiError,
 } from "./protocol.ts";
 export type {
   EnvError,
   EnvOp as EnvOpType,
   EnvFileInfo as EnvFileInfoType,
-  EnvHandle,
   EnvHello as EnvHelloType,
   EnvHelloOk as EnvHelloOkType,
   EnvErrorFrame as EnvErrorFrameType,
@@ -54,15 +56,13 @@ export {
   type EnvDaemonShape,
   type EnvConnectionContext,
 } from "./daemon.ts";
+export { RemoteEnv, EnvConnectionError, type RemoteEnvOptions } from "./remote.ts";
 export {
-  RemoteEnv,
-  EnvConnectionError,
   workerdSocket,
   workerdSocketFactory,
+  nodeSocket,
   type SocketLike,
   type WorkerdWebSocketLike,
-  type RemoteEnvOptions,
-} from "./remote.ts";
-export { nodeSocket } from "./remote-node.ts";
+} from "./socket.ts";
 export { makeEnvRelayClient, type RelayClientOptions, type RelayClientShape } from "./relay.ts";
 export * from "./paths.ts";

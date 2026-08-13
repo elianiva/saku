@@ -17,9 +17,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect, Exit, FileSystem, Scope } from "effect";
 import { FileError } from "@earendil-works/pi-agent-core";
-import { nodeSocket } from "../src/remote-node.ts";
-
-import { makeEnvDaemon, RemoteEnv, type EnvDaemonShape } from "../src/index.ts";
+import { makeEnvDaemon, nodeSocket, RemoteEnv, type EnvDaemonShape } from "../src/index.ts";
 
 const TOKEN = "test-token";
 
@@ -177,5 +175,9 @@ describe("env daemon", () => {
     expect(dir.ok && dir.value.includes("saku-")).toBe(true);
     const file = await env.createTempFile({ prefix: "saku-f" });
     expect(file.ok && file.value.includes("saku-f")).toBe(true);
+    // The suffix rides the wire too (the daemon forwards both fields).
+    const suffixed = await env.createTempFile({ prefix: "saku-f", suffix: ".txt" });
+    expect(suffixed.ok && suffixed.value.includes("saku-f")).toBe(true);
+    expect(suffixed.ok && suffixed.value.endsWith(".txt")).toBe(true);
   });
 });

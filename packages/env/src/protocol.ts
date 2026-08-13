@@ -97,7 +97,10 @@ export type EnvError = S.Schema.Type<typeof EnvError>;
 export const EnvResponseOk = S.TaggedStruct("env_response", {
   id: S.String,
   ok: S.Literal(true),
-  payload: S.Unknown,
+  // The wire omits the payload of void ops (JSON drops `undefined`), so
+  // the field is optional — the client decodes it per op with
+  // `EnvPayloadSchema` below.
+  payload: S.optional(S.Unknown),
 });
 export type EnvResponseOk = S.Schema.Type<typeof EnvResponseOk>;
 
@@ -186,24 +189,26 @@ export const EnvOp = S.Union([
 export type EnvOp = S.Schema.Type<typeof EnvOp>;
 
 /**
- * The payload schemas, keyed by op tag: every payload is the op's raw
+ * The op/payload table, keyed by op tag: every payload is the op's raw
  * value — pi's own shape for file ops (string, string[], FileInfo, ...),
- * `undefined` for mutations. The daemon encodes these; the client decodes
- * per op (documentation + decode checks; the frames themselves are
- * schema-typed at the boundaries).
+ * `undefined` for mutations. This table is the single source of truth
+ * for response payloads, live at both boundaries: the daemon encodes
+ * each response against it (daemon.ts), the client decodes each response
+ * payload against it (remote.ts) — the wire contract is decoded, never
+ * cast.
  */
 export const EnvPayloadSchema = {
   health: S.Struct({ cwd: S.String, pid: S.Number, version: S.String }),
   absolute_path: S.String,
   join_path: S.String,
   read_text_file: S.String,
-  read_text_lines: S.Array(S.String),
+  read_text_lines: S.mutable(S.Array(S.String)),
   read_binary_file: S.String,
   write_file: S.Void,
   append_file: S.Void,
   rename_file: S.Void,
   file_info: EnvFileInfo,
-  list_dir: S.Array(EnvFileInfo),
+  list_dir: S.mutable(S.Array(EnvFileInfo)),
   canonical_path: S.String,
   exists: S.Boolean,
   create_dir: S.Void,
