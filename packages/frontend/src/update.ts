@@ -48,10 +48,7 @@ const withThread = (model: Model, thread: ThreadInfo): Model => {
 /** Wire events for the active thread fold through the live state machine. */
 const foldActive = (model: Model, event: SessionEventProjection): UpdateReturn => {
   const [next, scroll] = foldLive({ trail: model.trail, live: model.live }, event);
-  return [
-    { ...model, trail: next.trail, live: next.live },
-    scroll ? [ScrollTrailCmd()] : none,
-  ];
+  return [{ ...model, trail: next.trail, live: next.live }, scroll ? [ScrollTrailCmd()] : none];
 };
 
 // -- update -----------------------------------------------------------------

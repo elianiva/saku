@@ -62,13 +62,10 @@ describe("env daemon", () => {
     const bad = new RemoteEnv({ url: daemon.url, token: "nope", socket: nodeSocket });
     await expect(bad.connect()).rejects.toThrow("invalid token");
 
-    const old = new RemoteEnv({ url: daemon.url, token: TOKEN, socket: nodeSocket });
-    // Force a version mismatch by connecting with a stale protocol version:
-    // RemoteEnv pins ENV_VERSION, so speak raw frames for this one.
     const raw = new WebSocket(daemon.url);
     await new Promise<void>((resolve) => raw.on("open", () => resolve()));
     const frames: string[] = [];
-    raw.on("message", (data) => frames.push(data.toString()));
+    raw.on("message", (data: Buffer) => frames.push(data.toString("utf8")));
     raw.send(
       JSON.stringify({ _tag: "env_hello", token: TOKEN, version: "0", cwd: workdir }) + "\n",
     );

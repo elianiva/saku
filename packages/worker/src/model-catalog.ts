@@ -113,13 +113,15 @@ class AuthJsonCredentialStore implements CredentialStore {
     const next = await fn(this.data[providerId]);
     if (next === undefined) return this.data[providerId];
     this.data[providerId] = next;
-    this.persist();
+    // Best-effort write-back: the in-memory credential is already updated;
+    // a failed persist must not fail the auth flow.
+    void this.persist().catch(() => undefined);
     return next;
   }
 
   async delete(providerId: string): Promise<void> {
     delete this.data[providerId];
-    this.persist();
+    void this.persist().catch(() => undefined);
   }
 
   private async persist(): Promise<void> {

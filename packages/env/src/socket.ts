@@ -79,7 +79,7 @@ const makeRegistry = () => {
   const off = (event: string, listener: (data: unknown) => void): boolean => {
     const set = listeners.get(event);
     if (set === undefined) return true;
-    for (const entry of [...set]) {
+    for (const entry of set) {
       if (entry.listener === listener) set.delete(entry);
     }
     if (set.size === 0) {
@@ -91,7 +91,7 @@ const makeRegistry = () => {
   const dispatch = (event: string, data: unknown): void => {
     const set = listeners.get(event);
     if (set === undefined) return;
-    for (const entry of [...set]) {
+    for (const entry of set) {
       if (entry.once) set.delete(entry);
       entry.listener(data);
     }

@@ -140,9 +140,7 @@ export const spawn = (config: DaemonLifecycleConfig): Effect.Effect<number, CliE
         }),
     ).pipe(Effect.mapError(spawnFailure(config.label)));
     // The child holds the inherited fd; drop the parent's handle.
-    yield* Effect.tryPromise(() => logFd.close()).pipe(
-      Effect.mapError(spawnFailure(config.label)),
-    );
+    yield* Effect.tryPromise(() => logFd.close()).pipe(Effect.mapError(spawnFailure(config.label)));
     child.unref();
     return pid;
   });
@@ -153,11 +151,7 @@ export const spawn = (config: DaemonLifecycleConfig): Effect.Effect<number, CliE
  */
 export const waitForUp = (
   config: DaemonLifecycleConfig,
-): Effect.Effect<
-  DaemonStatus & { pid: number; url: string; token: string },
-  undefined,
-  never
-> =>
+): Effect.Effect<DaemonStatus & { pid: number; url: string; token: string }, undefined, never> =>
   status(config).pipe(
     Effect.filterOrFail(
       (current): current is DaemonStatus & { pid: number; url: string; token: string } =>

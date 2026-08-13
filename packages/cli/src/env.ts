@@ -100,8 +100,7 @@ export const envLifecycle = (hubUrl?: string): DaemonLifecycleConfig => ({
       env.close();
       return Option.match(hello, {
         onNone: () => Option.none(),
-        onSome: (value) =>
-          Option.some({ pid: value.pid, version: value.version, cwd: value.cwd }),
+        onSome: (value) => Option.some({ pid: value.pid, version: value.version, cwd: value.cwd }),
       });
     }),
   args: Effect.gen(function* () {

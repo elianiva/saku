@@ -82,7 +82,8 @@ const isTaggedFrame = (frame: unknown): frame is { readonly _tag: string } =>
   typeof frame === "object" && frame !== null && "_tag" in frame;
 
 /** The `_tag` of a decoded frame, for order-insensitive assertions. */
-const tagOf = (frame: unknown): string | undefined => (isTaggedFrame(frame) ? frame._tag : undefined);
+const tagOf = (frame: unknown): string | undefined =>
+  isTaggedFrame(frame) ? frame._tag : undefined;
 
 describe("handshake", () => {
   it("completes and reports the wire version", async () => {
@@ -516,7 +517,9 @@ describe("server robustness", () => {
     expect(frames).toContainEqual({ _tag: "error", message: "malformed JSON frame" });
 
     // The connection survives: a hello still completes.
-    socket.send(serializeFrame(Hello.make({ token: TEST_TOKEN, role: "cli", version: WIRE_VERSION })));
+    socket.send(
+      serializeFrame(Hello.make({ token: TEST_TOKEN, role: "cli", version: WIRE_VERSION })),
+    );
     await wait();
     expect(frames.map(tagOf)).toContain("hello_ok");
     socket.close();
@@ -536,7 +539,9 @@ describe("server robustness", () => {
     const socket = await rawClient();
     const frames = collectFrames(socket);
 
-    socket.send(serializeFrame(Hello.make({ token: TEST_TOKEN, role: "cli", version: WIRE_VERSION })));
+    socket.send(
+      serializeFrame(Hello.make({ token: TEST_TOKEN, role: "cli", version: WIRE_VERSION })),
+    );
     await wait();
     expect(frames.map(tagOf)).toContain("hello_ok");
 

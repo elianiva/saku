@@ -24,7 +24,6 @@
  */
 
 import { Effect, Option } from "effect";
-import type { ExecutionEnv, StreamFn } from "@earendil-works/pi-agent-core";
 import { RemoteEnv, workerdSocketFactory, type EnvHandle } from "@saku/env/remote";
 import {
   SessionHost,
@@ -36,7 +35,7 @@ import {
   type ThreadRecord,
 } from "@saku/worker/isolate";
 import { type ResponsePayload, type SessionCommand } from "@saku/wire";
-import type { HubEventSink, WorkerReport } from "@saku/hub/core";
+import type { WorkerReport } from "@saku/hub/core";
 import { KvStore } from "@saku/store";
 
 import { varOrDefault, type DeploymentEnv } from "./env.ts";

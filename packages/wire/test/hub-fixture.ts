@@ -53,7 +53,6 @@ import {
   type ThreadCommand,
   type ThreadInfo,
   type ThreadMode,
-  type WireEvent,
 } from "../src/index.ts";
 import { makeWireServer, listenWs, wsUrlOf } from "../src/server-core.ts";
 
@@ -174,7 +173,7 @@ export const startHubFixture = (): Effect.Effect<HubFixture, Error, never> =>
     };
 
     /** Settle one run: append the fake entry, broadcast it, go idle. */
-    const settleRun = (thread: ScriptedThread, text: string): Effect.Effect<void, never> =>
+    const settleRun = (thread: ScriptedThread, _text: string): Effect.Effect<void, never> =>
       Effect.gen(function* () {
         const entry = { seq: thread.nextSeq++, type: "user_message", id: `e${thread.nextSeq - 1}` };
         thread.entries.push(entry);
@@ -262,7 +261,11 @@ export const startHubFixture = (): Effect.Effect<HubFixture, Error, never> =>
             Effect.sync(() => {
               const skill: SkillInfo = {
                 id: randomUUID().replaceAll("-", ""),
-                name: command.source.split("/").pop()?.replace(/\.git$/u, "") ?? "skill",
+                name:
+                  command.source
+                    .split("/")
+                    .pop()
+                    ?.replace(/\.git$/u, "") ?? "skill",
                 scope: command.scope ?? "personal",
                 source: command.source,
                 version: null,
@@ -274,7 +277,10 @@ export const startHubFixture = (): Effect.Effect<HubFixture, Error, never> =>
             Effect.gen(function* () {
               if (!skills.has(command.id)) {
                 return yield* Effect.fail(
-                  new FixtureError({ kind: "unknown_skill", message: `unknown skill: ${command.id}` }),
+                  new FixtureError({
+                    kind: "unknown_skill",
+                    message: `unknown skill: ${command.id}`,
+                  }),
                 );
               }
               skills.delete(command.id);
@@ -381,7 +387,9 @@ export const startHubFixture = (): Effect.Effect<HubFixture, Error, never> =>
                   entries: thread.entries.filter((e) => e.seq > (sinceSeq ?? 0)),
                   tailSeq: thread.nextSeq - 1,
                   leafId:
-                    thread.entries.length === 0 ? null : thread.entries[thread.entries.length - 1]!.id,
+                    thread.entries.length === 0
+                      ? null
+                      : thread.entries[thread.entries.length - 1]!.id,
                 }),
               ),
             branch: ({ entryId }) =>

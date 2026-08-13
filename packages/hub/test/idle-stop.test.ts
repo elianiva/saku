@@ -86,7 +86,7 @@ const makeWorld = async (): Promise<World> => {
 };
 
 /** Script a prompt that reports working → idle (the mock worker's habit). */
-const scriptPrompt = (world: World, text: string): void => {
+const scriptPrompt = (world: World, _text: string): void => {
   world.worker.onCommand((threadId, command) => {
     if (command._tag !== "prompt") {
       return Effect.fail(makeHubError("command", `unscripted command: ${command._tag}`));

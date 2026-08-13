@@ -90,7 +90,7 @@ const railList = (model: Model, h: HtmlBuilder<AppMessage>): Html => {
     case "ready":
       return h.div(
         [h.Class("flex-1 overflow-y-auto min-h-0")],
-        [...model.rail.threads.map((thread) => threadRow(thread, model.active, h))],
+        model.rail.threads.map((thread) => threadRow(thread, model.active, h)),
       );
   }
 };

@@ -80,7 +80,10 @@ const compactionEnd: SessionEventProjection = {
   reason: "manual",
   aborted: false,
 };
-const unhandled: SessionEventProjection = { _tag: "unhandled", event: { type: "some_future_event" } };
+const unhandled: SessionEventProjection = {
+  _tag: "unhandled",
+  event: { type: "some_future_event" },
+};
 
 // -- the message stream -----------------------------------------------------
 
@@ -100,7 +103,11 @@ describe("message stream", () => {
     // Streaming semantics: every update carries the current full text
     // (start/update/end replace, never append — an empty text keeps the
     // previous value, see below).
-    const state = fold(initialLive(), messageStart([textBlock("hello")]), messageUpdate([textBlock("there")]));
+    const state = fold(
+      initialLive(),
+      messageStart([textBlock("hello")]),
+      messageUpdate([textBlock("there")]),
+    );
     expect(state.live.message).toBe("there");
   });
 
@@ -172,12 +179,22 @@ describe("tool execution", () => {
   });
 
   it("leaves the tools untouched for an unknown call id", () => {
-    const state = fold(initialLive(), toolStart("call_1"), toolUpdate("call_9", "x"), toolEnd("call_9", "y"));
+    const state = fold(
+      initialLive(),
+      toolStart("call_1"),
+      toolUpdate("call_9", "x"),
+      toolEnd("call_9", "y"),
+    );
     expect(state.live.tools).toEqual([{ callId: "call_1", name: "bash", state: "running" }]);
   });
 
   it("stringifies non-string partials and results", () => {
-    const state = fold(initialLive(), toolStart("call_1"), toolUpdate("call_1", { lines: 3 }), toolEnd("call_1", [1, 2]));
+    const state = fold(
+      initialLive(),
+      toolStart("call_1"),
+      toolUpdate("call_1", { lines: 3 }),
+      toolEnd("call_1", [1, 2]),
+    );
     expect(state.live.tools[0]?.partial).toBe('{"lines":3}');
     expect(state.live.tools[0]?.result).toBe("[1,2]");
   });
@@ -196,7 +213,10 @@ describe("tool execution", () => {
 
 describe("entry_appended", () => {
   it("grows the trail and bumps tailSeq", () => {
-    const [state, scroll] = foldLive(ready([entry("e1", "message", 1)], 1), entryAppended(entry("e2", "message", 5)));
+    const [state, scroll] = foldLive(
+      ready([entry("e1", "message", 1)], 1),
+      entryAppended(entry("e2", "message", 5)),
+    );
     expect(state.trail).toEqual({
       _tag: "ready",
       entries: [entry("e1", "message", 1), entry("e2", "message", 5)],
@@ -206,7 +226,10 @@ describe("entry_appended", () => {
   });
 
   it("never lowers tailSeq", () => {
-    const state = fold(ready([entry("e1", "message", 10)], 10), entryAppended(entry("e2", "message")));
+    const state = fold(
+      ready([entry("e1", "message", 10)], 10),
+      entryAppended(entry("e2", "message")),
+    );
     expect(state.trail).toEqual({
       _tag: "ready",
       entries: [entry("e1", "message", 10), entry("e2", "message")],

@@ -29,11 +29,9 @@ import type { EntryProjection, MessageProjection } from "./projection.ts";
 export const threadPane = (model: Model, h: HtmlBuilder<AppMessage>): Html =>
   h.section(
     [h.Class("flex-1 flex flex-col min-w-0 min-h-0")],
-    [
-      ...(model.active === null
-        ? [emptyState(model, h)]
-        : [threadHeader(model, h), trailArea(model, h), composerArea(model, h)]),
-    ],
+    model.active === null
+      ? [emptyState(model, h)]
+      : [threadHeader(model, h), trailArea(model, h), composerArea(model, h)],
   );
 
 // -- header -----------------------------------------------------------------
@@ -210,22 +208,20 @@ const renderMessageEntry = (message: MessageProjection, h: HtmlBuilder<AppMessag
           : [
               h.div(
                 [h.Class("mt-2 flex flex-col gap-1")],
-                [
-                  ...calls.map((call) =>
-                    h.div(
-                      [
-                        h.Class(
-                          "flex items-baseline gap-2 border border-line bg-surface px-2 py-1 text-[12px]",
-                        ),
-                      ],
-                      [
-                        h.span([h.Class("text-pine shrink-0")], ["▸"]),
-                        h.span([h.Class("font-bold shrink-0")], [call.name]),
-                        h.span([h.Class("text-muted truncate")], [call.args]),
-                      ],
-                    ),
+                calls.map((call) =>
+                  h.div(
+                    [
+                      h.Class(
+                        "flex items-baseline gap-2 border border-line bg-surface px-2 py-1 text-[12px]",
+                      ),
+                    ],
+                    [
+                      h.span([h.Class("text-pine shrink-0")], ["▸"]),
+                      h.span([h.Class("font-bold shrink-0")], [call.name]),
+                      h.span([h.Class("text-muted truncate")], [call.args]),
+                    ],
                   ),
-                ],
+                ),
               ),
             ]),
       ],
@@ -277,7 +273,7 @@ const liveRegion = (model: Model, h: HtmlBuilder<AppMessage>): Html => {
         ? [
             h.div(
               [h.Class("px-4 pb-3 flex flex-col gap-1")],
-              [...live.tools.map((tool) => liveToolRow(tool, h))],
+              live.tools.map((tool) => liveToolRow(tool, h)),
             ),
           ]
         : []),

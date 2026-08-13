@@ -16,7 +16,18 @@
  */
 
 import { WebSocketServer, type WebSocket } from "ws";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
+
+/**
+ * A synthesized server startup failure: the listener came up without an
+ * address (unreachable for a loopback TCP listener, but a startup failure
+ * when it happens — tagged so the callers' `onError` mappers stay
+ * structural, never message-matched).
+ */
+export class WsServerError extends Schema.TaggedError<WsServerError>()("WsServerError", {
+  kind: Schema.Literals(["no_address"]),
+  message: Schema.String,
+}) {}
 
 /** Listen on an ephemeral loopback port; resolves once listening. Startup failures fail with the caller's tagged error via onError. The server closes on interruption/failure. */
 export const listenWs = <E>(options: {
@@ -37,7 +48,13 @@ export const listenWs = <E>(options: {
       if (address === null || typeof address === "string") {
         // Unreachable for a TCP loopback listener; still a startup failure.
         server.close();
-        resume(Effect.fail(options.onError(new Error("no listening address"))));
+        resume(
+          Effect.fail(
+            options.onError(
+              new WsServerError({ kind: "no_address", message: "no listening address" }),
+            ),
+          ),
+        );
         return;
       }
       resume(Effect.succeed(server));

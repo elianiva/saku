@@ -15,11 +15,7 @@ import { ThreadMode, type ThreadInfo, type ThreadState } from "@saku/wire";
 import { isNotFound } from "@saku/store";
 import { getThreadDir, getThreadFile } from "./paths.ts";
 import { RegistryError } from "./registry-error.ts";
-import {
-  DECODE_THREAD_RECORD,
-  ThreadRecordSchema,
-  type ThreadRecord,
-} from "./registry-record.ts";
+import { DECODE_THREAD_RECORD, type ThreadRecord } from "./registry-record.ts";
 
 export { ThreadRecordSchema, type ThreadRecord } from "./registry-record.ts";
 

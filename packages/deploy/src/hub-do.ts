@@ -52,7 +52,7 @@ const boxProvisioner = (env: DeploymentEnv) =>
     // The env daemon bundle is embedded at build time (scripts/
     // embed-env-bundle.ts): a DO cannot read the filesystem.
     readBundle: () =>
-      Effect.gen(function* () {
+      Effect.sync(() => {
         const binary = atob(ENV_BUNDLE_BASE64);
         const bytes = new Uint8Array(binary.length);
         for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);

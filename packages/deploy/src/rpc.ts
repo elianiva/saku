@@ -16,7 +16,6 @@ import {
   type HubRecord,
   type ThreadWorkerRef,
   type WorkerCommandResult,
-  type WorkerReport,
 } from "@saku/hub/core";
 import type { ThreadRecord } from "@saku/worker/isolate";
 

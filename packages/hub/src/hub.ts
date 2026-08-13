@@ -144,7 +144,7 @@ export const makeHub = (deps: HubDeps): Effect.Effect<HubShape, never, never> =>
     const notify = (event: HubEvent): void => {
       // A throwing listener must not take the hub down. The snapshot keeps
       // a listener that unsubscribes itself mid-notify from starving others.
-      for (const listener of [...listeners]) {
+      for (const listener of Array.from(listeners)) {
         const result = Result.try(() => listener(event));
         if (Result.isFailure(result)) {
           console.warn(`[hub] listener failed: ${messageOf(result.failure)}`);

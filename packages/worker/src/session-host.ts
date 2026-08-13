@@ -316,8 +316,7 @@ export const SessionHost = {
       > =>
         Effect.gen(function* () {
           const log = yield* Effect.tryPromise({
-            try: () =>
-              session.getLog({ ...(sinceSeq === undefined ? {} : { afterSeq: sinceSeq }) }),
+            try: () => session.getLog(sinceSeq === undefined ? {} : { afterSeq: sinceSeq }),
             catch: toSessionHostError,
           });
           const entries = entriesFromLog(log);

@@ -59,7 +59,13 @@ import {
   type ThreadState,
   type WireModelInfo,
 } from "@saku/wire";
-import { listenWs, makeWireServer, wsUrlOf, type ServerSocket, type WireServerShape } from "@saku/wire/server";
+import {
+  listenWs,
+  makeWireServer,
+  wsUrlOf,
+  type ServerSocket,
+  type WireServerShape,
+} from "@saku/wire/server";
 
 import { ensureAuthToken, ensureSakuDirs } from "./auth.ts";
 import { getThreadTrailRoot, getWorkerUrlPath } from "./paths.ts";

@@ -40,15 +40,9 @@ import {
   EnvErrorFrame,
   RelayAttach,
   toPiError,
-  type EnvHandle,
   type EnvOp as EnvOpType,
 } from "./protocol.ts";
-import {
-  workerdSocket,
-  workerdSocketFactory,
-  type SocketLike,
-  type WorkerdWebSocketLike,
-} from "./socket.ts";
+import { type SocketLike } from "./socket.ts";
 
 export {
   workerdSocket,

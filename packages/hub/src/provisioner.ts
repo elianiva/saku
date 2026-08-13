@@ -206,7 +206,10 @@ const bootstrapBox = (
 class HostUrlPending extends Schema.TaggedError<HostUrlPending>()("HostUrlPending", {}) {}
 
 /** Read the box's host.url, retrying until the wrapper has written it. */
-const readHostUrl = (deps: ProvisionerDeps, boxId: string): Effect.Effect<string, HubError, never> =>
+const readHostUrl = (
+  deps: ProvisionerDeps,
+  boxId: string,
+): Effect.Effect<string, HubError, never> =>
   Effect.gen(function* () {
     const fail = toHubError(`box ${boxId} host.url read failed`);
     const attempt = Effect.gen(function* () {

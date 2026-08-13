@@ -23,7 +23,7 @@
  */
 
 import { Cause, Deferred, Effect, Option, Ref, Result, Schedule, Schema } from "effect";
-import { Event, Machine, State, type ActorRef, type MachineType } from "effect-machine";
+import { Event, Machine, State, type MachineType } from "effect-machine";
 import type {
   CompactResult,
   Entry,
@@ -425,8 +425,8 @@ const makeMachine = (
 // ---------------------------------------------------------------------------
 
 interface CommandSpec<A extends object, K extends ResponsePayload["_tag"], T> {
-  /** Build the command's wire payload from the method's arguments. */
-  readonly make: (args: A) => SessionCommand | ThreadCommand | SkillCommand;
+  /** The command's schema; its static `make` builds the wire payload. */
+  readonly schema: { readonly make: (args: A) => SessionCommand | ThreadCommand | SkillCommand };
   /** Session commands ride the frame's threadId; hub-level commands don't. */
   readonly threadScoped: boolean;
   /** The response variant this command's reply carries. */
@@ -435,68 +435,62 @@ interface CommandSpec<A extends object, K extends ResponsePayload["_tag"], T> {
   readonly extract: (payload: SessionResponse<K>) => T;
 }
 
-/** One registry row: the command's make, its scoping, and its extractor. */
+/** One registry row: the command's schema, its scoping, and its extractor. */
 const command = <A extends object, K extends ResponsePayload["_tag"], T>(
   threadScoped: boolean,
   tag: K,
-  make: (args: A) => SessionCommand | ThreadCommand | SkillCommand,
+  schema: { readonly make: (args: A) => SessionCommand | ThreadCommand | SkillCommand },
   extract: (payload: SessionResponse<K>) => T,
-): CommandSpec<A, K, T> => ({ make, threadScoped, tag, extract });
+): CommandSpec<A, K, T> => ({ schema, threadScoped, tag, extract });
 
 /** One row per wire command; the client methods are thin derivations. */
 const COMMANDS = {
   // -- threads (hub-level: no threadId on the frame)
-  listThreads: command(false, "list_threads", ListThreadsCommand.make, (p) => [...p.threads]),
-  createThread: command(false, "create_thread", CreateThreadCommand.make, (p) => p.thread),
-  getThread: command(false, "get_thread", GetThreadCommand.make, (p) => p.thread),
-  renameThread: command(false, "rename_thread", RenameThreadCommand.make, (p) => p.thread),
-  deleteThread: command(false, "delete_thread", DeleteThreadCommand.make, () => undefined),
+  listThreads: command(false, "list_threads", ListThreadsCommand, (p) => [...p.threads]),
+  createThread: command(false, "create_thread", CreateThreadCommand, (p) => p.thread),
+  getThread: command(false, "get_thread", GetThreadCommand, (p) => p.thread),
+  renameThread: command(false, "rename_thread", RenameThreadCommand, (p) => p.thread),
+  deleteThread: command(false, "delete_thread", DeleteThreadCommand, () => undefined),
   // -- session (thread-scoped)
-  prompt: command(true, "prompt", PromptCommand.make, () => undefined),
-  steer: command(true, "steer", SteerCommand.make, () => undefined),
-  followUp: command(true, "follow_up", FollowUpCommand.make, () => undefined),
-  abort: command(true, "abort", AbortCommand.make, () => undefined),
-  setSteeringMode: command(true, "set_steering_mode", SetSteeringModeCommand.make, () => undefined),
-  setFollowUpMode: command(true, "set_follow_up_mode", SetFollowUpModeCommand.make, () => undefined),
-  compact: command(true, "compact", CompactCommand.make, (p) => narrowPi<CompactResult>(p.result)),
+  prompt: command(true, "prompt", PromptCommand, () => undefined),
+  steer: command(true, "steer", SteerCommand, () => undefined),
+  followUp: command(true, "follow_up", FollowUpCommand, () => undefined),
+  abort: command(true, "abort", AbortCommand, () => undefined),
+  setSteeringMode: command(true, "set_steering_mode", SetSteeringModeCommand, () => undefined),
+  setFollowUpMode: command(true, "set_follow_up_mode", SetFollowUpModeCommand, () => undefined),
+  compact: command(true, "compact", CompactCommand, (p) => narrowPi<CompactResult>(p.result)),
   setAutoCompaction: command(
     true,
     "set_auto_compaction",
-    SetAutoCompactionCommand.make,
+    SetAutoCompactionCommand,
     () => undefined,
   ),
-  getAvailableModels: command(
-    true,
-    "get_available_models",
-    GetAvailableModelsCommand.make,
-    (p) => [...p.models],
-  ),
-  setModel: command(true, "set_model", SetModelCommand.make, (p) => p.model),
+  getAvailableModels: command(true, "get_available_models", GetAvailableModelsCommand, (p) => [
+    ...p.models,
+  ]),
+  setModel: command(true, "set_model", SetModelCommand, (p) => p.model),
   getAvailableThinkingLevels: command(
     true,
     "get_available_thinking_levels",
-    GetAvailableThinkingLevelsCommand.make,
+    GetAvailableThinkingLevelsCommand,
     (p) => [...p.levels],
   ),
-  setThinkingLevel: command(true, "set_thinking_level", SetThinkingLevelCommand.make, (p) => p.level),
-  getEntries: command(true, "get_entries", GetEntriesCommand.make, (p) => ({
+  setThinkingLevel: command(true, "set_thinking_level", SetThinkingLevelCommand, (p) => p.level),
+  getEntries: command(true, "get_entries", GetEntriesCommand, (p) => ({
     entries: narrowPi<Entry[]>(p.entries),
     tailSeq: p.tailSeq,
     leafId: p.leafId,
   })),
-  branch: command(true, "branch", BranchCommand.make, (p) => p.leafId),
-  getSessionStats: command(
-    true,
-    "get_session_stats",
-    GetSessionStatsCommand.make,
-    (p) => narrowPi<SessionStats>(p.stats),
+  branch: command(true, "branch", BranchCommand, (p) => p.leafId),
+  getSessionStats: command(true, "get_session_stats", GetSessionStatsCommand, (p) =>
+    narrowPi<SessionStats>(p.stats),
   ),
-  setSessionName: command(true, "set_session_name", SetSessionNameCommand.make, () => undefined),
-  getState: command(true, "get_state", GetStateCommand.make, (p) => p.state),
+  setSessionName: command(true, "set_session_name", SetSessionNameCommand, () => undefined),
+  getState: command(true, "get_state", GetStateCommand, (p) => p.state),
   // -- skills (hub-level)
-  listSkills: command(false, "list_skills", ListSkillsCommand.make, (p) => [...p.skills]),
-  importSkill: command(false, "import_skill", ImportSkillCommand.make, (p) => p.skill),
-  deleteSkill: command(false, "delete_skill", DeleteSkillCommand.make, () => undefined),
+  listSkills: command(false, "list_skills", ListSkillsCommand, (p) => [...p.skills]),
+  importSkill: command(false, "import_skill", ImportSkillCommand, (p) => p.skill),
+  deleteSkill: command(false, "delete_skill", DeleteSkillCommand, () => undefined),
 };
 
 /** Resolve a correlated request; a late/abandoned id is a no-op. */
@@ -781,7 +775,7 @@ export const makeWireClient = (
           _tag: "command",
           id,
           ...(threadId === undefined ? {} : { threadId }),
-          command: spec.make(args),
+          command: spec.schema.make(args),
         };
         const deferred = yield* Deferred.make<ResponsePayload, WireError>();
         yield* Ref.update(pendingRef, (pending) => new Map(pending).set(id, deferred));
@@ -838,7 +832,8 @@ export const makeWireClient = (
         request(COMMANDS.setModel, { provider, modelId }, threadId),
       getAvailableThinkingLevels: (threadId) =>
         request(COMMANDS.getAvailableThinkingLevels, {}, threadId),
-      setThinkingLevel: (threadId, level) => request(COMMANDS.setThinkingLevel, { level }, threadId),
+      setThinkingLevel: (threadId, level) =>
+        request(COMMANDS.setThinkingLevel, { level }, threadId),
       getEntries: (threadId, sinceSeq) => request(COMMANDS.getEntries, { sinceSeq }, threadId),
       branch: (threadId, entryId) => request(COMMANDS.branch, { entryId }, threadId),
       getSessionStats: (threadId) => request(COMMANDS.getSessionStats, {}, threadId),

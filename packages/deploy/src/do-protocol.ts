@@ -20,11 +20,7 @@ import { Effect, Option, Schema } from "effect";
 import { SessionCommand, ThreadState } from "@saku/wire";
 import { EnvHandle } from "@saku/env/remote";
 import { HubError } from "@saku/hub/core";
-import {
-  RegistryError,
-  SessionHostError,
-  ThreadRecordSchema,
-} from "@saku/worker/isolate";
+import { RegistryError, SessionHostError, ThreadRecordSchema } from "@saku/worker/isolate";
 
 // ---------------------------------------------------------------------------
 // The RPC envelope
@@ -51,7 +47,9 @@ const errorKindOf = (error: unknown): string => {
 };
 
 /** The envelope's error for any failure crossing the fetch boundary. */
-export const rpcErrorOf = (error: unknown): { readonly kind: string; readonly message: string } => ({
+export const rpcErrorOf = (
+  error: unknown,
+): { readonly kind: string; readonly message: string } => ({
   kind: errorKindOf(error),
   message: error instanceof Error ? error.message : String(error),
 });

@@ -194,7 +194,10 @@ const cmdDaemon = (sub: string | undefined): Effect.Effect<void, CliError, never
     }
   });
 
-const cmdEnv = (sub: string | undefined, hubUrl: string | undefined): Effect.Effect<void, CliError, never> =>
+const cmdEnv = (
+  sub: string | undefined,
+  hubUrl: string | undefined,
+): Effect.Effect<void, CliError, never> =>
   Effect.gen(function* () {
     switch (sub) {
       case "start": {
@@ -232,7 +235,9 @@ const cmdEnv = (sub: string | undefined, hubUrl: string | undefined): Effect.Eff
       case "status": {
         const current = yield* status(envLifecycle());
         if (current.running) {
-          console.log(`running (pid ${current.pid}, protocol ${current.version}, cwd ${current.cwd})`);
+          console.log(
+            `running (pid ${current.pid}, protocol ${current.version}, cwd ${current.cwd})`,
+          );
         } else {
           console.log("not running");
         }

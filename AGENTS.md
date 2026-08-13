@@ -1,0 +1,1 @@
+- Always use Jujutsu (`jj` cli) instead of Git
