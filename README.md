@@ -14,11 +14,11 @@ daemon that dials out to the hub) or a **Box** (ascii.dev sandbox). Consoles —
 the foldkit frontend (next) and a thin CLI — never hold session state; they attach,
 tail, and command.
 
-See [`CONTEXT.md`](./CONTEXT.md) for the vocabulary, `docs/plans/0001-durable-spine.md`
-for the rework plan, and `docs/adr/` for the decisions (highlights: managed-agents
-spine with per-thread DO workers; cloud-primary with a celld twin; one env daemon for
-local and Box; the wire is pi's vocabulary verbatim over WebSocket; pi-only; no
-approval gates; hub-hosted skills).
+See [`CONTEXT.md`](./CONTEXT.md) for the vocabulary, `docs/adr/` for the decisions
+(highlights: managed-agents spine with per-thread DO workers; cloud-primary with a
+celld twin; one env daemon for local and Box; the wire is pi's vocabulary verbatim
+over WebSocket; pi-only; no approval gates; hub-hosted skills), and `docs/style.md`
+for the house style.
 
 ## Layout
 
@@ -71,8 +71,7 @@ The durable spine's milestones M0–M4 are built and tested:
   scripted provider keeps the loop credit-free.
 
 Remaining: the console's later slices (model picker, settings, diff review,
-terminals/portals, skills UX, queueing semantics, the deployed hub's login)
-— see the plan.
+terminals/portals, skills UX, queueing semantics, the deployed hub's login).
 
 ## Prerequisites
 
@@ -179,3 +178,7 @@ Tooling conventions follow pi where it matters: skills, prompt templates, sessio
 settings — pi's own vocabulary and extension surface ride through the worker
 unmodified. In the wire, pi's public types cross verbatim; saku adds only what pi
 lacks (threads) — extend pi, never shim it.
+
+House style for the code itself: `docs/style.md`. `effect-machine` (0.17.1) is
+patched (`patches/effect-machine@0.17.1.patch`) for effect 4 beta's
+`Schema.TaggedError` rename — re-check the patch on any effect upgrade.
