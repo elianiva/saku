@@ -8,6 +8,7 @@
 
 import { Option } from "effect";
 import type { Html, HtmlBuilder } from "foldkit/html";
+import type { ThreadEnvState, ThreadState } from "@saku/wire";
 
 import {
   asString,
@@ -19,9 +20,11 @@ import {
   messageToolResult,
   summaryLine,
 } from "./format.ts";
+import type { LiveTool } from "./live.ts";
 import { AbortRequested, ComposerChanged, SendRequested, type AppMessage } from "./message.ts";
+import type { Model } from "./model.ts";
+import { activeThread, headerState } from "./presentation.ts";
 import type { EntryProjection, MessageProjection } from "./projection.ts";
-import type { LiveTool, Model } from "./model.ts";
 
 export const threadPane = (model: Model, h: HtmlBuilder<AppMessage>): Html =>
   h.section(
@@ -36,10 +39,7 @@ export const threadPane = (model: Model, h: HtmlBuilder<AppMessage>): Html =>
 // -- header -----------------------------------------------------------------
 
 const threadHeader = (model: Model, h: HtmlBuilder<AppMessage>): Html => {
-  const thread =
-    model.rail._tag === "ready"
-      ? model.rail.threads.find((candidate) => candidate.id === model.active)
-      : undefined;
+  const thread = activeThread(model);
   return h.div(
     [
       h.Class(
@@ -50,25 +50,22 @@ const threadHeader = (model: Model, h: HtmlBuilder<AppMessage>): Html => {
       h.span([h.Class("font-bold truncate min-w-0")], [thread?.name ?? model.active]),
       h.span(
         [h.Class("text-subtle text-[11px] uppercase tracking-[0.18em] shrink-0")],
-        [thread?.mode === "sandbox" ? "sandbox" : thread?.mode === "any" ? "any" : "local"],
+        [thread?.mode ?? "local"],
       ),
       h.span([h.Class("flex-1")], []),
       ...(thread?.state === "working" ? [abortButton(h)] : []),
-      headerState(thread?.state, thread?.env, h),
+      headerStateLine(thread?.state, thread?.env, h),
     ],
   );
 };
 
-const headerState = (
-  state: "idle" | "working" | "interrupted" | undefined,
-  env: "stopped" | "provisioning" | "ready" | "error" | undefined,
+/** The header's `state · env` line, from the shared derivation. */
+const headerStateLine = (
+  state: ThreadState | undefined,
+  env: ThreadEnvState | undefined,
   h: HtmlBuilder<AppMessage>,
 ): Html => {
-  const pieces: string[] = [];
-  if (state !== undefined) pieces.push(state);
-  if (env !== undefined) pieces.push(`env ${env}`);
-  const text = pieces.join(" · ");
-  const tone = state === "working" ? "text-gold" : env === "error" ? "text-love" : "text-subtle";
+  const { text, tone } = headerState(state, env);
   return h.span([h.Class(`${tone} text-[11px] uppercase tracking-[0.18em] shrink-0`)], [text]);
 };
 
@@ -320,9 +317,7 @@ const liveToolRow = (tool: LiveTool, h: HtmlBuilder<AppMessage>): Html => {
 // -- the composer -----------------------------------------------------------
 
 const composerArea = (model: Model, h: HtmlBuilder<AppMessage>): Html => {
-  const working =
-    model.rail._tag === "ready" &&
-    model.rail.threads.some((thread) => thread.id === model.active && thread.state === "working");
+  const working = activeThread(model)?.state === "working";
   return h.div(
     [h.Class("shrink-0 border-t border-line bg-surface p-3")],
     [

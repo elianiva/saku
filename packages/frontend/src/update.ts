@@ -1,8 +1,9 @@
 /**
  * The console's update loop (update.ts): pure state transitions returning
- * `[Model, Commands]`. Wire events fold into the live run; `entry_appended`
- * grows the trail; `thread_changed` upserts the rail. The console never
- * computes thread state — the worker broadcasts it (CONTEXT.md: Thread).
+ * `[Model, Commands]`. Wire events for the active thread fold through the
+ * live state machine (live.ts); `entry_appended` grows the trail there;
+ * `thread_changed` upserts the rail. The console never computes thread
+ * state — the worker broadcasts it (CONTEXT.md: Thread).
  */
 
 import { Match as M } from "effect";
@@ -19,10 +20,10 @@ import {
   ScrollTrailCmd,
   WireConnectCmd,
 } from "./commands.ts";
-import { asString, messageText, messageThinking, stringifyLive } from "./format.ts";
+import { foldLive, initialLive } from "./live.ts";
 import type { AppMessage } from "./message.ts";
-import { Model, emptyLive, type LiveTool } from "./model.ts";
-import type { EntryProjection, SessionEventProjection } from "./projection.ts";
+import { Model } from "./model.ts";
+import type { SessionEventProjection } from "./projection.ts";
 import { Wire } from "./wire.ts";
 
 export type Commands = ReadonlyArray<Command.Command<AppMessage, never, Wire>>;
@@ -44,105 +45,14 @@ const withThread = (model: Model, thread: ThreadInfo): Model => {
 
 // -- live run folding -------------------------------------------------------
 
-/** `entry_appended` on the active thread: grow the trail, dedupe by id. */
-const foldEntryAppended = (model: Model, entry: EntryProjection): UpdateReturn => {
-  if (model.trail._tag !== "ready") return [model, none];
-  const last = model.trail.entries[model.trail.entries.length - 1];
-  const id = asString(entry.id);
-  if (last !== undefined && asString(last.id) === id) return [model, none];
-  // A message entry lands complete — the live region's copy of it is stale.
-  const live =
-    entry.type === "message"
-      ? { ...model.live, message: undefined, thinking: undefined }
-      : model.live;
+/** Wire events for the active thread fold through the live state machine. */
+const foldActive = (model: Model, event: SessionEventProjection): UpdateReturn => {
+  const [next, scroll] = foldLive({ trail: model.trail, live: model.live }, event);
   return [
-    {
-      ...model,
-      trail: {
-        _tag: "ready",
-        entries: [...model.trail.entries, entry],
-        tailSeq: Math.max(model.trail.tailSeq, entry.seq ?? 0),
-      },
-      live,
-    },
-    [ScrollTrailCmd()],
+    { ...model, trail: next.trail, live: next.live },
+    scroll ? [ScrollTrailCmd()] : none,
   ];
 };
-
-const foldLiveTool = (
-  tools: readonly LiveTool[],
-  callId: string,
-  next: Partial<LiveTool>,
-): LiveTool[] => tools.map((tool) => (tool.callId === callId ? { ...tool, ...next } : tool));
-
-/** The streaming message body shared by `message_start`/`message_end`. */
-const liveMessage = (model: Model, text: string): UpdateReturn => [
-  { ...model, live: { ...model.live, message: text } },
-  [ScrollTrailCmd()],
-];
-
-/** The wire's session events for the active thread → live region + trail. */
-const foldWireEvent = (model: Model, event: SessionEventProjection): UpdateReturn =>
-  M.value(event).pipe(
-    M.withReturnType<UpdateReturn>(),
-    M.tagsExhaustive({
-      entry_appended: ({ entry }) => foldEntryAppended(model, entry),
-      message_start: ({ message }) => liveMessage(model, messageText(message)),
-      message_end: ({ message }) => liveMessage(model, messageText(message)),
-      message_update: ({ message }) => {
-        const text = messageText(message);
-        const thinking = messageThinking(message);
-        return [
-          {
-            ...model,
-            live: {
-              ...model.live,
-              message: text === "" ? model.live.message : text,
-              thinking: thinking === "" ? model.live.thinking : thinking,
-            },
-          },
-          [ScrollTrailCmd()],
-        ];
-      },
-      tool_execution_start: ({ toolCallId, toolName }) => {
-        const tool: LiveTool = { callId: toolCallId, name: toolName, state: "running" };
-        return [{ ...model, live: { ...model.live, tools: [...model.live.tools, tool] } }, none];
-      },
-      tool_execution_update: ({ toolCallId, partialResult }) => [
-        {
-          ...model,
-          live: {
-            ...model.live,
-            tools: foldLiveTool(model.live.tools, toolCallId, {
-              partial: stringifyLive(partialResult),
-            }),
-          },
-        },
-        none,
-      ],
-      tool_execution_end: ({ toolCallId, isError, result }) => [
-        {
-          ...model,
-          live: {
-            ...model.live,
-            tools: foldLiveTool(model.live.tools, toolCallId, {
-              state: isError ? "failed" : "done",
-              result: stringifyLive(result),
-            }),
-          },
-        },
-        none,
-      ],
-      settled: () => [{ ...model, live: emptyLive() }, none],
-      compaction_start: ({ reason }) => [
-        { ...model, live: { ...model.live, notice: `compacting (${reason})` } },
-        none,
-      ],
-      compaction_end: () => [{ ...model, live: { ...model.live, notice: undefined } }, none],
-      // Unknown pi events degrade to a named no-op instead of a silent default.
-      unhandled: () => [model, none],
-    }),
-  );
 
 // -- update -----------------------------------------------------------------
 
@@ -189,26 +99,28 @@ export const update = (model: Model, message: AppMessage): UpdateReturn =>
         {
           ...withThread(model, thread),
           active: thread.id,
-          trail: { _tag: "loading" },
-          live: emptyLive(),
+          ...initialLive(),
         },
         [LoadTrailCmd({ id: thread.id })],
       ],
       CreateFailed: ({ message }) => [{ ...model, banner: message }, none],
       DeleteRequested: ({ id }) => [model, [DeleteThreadCmd({ id })]],
-      ThreadDeleted: ({ id }) => [
-        {
-          ...model,
-          rail:
-            model.rail._tag === "ready"
-              ? { _tag: "ready", threads: model.rail.threads.filter((t) => t.id !== id) }
-              : model.rail,
-          active: model.active === id ? null : model.active,
-          trail: model.active === id ? { _tag: "loading" } : model.trail,
-          live: model.active === id ? emptyLive() : model.live,
-        },
-        none,
-      ],
+      ThreadDeleted: ({ id }) => {
+        const removed = model.active === id;
+        const view = removed ? initialLive() : { trail: model.trail, live: model.live };
+        return [
+          {
+            ...model,
+            rail:
+              model.rail._tag === "ready"
+                ? { _tag: "ready", threads: model.rail.threads.filter((t) => t.id !== id) }
+                : model.rail,
+            active: removed ? null : model.active,
+            ...view,
+          },
+          none,
+        ];
+      },
       DeleteFailed: ({ message }) => [{ ...model, banner: message }, none],
 
       // the active thread
@@ -216,8 +128,7 @@ export const update = (model: Model, message: AppMessage): UpdateReturn =>
         {
           ...model,
           active: id,
-          trail: { _tag: "loading" },
-          live: emptyLive(),
+          ...initialLive(),
         },
         [LoadTrailCmd({ id })],
       ],
@@ -242,7 +153,7 @@ export const update = (model: Model, message: AppMessage): UpdateReturn =>
 
       // wire events
       WireEvent: ({ threadId, event }) =>
-        threadId === model.active ? foldWireEvent(model, event) : [model, none],
+        threadId === model.active ? foldActive(model, event) : [model, none],
       ThreadChanged: ({ thread }) => [withThread(model, thread), none],
 
       // housekeeping

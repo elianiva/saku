@@ -19,6 +19,7 @@ import {
   type AppMessage,
 } from "./message.ts";
 import type { Model } from "./model.ts";
+import { envPresentation, modeChar, statePresentation } from "./presentation.ts";
 
 export const railPane = (model: Model, h: HtmlBuilder<AppMessage>): Html =>
   h.aside(
@@ -126,30 +127,13 @@ const threadRow = (thread: ThreadInfo, active: string | null, h: HtmlBuilder<App
 // -- glyphs -----------------------------------------------------------------
 
 const stateGlyph = (thread: ThreadInfo, h: HtmlBuilder<AppMessage>): Html => {
-  switch (thread.state) {
-    case "idle":
-      return h.span([h.Class("text-muted"), h.Title("idle")], ["○"]);
-    case "working":
-      return h.span([h.Class("text-gold animate-pulse"), h.Title("working")], ["●"]);
-    case "interrupted":
-      return h.span(
-        [h.Class("text-rose"), h.Title("interrupted — recovery on next command")],
-        ["◐"],
-      );
-  }
+  const { glyph, tone, title } = statePresentation(thread.state);
+  return h.span([h.Class(tone), h.Title(title)], [glyph]);
 };
 
 const envGlyph = (thread: ThreadInfo, h: HtmlBuilder<AppMessage>): Html => {
-  switch (thread.env) {
-    case "ready":
-      return h.span([h.Class("text-foam"), h.Title("env ready")], ["▸"]);
-    case "provisioning":
-      return h.span([h.Class("text-gold animate-pulse"), h.Title("env provisioning")], ["◇"]);
-    case "stopped":
-      return h.span([h.Class("text-muted"), h.Title("env stopped — resumes on prompt")], ["▽"]);
-    case "error":
-      return h.span([h.Class("text-love"), h.Title("env error — next prompt retries")], ["✕"]);
-  }
+  const { glyph, tone, title } = envPresentation(thread.env);
+  return h.span([h.Class(tone), h.Title(title)], [glyph]);
 };
 
 const modeGlyph = (thread: ThreadInfo, h: HtmlBuilder<AppMessage>): Html =>
@@ -158,5 +142,5 @@ const modeGlyph = (thread: ThreadInfo, h: HtmlBuilder<AppMessage>): Html =>
       h.Class("border border-line px-1 text-[10px] text-subtle uppercase"),
       h.Title(`mode: ${thread.mode}`),
     ],
-    [thread.mode === "sandbox" ? "S" : thread.mode === "any" ? "A" : "L"],
+    [modeChar(thread.mode)],
   );
