@@ -57,3 +57,20 @@ index 58f2046a7923cba516987b9af71aace5e75af534..6cbf823c7dfa86e3d003ba59eb6a2273
  	expected: Schema.Number,
  	actual: Schema.Number
  }) {};
+diff --git a/dist/supervision.js b/dist/supervision.js
+index a1c878c8689954e5c9c0bfae79a9a23faab2b6ca..2303e65fcf384b0468d1075c09291822ea7b7128 100644
+--- a/dist/supervision.js
++++ b/dist/supervision.js
+@@ -31,10 +31,10 @@ let Supervision;
+ 		let schedule = Schedule.forever;
+ 		if (options?.maxRestarts !== void 0) {
+ 			const recurs = Schedule.recurs(options.maxRestarts);
+-			if (options.within !== void 0) schedule = Schedule.both(recurs, Schedule.windowed(options.within));
++			if (options.within !== void 0) schedule = Schedule.max([recurs, Schedule.windowed(options.within)]);
+ 			else schedule = recurs;
+ 		}
+-		if (options?.backoff !== void 0) schedule = Schedule.both(schedule, options.backoff);
++		if (options?.backoff !== void 0) schedule = Schedule.max([schedule, options.backoff]);
+ 		return { schedule };
+ 	};
+ })(Supervision || (Supervision = {}));

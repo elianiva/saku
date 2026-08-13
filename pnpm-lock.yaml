@@ -5,7 +5,7 @@ settings:
   excludeLinksFromLockfile: false
 
 patchedDependencies:
-  effect-machine@0.17.1: 41e5a12985b7ef157de81323140485a06ea12a028ba1e4d35b13e521444698b1
+  effect-machine@0.17.1: d01997b589d0b30c9818f8983dd1a3ac440a5ecc12005fb5c95ab15f8666acaa
 
 importers:
 
@@ -89,7 +89,7 @@ importers:
         version: 4.0.0-rc.108
       effect-machine:
         specifier: 0.17.1
-        version: 0.17.1(patch_hash=41e5a12985b7ef157de81323140485a06ea12a028ba1e4d35b13e521444698b1)(effect@4.0.0-rc.108)
+        version: 0.17.1(patch_hash=d01997b589d0b30c9818f8983dd1a3ac440a5ecc12005fb5c95ab15f8666acaa)(effect@4.0.0-rc.108)
     devDependencies:
       '@cloudflare/workers-types':
         specifier: ^4.20250601.0
@@ -256,7 +256,7 @@ importers:
         version: 4.0.0-rc.108
       effect-machine:
         specifier: ^0.17.1
-        version: 0.17.1(patch_hash=41e5a12985b7ef157de81323140485a06ea12a028ba1e4d35b13e521444698b1)(effect@4.0.0-rc.108)
+        version: 0.17.1(patch_hash=d01997b589d0b30c9818f8983dd1a3ac440a5ecc12005fb5c95ab15f8666acaa)(effect@4.0.0-rc.108)
       ws:
         specifier: ^8.18.0
         version: 8.21.3
@@ -299,7 +299,7 @@ importers:
         version: 4.0.0-rc.108
       effect-machine:
         specifier: ^0.17.1
-        version: 0.17.1(patch_hash=41e5a12985b7ef157de81323140485a06ea12a028ba1e4d35b13e521444698b1)(effect@4.0.0-rc.108)
+        version: 0.17.1(patch_hash=d01997b589d0b30c9818f8983dd1a3ac440a5ecc12005fb5c95ab15f8666acaa)(effect@4.0.0-rc.108)
       ws:
         specifier: ^8.18.0
         version: 8.21.3
@@ -6526,7 +6526,7 @@ snapshots:
     dependencies:
       safe-buffer: 5.2.1
 
-  effect-machine@0.17.1(patch_hash=41e5a12985b7ef157de81323140485a06ea12a028ba1e4d35b13e521444698b1)(effect@4.0.0-rc.108):
+  effect-machine@0.17.1(patch_hash=d01997b589d0b30c9818f8983dd1a3ac440a5ecc12005fb5c95ab15f8666acaa)(effect@4.0.0-rc.108):
     dependencies:
       effect: 4.0.0-rc.108
 
