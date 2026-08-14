@@ -29,4 +29,7 @@ export const ThreadRecordSchema = Schema.Struct({
  */
 export type ThreadRecord = Schema.Schema.Type<typeof ThreadRecordSchema>;
 
-export const DECODE_THREAD_RECORD = Schema.decodeUnknownSync(ThreadRecordSchema);
+/** Decode a persisted record (a JSON string as written by the registry). */
+export const DECODE_THREAD_RECORD = Schema.decodeUnknownSync(
+  Schema.fromJsonString(ThreadRecordSchema),
+);

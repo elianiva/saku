@@ -2,10 +2,11 @@
  * The root's update loop (root/update.ts): routing facts and the conn
  * machine are handled here; a `Got*Message` delegates to the owning
  * submodel's `update` and lifts the results. The root owns navigation, so
- * it reacts to the rail's `OpenedThread`/`DeletedThread` OutMessages by
- * pushing URLs. The wire bridge facts are routed: session events reach the
- * pane only when the route pins their thread; registry broadcasts reach the
- * rail always and the pane when they are its thread (the header's info).
+ * it reacts to the rail's `OpenedThread`/`DeletedThread` and the pane's
+ * `OpenedThread` (a quick start landing) OutMessages by pushing URLs. The
+ * wire bridge facts are routed: session events reach the pane only when
+ * the route pins their thread; registry broadcasts reach the rail always
+ * and the pane when they are its thread (the header's info).
  */
 
 import { Match as M, Option } from "effect";
@@ -48,13 +49,20 @@ const delegateToRail = (model: Model, railMessage: RailMsg.RailMessage): UpdateR
   });
 };
 
-/** Delegate a thread message (the pane surfaces no OutMessages today). */
+/** Delegate a thread message; the pane's OutMessage becomes navigation. */
 const delegateToThread = (model: Model, threadMessage: ThreadMsg.ThreadMessage): UpdateReturn => {
-  const [nextThread, cmds] = Thread.update(model.thread, threadMessage);
-  return [
-    evo(model, { thread: (_) => nextThread }),
-    Command.mapMessages(cmds, (m) => GotThreadMessage({ message: m })),
-  ];
+  const [nextThread, cmds, out] = Thread.update(model.thread, threadMessage);
+  const mapped = Command.mapMessages(cmds, (m) => GotThreadMessage({ message: m }));
+  return Option.match(out, {
+    onNone: () => [evo(model, { thread: (_) => nextThread }), mapped],
+    onSome: (out) => {
+      // The pane surfaced a navigation fact (a quick start opened a
+      // thread); the root owns URLs.
+      const navigation =
+        out._tag === "OpenedThread" ? [NavigateToCmd({ path: `/thread/${out.id}` })] : [];
+      return [evo(model, { thread: (_) => nextThread }), [...mapped, ...navigation]];
+    },
+  });
 };
 
 /** The route changed (back/forward, a pushed URL): the route is the single

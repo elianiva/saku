@@ -5,12 +5,18 @@
  * `SessionEvent` (the root matched the thread id against the route), and the
  * registry broadcasts arrive as `ThreadChanged` (keeps the header's
  * name/state/env current, e.g. after an auto-title).
+ *
+ * The pane also owns the quick-start gesture (CONTEXT.md: Quick start) —
+ * the welcome composer on the root route. The gesture shares the composer
+ * draft with the thread prompt; `SendRequested` means quick start when no
+ * thread is pinned and prompt when one is.
  */
 
 import { Schema as S } from "effect";
 import { Message } from "foldkit";
 import { ThreadInfo } from "@saku/wire";
 
+import type { OpenedThread } from "../root/message.ts";
 import { EntryProjection, SessionEventProjection } from "./projection.ts";
 
 // -- wire bridge (root-delegated) ------------------------------------------
@@ -32,9 +38,22 @@ export const TrailFailed = Message.m("TrailFailed", { error: S.String });
 // -- composer ---------------------------------------------------------------
 
 export const ComposerChanged = Message.m("ComposerChanged", { text: S.String });
+/** Enter / the send button: prompts the pinned thread, or quick-starts a new
+ *  one when no thread is pinned (the update branches on `model.id`). */
 export const SendRequested = Message.m("SendRequested");
 export const PromptAcked = Message.m("PromptAcked");
 export const SendFailed = Message.m("SendFailed", { message: S.String });
+/** The composer's focus state, for the focus-aware placeholder (the
+ *  humanlayer pattern: unfocused shows the affordance, focused the task). */
+export const ComposerFocused = Message.m("ComposerFocused");
+export const ComposerBlurred = Message.m("ComposerBlurred");
+
+// -- quick start (the welcome composer's landings) --------------------------
+
+/** The quick-start command landed: a thread was born from the draft. */
+export const ThreadCreated = Message.m("ThreadCreated", { thread: ThreadInfo });
+export const CreateFailed = Message.m("CreateFailed", { message: S.String });
+
 export const AbortRequested = Message.m("AbortRequested");
 export const AbortDone = Message.m("AbortDone");
 
@@ -52,8 +71,19 @@ export const ThreadMessage = S.Union([
   SendRequested,
   PromptAcked,
   SendFailed,
+  ComposerFocused,
+  ComposerBlurred,
+  ThreadCreated,
+  CreateFailed,
   AbortRequested,
   AbortDone,
   ScrollDone,
 ]);
 export type ThreadMessage = S.Schema.Type<typeof ThreadMessage>;
+
+/**
+ * The fact the pane surfaces to the root (the informing convention, ADR
+ * 0009): a quick start opened a thread — the root pushes its URL, exactly
+ * as if the user had clicked the rail row.
+ */
+export type ThreadOutMessage = typeof OpenedThread.Type;

@@ -3,7 +3,7 @@
  * lutra's route module (route.ts). The rail is always visible; the thread
  * pane derives its active thread from the route.
  *
- *   Threads = "/"                → rail + the pane's empty state
+ *   Threads = "/"                → rail + the pane's welcome (quick start)
  *   Thread  = "/thread/:id"      → rail + that thread's pane (id decoded
  *                                  through the plain-string segment)
  *

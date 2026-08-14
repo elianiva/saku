@@ -3,8 +3,10 @@
  * (`ChangedRoute`, `Navigated`, `NavigatedTo`), the `Got*Message` wrappers
  * that lift a submodel's Message into the root's universe, the wire bridge
  * facts the root routes (session events by thread id, registry broadcasts),
- * and the connection domain's messages (conn/message.ts, re-exported —
- * machine-stepped at the root, mirroring lutra's offline messages).
+ * the connection domain's messages (conn/message.ts, re-exported —
+ * machine-stepped at the root, mirroring lutra's offline messages), and
+ * `OpenedThread` — the shared navigation fact both submodels surface to the
+ * root (the root owns URLs).
  */
 
 import { Schema as S } from "effect";
@@ -45,6 +47,12 @@ export { ThreadChanged } from "../rail/message.ts";
 /** A connection-level wire error (unexpected); the top banner shows it. */
 export const ServerErrorNotice = Message.m("ServerErrorNotice", { message: S.String });
 export const DismissBanner = Message.m("DismissBanner");
+
+/** A navigation fact: open this thread. Both the rail (a row click) and the
+ *  pane (a quick start landing) surface it; the root owns URLs and reacts by
+ *  pushing `/thread/:id`. Hoisted here so the two submodels share one fact
+ *  (ADR 0009's informing convention). */
+export const OpenedThread = Message.m("OpenedThread", { id: S.String });
 
 export const RootMessage = S.Union([
   ChangedRoute,

@@ -1,12 +1,27 @@
 # Saku
 
-A software factory for pi coding agents. A **hub** hosts one **worker** per thread; **consoles** (the foldkit frontend, the scripting CLI) connect to it over one **wire** protocol. Pi-only by design — no generic agent layer; the wire is a projection of pi's own session model, so integration is deep rather than abstract. The long-term shape — threads as durable objects, sandboxed remote hands — is the current shape: workers are Durable Objects, hands are remote envs.
+A chat app for pi coding agents — a personal, cheaper take on amp's orb
+architecture. A **hub** hosts one **worker** per thread; **consoles** (the
+foldkit frontend, the scripting CLI) connect to it over one **wire** protocol.
+Pi-only by design — no generic agent layer; the wire is a projection of pi's
+own session model, so integration is deep rather than abstract. The long-term
+shape — threads as durable objects, sandboxed remote hands — is the current
+shape: workers are Durable Objects, hands are remote envs.
 
 ## Language
 
 **Saku**:
-The project itself. A software factory: threads go in, results come out. This monorepo is the project (wire, hub, worker, env, cli).
-_Avoid_: the-factory, control-plane
+The project itself. A chat app for pi coding agents: one thread, one agent
+conversation, the full trail visible in the console. This monorepo is the
+project (wire, hub, worker, env, cli).
+_Avoid_: the-factory, control-plane, orchestrator
+
+**Amp**:
+The reference product (ampcode.com) whose orb architecture saku is a personal,
+cheaper, rougher take on — one orb per thread: a remote machine joined to the
+conversation, scale-to-zero, controllable from anywhere. Saku's shape is amp's;
+the plumbing isn't. Saku is an experiment, not a competitor.
+_Avoid_: calling saku "amp for pi" (the wire is pi-native, the deployment is Durable Objects — the resemblance is the shape, not the stack)
 
 **Thread**:
 The durable unit of agent work: a pi session plus registry metadata (name, cwd, `mode`). One thread is one **worker** — a Durable Object (Cloudflare or celld) — owning one session tree: the append-only log of messages, tool calls, and compactions. Everything a worker needs survives restarts because state lives in the entry trail, never in process memory.

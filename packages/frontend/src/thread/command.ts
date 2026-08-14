@@ -13,9 +13,11 @@ import { catchWireError } from "../root/command.ts";
 import { Wire } from "../wire.ts";
 import {
   AbortDone,
+  CreateFailed,
   PromptAcked,
   ScrollDone,
   SendFailed,
+  ThreadCreated,
   TrailFailed,
   TrailLoaded,
 } from "./message.ts";
@@ -51,6 +53,25 @@ export const PromptCmd = Command.define("Prompt", {
         return PromptAcked();
       }),
       (error) => SendFailed({ message: error.message }),
+    ),
+});
+
+/** Quick start: create the thread from the composer draft and set it to
+ *  work (CONTEXT.md: Quick start). The first prompt provisions the env and
+ *  starts the run; the pane watches it through the events. */
+export const QuickStartCmd = Command.define("QuickStart", {
+  args: { text: S.String },
+  messages: [ThreadCreated, CreateFailed],
+  execute: ({ text }) =>
+    catchWireError(
+      Effect.gen(function* () {
+        const { client } = yield* Wire;
+        const created = yield* client.createThread(text, { autoName: true });
+        yield* client.prompt(created.id, text);
+        const thread = yield* client.getThread(created.id);
+        return ThreadCreated({ thread });
+      }),
+      (error) => CreateFailed({ message: error.message }),
     ),
 });
 

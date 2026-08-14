@@ -1,9 +1,14 @@
 /**
  * The thread pane's view (thread/view.ts): the selected thread's surface —
  * header (name, state, env), the entry trail, the live run (streaming
- * message + tool activity), and the composer. The trail renders pi's
- * entries verbatim (ADR 0004): user/assistant/toolResult messages, tool
- * calls, compactions, and the metadata entries as dim rails.
+ * message + tool activity), and the composer — or, on the root route, the
+ * welcome: wordmark, greeting, and the quick-start composer in a centered
+ * chat-app column (CONTEXT.md: Quick start). The composer is one shared
+ * box with a focus-aware placeholder (the humanlayer pattern: unfocused
+ * shows the affordance, focused the task) and the failure notice sits under
+ * it, next to the action that caused it. The trail renders pi's entries
+ * verbatim (ADR 0004): user/assistant/toolResult messages, tool calls,
+ * compactions, and the metadata entries as dim rails.
  *
  * Branded via `defineView` so it embeds under the root through
  * `h.submodel`, with `h` typed to the pane's own Message union (the lutra
@@ -11,7 +16,7 @@
  */
 
 import { AsyncData, Submodel } from "foldkit";
-import { Option } from "effect";
+import { Option, Stream } from "effect";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import type { ThreadEnvState, ThreadState } from "@saku/wire";
 
@@ -27,7 +32,14 @@ import {
   summaryLine,
 } from "./format.ts";
 import type { LiveTool } from "./live.ts";
-import { AbortRequested, ComposerChanged, SendRequested, type ThreadMessage } from "./message.ts";
+import {
+  AbortRequested,
+  ComposerBlurred,
+  ComposerChanged,
+  ComposerFocused,
+  SendRequested,
+  type ThreadMessage,
+} from "./message.ts";
 import type { Model } from "./model.ts";
 import type { EntryProjection, MessageProjection } from "./projection.ts";
 
@@ -35,19 +47,10 @@ export const view = Submodel.defineView<Model, ThreadMessage>((model, h) =>
   h.section(
     [h.Class("flex-1 flex flex-col min-w-0 min-h-0")],
     model.id === null
-      ? [emptyState(h)]
-      : [threadHeader(model, h), notice(model, h), trailArea(model, h), composerArea(model, h)],
+      ? [welcome(model, h)]
+      : [threadHeader(model, h), trailArea(model, h), composerArea(model, h)],
   ),
 );
-
-/** A transient failure notice (send failures), null when clean. */
-const notice = (model: Model, h: HtmlBuilder<ThreadMessage>): Html | null =>
-  model.notice === null
-    ? null
-    : h.div(
-        [h.Class("border-b border-love/40 bg-overlay px-4 py-1.5 text-[12px] text-love")],
-        [model.notice],
-      );
 
 // -- header -----------------------------------------------------------------
 
@@ -327,10 +330,40 @@ const liveToolRow = (tool: LiveTool, h: HtmlBuilder<ThreadMessage>): Html => {
 
 // -- the composer -----------------------------------------------------------
 
-const composerArea = (model: Model, h: HtmlBuilder<ThreadMessage>): Html => {
-  const working = model.info?.state === "working";
-  return h.div(
+/** The docked composer area under a pinned thread's trail. */
+const composerArea = (model: Model, h: HtmlBuilder<ThreadMessage>): Html =>
+  h.div(
     [h.Class("shrink-0 border-t border-line bg-surface p-3")],
+    [composerBox(model, h, "thread")],
+  );
+
+/**
+ * The composer box, shared by the thread pane and the welcome: the textarea
+ * (focus-aware placeholder, enter to send) plus the action button, with the
+ * failure notice underneath (the humanlayer pattern — status sits next to
+ * the action that caused it, not in a banner above the trail). On the
+ * welcome the box is the quick-start gesture; on a thread it prompts the
+ * pinned thread. The welcome's box autofocuses on mount — every arrival at
+ * the root route lands the cursor in the composer (the thread box never
+ * autofocuses).
+ */
+const composerBox = (
+  model: Model,
+  h: HtmlBuilder<ThreadMessage>,
+  kind: "thread" | "welcome",
+): Html => {
+  const working = model.info?.state === "working";
+  const busy = kind === "thread" ? working : model.starting;
+  const placeholder =
+    kind === "welcome" && model.starting
+      ? "spinning up a thread…"
+      : model.focused
+        ? kind === "welcome"
+          ? "prompt saku — enter to spin up a thread"
+          : "prompt the thread · enter to send · shift+enter for a newline"
+        : "enter to start typing…";
+  return h.div(
+    [h.Class("flex flex-col")],
     [
       h.div(
         [h.Class("flex items-stretch gap-2")],
@@ -340,54 +373,59 @@ const composerArea = (model: Model, h: HtmlBuilder<ThreadMessage>): Html => {
               "flex-1 resize-none bg-base border border-line px-3 py-2 text-[13px] outline-none focus:border-subtle placeholder:text-muted",
             ),
             h.Rows(3),
-            h.Placeholder(
-              working
-                ? "the thread is working — abort to interrupt"
-                : "prompt the thread · enter to send · shift+enter for a newline",
-            ),
+            h.Placeholder(placeholder),
             h.Spellcheck(false),
-            h.Disabled(working),
+            h.Disabled(busy),
             h.Value(model.composer),
             h.OnInput((raw) => ComposerChanged({ text: raw })),
             h.OnKeyDownPreventDefault((key, modifiers) =>
-              key === "Enter" && !modifiers.shiftKey && !working
+              key === "Enter" && !modifiers.shiftKey && !busy
                 ? Option.some(SendRequested())
                 : Option.none(),
             ),
+            h.OnFocus(ComposerFocused()),
+            h.OnBlur(ComposerBlurred()),
+            ...(kind === "welcome"
+              ? [
+                  h.OnMount({
+                    name: "AutofocusComposer",
+                    f: (element) => {
+                      (element as HTMLTextAreaElement).focus();
+                      return Stream.empty;
+                    },
+                  }),
+                ]
+              : []),
           ]),
-          ...(working
-            ? [abortButton(h)]
-            : [
-                h.button(
-                  [
-                    h.Class(
-                      "shrink-0 border border-pine text-pine px-4 text-[13px] hover:bg-pine/10",
-                    ),
-                    h.OnClick(SendRequested()),
-                  ],
-                  ["send ❯"],
-                ),
-              ]),
+          kind === "thread" && working
+            ? abortButton(h)
+            : h.button(
+                [
+                  h.Class(
+                    "shrink-0 border border-pine text-pine px-4 text-[13px] hover:bg-pine/10",
+                  ),
+                  h.OnClick(SendRequested()),
+                  h.Disabled(busy),
+                ],
+                [kind === "welcome" ? "start ❯" : "send ❯"],
+              ),
         ],
       ),
+      model.notice === null ? null : h.div([h.Class("mt-2 text-[12px] text-love")], [model.notice]),
     ],
   );
 };
 
-// -- empty state ------------------------------------------------------------
+// -- welcome ----------------------------------------------------------------
 
-const emptyState = (h: HtmlBuilder<ThreadMessage>): Html =>
+/** The root route's surface: wordmark, greeting, and the quick-start
+ *  composer in a centered chat-app column (CONTEXT.md: Quick start). */
+const welcome = (model: Model, h: HtmlBuilder<ThreadMessage>): Html =>
   h.div(
+    [h.Class("flex-1 min-h-0 flex flex-col items-center justify-center gap-2 px-6")],
     [
-      h.Class(
-        "flex-1 min-h-0 flex flex-col items-center justify-center gap-2 text-muted text-[13px]",
-      ),
-    ],
-    [
-      h.div(
-        [h.Class("text-[11px] uppercase tracking-[0.3em] text-subtle")],
-        ["no thread selected"],
-      ),
-      h.div([], ["pick a thread from the rail, or quick-start one with a prompt"]),
+      h.div([h.Class("text-[26px] font-bold uppercase tracking-[0.35em] text-text")], ["saku"]),
+      h.div([h.Class("text-[13px] text-subtle")], ["Welcome back! What should we work on today?"]),
+      h.div([h.Class("w-full max-w-xl mt-2")], [composerBox(model, h, "welcome")]),
     ],
   );

@@ -58,7 +58,7 @@ const topBar = (model: Model, h: HtmlBuilder<RootMessage>): Html =>
     ],
     [
       h.span([h.Class("text-text font-bold tracking-[0.3em]")], ["saku"]),
-      h.span([h.Class("text-subtle normal-case tracking-normal")], ["the software factory"]),
+      h.span([h.Class("text-subtle normal-case tracking-normal")], ["a chat for pi coding agents"]),
       h.span([h.Class("flex-1")], []),
       connStatus(model, h),
     ],

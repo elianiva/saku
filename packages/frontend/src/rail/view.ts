@@ -1,9 +1,10 @@
 /**
- * The thread rail's view (rail/view.ts): the registry projection. A
- * quick-start composer on top (one prompt = one thread, CONTEXT.md: Quick
- * start), then the live list — one row per thread with state, mode, and env
- * glyphs, a delete ✕, and click-to-select. Row content comes entirely from
- * `thread_changed` broadcasts; the rail never computes it.
+ * The thread rail's view (rail/view.ts): the registry projection. A header,
+ * a transient notice, and the live list — one row per thread with state,
+ * mode, and env glyphs, a delete ✕, and click-to-select. Row content comes
+ * entirely from `thread_changed` broadcasts; the rail never computes it.
+ * (The quick-start composer lived here once; it moved to the pane's welcome
+ * with the gesture — the rail is the list and nothing else.)
  *
  * Branded via `defineView` so it embeds under the root through
  * `h.submodel`, with `h` typed to the rail's own Message union (the lutra
@@ -12,28 +13,20 @@
 
 import { AsyncData, Submodel } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";
-import { Option } from "effect";
 import type { ThreadInfo } from "@saku/wire";
 
 import { envPresentation, modeChar, statePresentation } from "../presentation.ts";
-import {
-  ClickedThread,
-  DeleteRequested,
-  QuickStartRequested,
-  RailInputChanged,
-  RefreshRequested,
-  type RailMessage,
-} from "./message.ts";
+import { ClickedThread, DeleteRequested, RefreshRequested, type RailMessage } from "./message.ts";
 import type { Model } from "./model.ts";
 
 export const view = Submodel.defineView<Model, RailMessage>((model, h) =>
   h.aside(
     [h.Class("w-80 shrink-0 border-r border-line bg-surface flex flex-col min-h-0")],
-    [railHeader(model, h), quickStartComposer(model, h), notice(model, h), railList(model, h)],
+    [railHeader(model, h), notice(model, h), railList(model, h)],
   ),
 );
 
-/** A transient failure notice (create/delete failures), null when clean. */
+/** A transient failure notice (delete failures), null when clean. */
 const notice = (model: Model, h: HtmlBuilder<RailMessage>): Html | null =>
   model.notice === null
     ? null
@@ -64,34 +57,6 @@ const railHeader = (model: Model, h: HtmlBuilder<RailMessage>): Html => {
     ],
   );
 };
-
-const quickStartComposer = (model: Model, h: HtmlBuilder<RailMessage>): Html =>
-  h.div(
-    [h.Class("p-3 border-b border-line")],
-    [
-      h.div(
-        [h.Class("flex items-center gap-1 border border-line bg-base px-2 py-1.5")],
-        [
-          h.span([h.Class("text-pine")], ["❯"]),
-          h.input([
-            h.Class(
-              "flex-1 bg-transparent outline-none placeholder:text-muted text-[13px] min-w-0",
-            ),
-            h.Type("text"),
-            h.Placeholder("quick start — a prompt spins up a thread"),
-            h.Spellcheck(false),
-            h.Value(model.input),
-            h.OnInput((raw) => RailInputChanged({ text: raw })),
-            h.OnKeyDownPreventDefault((key, modifiers) =>
-              key === "Enter" && !modifiers.shiftKey
-                ? Option.some(QuickStartRequested())
-                : Option.none(),
-            ),
-          ]),
-        ],
-      ),
-    ],
-  );
 
 const railList = (model: Model, h: HtmlBuilder<RailMessage>): Html =>
   AsyncData.match(model.list, {

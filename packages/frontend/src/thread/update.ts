@@ -1,33 +1,42 @@
 /**
  * The thread submodel's update loop (thread/update.ts): pure state
- * transitions returning `[Model, Commands]`. Session events for the active
- * thread fold through the live state machine (live.ts); `entry_appended`
- * grows the trail there, and a fold that grew the scrollable view fires the
- * scroll command directly (no message round-trip). The pane never computes
- * thread state — the worker broadcasts it (CONTEXT.md: Thread).
+ * transitions returning the `[Model, Commands, Option<OutMessage>]` 3-tuple —
+ * the OutMessage is how the pane tells the root "a quick start opened this
+ * thread" (the root owns navigation). Session events for the active thread
+ * fold through the live state machine (live.ts); `entry_appended` grows the
+ * trail there, and a fold that grew the scrollable view fires the scroll
+ * command directly (no message round-trip). The pane never computes thread
+ * state — the worker broadcasts it (CONTEXT.md: Thread).
+ *
+ * The pane owns the quick-start gesture on the welcome (root route): the
+ * composer draft is shared between welcome and thread, so `SendRequested`
+ * branches on `model.id` — quick start when no thread is pinned, prompt when
+ * one is. The draft clears only on success (`ThreadCreated`/`PromptAcked`),
+ * so a failed create/send keeps the user's words.
  *
  * `informRouteChanged` is the parent's hook for a route change (the
  * informingSubmodels convention, ADR 0009): the root owns the route, the
  * pane derives its state from it. A Thread route pins the id, resets the
  * trail + live run, and re-reads the trail (a fresh selection always loads,
  * matching the pre-routing behavior); the Threads route unpins the id and
- * renders the empty state. The composer survives both — it is user draft,
- * not thread state.
+ * renders the welcome. The composer survives both — it is user draft, not
+ * thread state.
  */
 
-import { Match as M } from "effect";
+import { Match as M, Option } from "effect";
 import { Command } from "foldkit";
 import { evo } from "foldkit/struct";
 
 import type { AppRoute } from "../route.ts";
+import { OpenedThread } from "../root/message.ts";
 import { Wire } from "../wire.ts";
-import { AbortCmd, LoadTrailCmd, PromptCmd, ScrollTrailCmd } from "./command.ts";
+import { AbortCmd, LoadTrailCmd, PromptCmd, QuickStartCmd, ScrollTrailCmd } from "./command.ts";
 import { emptyLiveRegion, foldLive, Trail } from "./live.ts";
-import type { ThreadMessage } from "./message.ts";
+import type { ThreadMessage, ThreadOutMessage } from "./message.ts";
 import { Model } from "./model.ts";
 
 export type Commands = ReadonlyArray<Command.Command<ThreadMessage, never, Wire>>;
-export type UpdateReturn = readonly [Model, Commands];
+export type UpdateReturn = readonly [Model, Commands, Option.Option<ThreadOutMessage>];
 export type RouteChangedReturn = readonly [Model, Commands];
 
 const none: Commands = [];
@@ -36,6 +45,9 @@ const none: Commands = [];
 const resetViewFields = {
   trail: (_: Model["trail"]) => Trail.Idle(),
   live: (_: Model["live"]) => emptyLiveRegion(),
+  // The composer element is fresh on the other surface; its focus state
+  // must not leak across routes (the welcome re-focuses via OnMount).
+  focused: (_: boolean) => false,
 };
 
 export const update = (model: Model, message: ThreadMessage): UpdateReturn =>
@@ -49,35 +61,74 @@ export const update = (model: Model, message: ThreadMessage): UpdateReturn =>
         return [
           evo(model, { trail: (_) => next.trail, live: (_) => next.live }),
           scroll ? [ScrollTrailCmd()] : none,
+          Option.none(),
         ];
       },
       // The registry's word about this thread: keep the header current
       // (name, mode, state, env — the auto-title lands here).
       ThreadChanged: ({ thread }) =>
-        model.id === thread.id ? [evo(model, { info: (_) => thread }), none] : [model, none],
+        model.id === thread.id
+          ? [evo(model, { info: (_) => thread }), none, Option.none()]
+          : [model, none, Option.none()],
 
       // trail
       TrailLoaded: ({ entries, tailSeq }) => [
         evo(model, { trail: (_) => Trail.Success({ data: { entries, tailSeq } }) }),
         [ScrollTrailCmd()],
+        Option.none(),
       ],
-      TrailFailed: ({ error }) => [evo(model, { trail: (_) => Trail.Failure({ error }) }), none],
+      TrailFailed: ({ error }) => [
+        evo(model, { trail: (_) => Trail.Failure({ error }) }),
+        none,
+        Option.none(),
+      ],
 
       // composer
-      ComposerChanged: ({ text }) => [evo(model, { composer: (_) => text }), none],
+      ComposerChanged: ({ text }) => [evo(model, { composer: (_) => text }), none, Option.none()],
+      ComposerFocused: () => [evo(model, { focused: (_) => true }), none, Option.none()],
+      ComposerBlurred: () => [evo(model, { focused: (_) => false }), none, Option.none()],
+      // The one send path: Enter and the send/start button both land here.
+      // No thread pinned → the welcome's quick start (CONTEXT.md: Quick
+      // start); pinned → prompt the thread. The starting guard ignores
+      // Enter while a create is in flight (no double threads).
       SendRequested: () => {
         const text = model.composer.trim();
-        if (text === "" || model.id === null) return [model, none];
-        return [model, [PromptCmd({ id: model.id, text })]];
+        if (text === "") return [model, none, Option.none()];
+        if (model.id === null) {
+          if (model.starting) return [model, none, Option.none()];
+          return [evo(model, { starting: (_) => true }), [QuickStartCmd({ text })], Option.none()];
+        }
+        return [model, [PromptCmd({ id: model.id, text })], Option.none()];
       },
-      PromptAcked: () => [evo(model, { composer: (_) => "" }), none],
-      SendFailed: ({ message }) => [evo(model, { notice: (_) => message }), none],
+      PromptAcked: () => [evo(model, { composer: (_) => "" }), none, Option.none()],
+      SendFailed: ({ message }) => [evo(model, { notice: (_) => message }), none, Option.none()],
+
+      // quick start landings
+      // A thread was born from the draft: clear the draft (the prompt was
+      // consumed), release the guard, and surface the fact — the root
+      // pushes its URL, exactly as if the user had clicked the rail row.
+      ThreadCreated: ({ thread }) => [
+        evo(model, { starting: (_) => false, composer: (_) => "", focused: (_) => false }),
+        none,
+        Option.some(OpenedThread({ id: thread.id })),
+      ],
+      // The create failed: release the guard, keep the draft (clear only on
+      // success), and show the notice under the composer.
+      CreateFailed: ({ message }) => [
+        evo(model, { starting: (_) => false, notice: (_) => message }),
+        none,
+        Option.none(),
+      ],
+
+      // abort
       AbortRequested: () =>
-        model.id === null ? [model, none] : [model, [AbortCmd({ id: model.id })]],
-      AbortDone: () => [model, none],
+        model.id === null
+          ? [model, none, Option.none()]
+          : [model, [AbortCmd({ id: model.id })], Option.none()],
+      AbortDone: () => [model, none, Option.none()],
 
       // housekeeping
-      ScrollDone: () => [model, none],
+      ScrollDone: () => [model, none, Option.none()],
     }),
   );
 

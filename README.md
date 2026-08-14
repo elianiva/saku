@@ -1,8 +1,11 @@
-# saku — 作, the software factory
+# saku — 作, a chat for pi coding agents
 
-A control plane for [pi coding agents](https://github.com/earendil-works/pi-coding-agent):
-durable, per-thread agents with sandboxed hands, driven from a web console or a
-CLI. One thread is one Durable Object — state lives in an append-only entry
+A chat for pi coding agents — a personal, cheaper take on
+[amp](https://ampcode.com)'s orb architecture: one durable thread per agent,
+hands where you choose (your own machine, or a sandbox VM), and a web console
+where the whole conversation stays visible. amp is the mature product; saku is
+the experiment — the same shape, rougher edges, built to fit one person's use
+case. One thread is one Durable Object — state lives in an append-only entry
 trail that survives restarts, so the agent process itself is disposable.
 
 ```
@@ -43,14 +46,14 @@ never hold session state; they attach, tail, and command.
 
 ## Layout
 
-| Package           | Role                                                                                                                                    |
-| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `packages/wire`   | the wire protocol: JSONL over WebSocket, hello/version, thread + session + skills commands, typed `WireClient` (an effect-machine actor) |
-| `packages/store`  | the durability seam: the `KvStore` Effect service (the Durable Object storage contract) with memory, file, and DO storage backend layers |
-| `packages/hub`    | the control-plane DO: registry, env provisioning (Box — incomplete, Freestyle planned), skills store, auth, routing, fan-out                              |
-| `packages/worker` | the thread DO: pi-agent-core `Agent` + `Session` over DO storage, env client, idle-stop                                                 |
-| `packages/env`    | the hands daemon: pi tool surface over a streaming protocol, local and in-VM                                                           |
-| `packages/cli`    | local daemon management: `saku env start\|stop\|status`                                                                                 |
+| Package           | Role                                                                                                                                       |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `packages/wire`   | the wire protocol: JSONL over WebSocket, hello/version, thread + session + skills commands, typed `WireClient` (an effect-machine actor)   |
+| `packages/store`  | the durability seam: the `KvStore` Effect service (the Durable Object storage contract) with memory, file, and DO storage backend layers   |
+| `packages/hub`    | the control-plane DO: registry, env provisioning (Box — incomplete, Freestyle planned), skills store, auth, routing, fan-out               |
+| `packages/worker` | the thread DO: pi-agent-core `Agent` + `Session` over DO storage, env client, idle-stop                                                    |
+| `packages/env`    | the hands daemon: pi tool surface over a streaming protocol, local and in-VM                                                               |
+| `packages/cli`    | local daemon management: `saku env start\|stop\|status`                                                                                    |
 | `packages/deploy` | the deployment's own code: the alchemy program (`alchemy.run.ts`), the workerd DOs (`SakuHubDO`/`SakuThreadDO`), the celld twin (`celld/`) |
 
 ## Prerequisites

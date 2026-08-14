@@ -17,12 +17,6 @@ export const RefreshRequested = Message.m("RefreshRequested");
 /** The registry broadcast: upsert into the list. */
 export const ThreadChanged = Message.m("ThreadChanged", { thread: ThreadInfo });
 
-// ---- quick start ----
-export const RailInputChanged = Message.m("RailInputChanged", { text: S.String });
-export const QuickStartRequested = Message.m("QuickStartRequested");
-export const ThreadCreated = Message.m("ThreadCreated", { thread: ThreadInfo });
-export const CreateFailed = Message.m("CreateFailed", { error: WireError });
-
 // ---- delete ----
 /** A rail row was clicked: the update emits `OpenedThread` for the root. */
 export const ClickedThread = Message.m("ClickedThread", { id: S.String });
@@ -35,10 +29,6 @@ export const RailMessage = S.Union([
   ListFailed,
   RefreshRequested,
   ThreadChanged,
-  RailInputChanged,
-  QuickStartRequested,
-  ThreadCreated,
-  CreateFailed,
   ClickedThread,
   DeleteRequested,
   ThreadDeleted,
@@ -51,8 +41,10 @@ export type RailMessage = S.Schema.Type<typeof RailMessage>;
  * 0009). Narrow and semantic: the root owns navigation, so "open this
  * thread" and "this thread was deleted" are the two facts the rail emits.
  * The root reacts by pushing the `/thread/:id` URL (or leaving `/` when the
- * deleted thread was the pinned one).
+ * deleted thread was the pinned one). `OpenedThread` is the root's own
+ * message now — both the rail (a row click) and the pane (a quick start)
+ * surface the same fact.
  */
-export const OpenedThread = Message.m("OpenedThread", { id: S.String });
+import type { OpenedThread } from "../root/message.ts";
 export const DeletedThread = Message.m("DeletedThread", { id: S.String });
 export type RailOutMessage = typeof OpenedThread.Type | typeof DeletedThread.Type;

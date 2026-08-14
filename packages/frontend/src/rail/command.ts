@@ -3,7 +3,8 @@
  * foldkit Commands landing rail messages. Errors never escape as defects —
  * every command body fails only with `WireError`, and the shared
  * `catchWireError` (root/command.ts) projects it into a `*Failed` message so
- * the rail can show it.
+ * the rail can show it. The quick-start command moved to the pane with the
+ * gesture (thread/command.ts).
  */
 
 import { Effect, Schema as S } from "effect";
@@ -11,14 +12,7 @@ import { Command } from "foldkit";
 
 import { catchWireError } from "../root/command.ts";
 import { Wire } from "../wire.ts";
-import {
-  CreateFailed,
-  DeleteFailed,
-  ListFailed,
-  ThreadCreated,
-  ThreadDeleted,
-  ThreadsListed,
-} from "./message.ts";
+import { DeleteFailed, ListFailed, ThreadDeleted, ThreadsListed } from "./message.ts";
 
 /** List the registry (the rail's grid). */
 export const ListThreadsCmd = Command.define("ListThreads", {
@@ -31,25 +25,6 @@ export const ListThreadsCmd = Command.define("ListThreads", {
     }),
     (error) => ListFailed({ error }),
   ),
-});
-
-/** Quick start: create the thread from the prompt and set it to work. */
-export const QuickStartCmd = Command.define("QuickStart", {
-  args: { text: S.String },
-  messages: [ThreadCreated, CreateFailed],
-  execute: ({ text }) =>
-    catchWireError(
-      Effect.gen(function* () {
-        const { client } = yield* Wire;
-        const created = yield* client.createThread(text, { autoName: true });
-        // The first prompt provisions the env and starts the run; the pane
-        // watches it through the events (CONTEXT.md: Quick start).
-        yield* client.prompt(created.id, text);
-        const thread = yield* client.getThread(created.id);
-        return ThreadCreated({ thread });
-      }),
-      (error) => CreateFailed({ error }),
-    ),
 });
 
 /** Delete a thread (registry record + worker storage). */

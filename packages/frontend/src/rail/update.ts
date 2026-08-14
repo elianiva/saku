@@ -15,9 +15,10 @@ import { evo } from "foldkit/struct";
 import type { ThreadInfo } from "@saku/wire";
 
 import type { AppRoute } from "../route.ts";
+import { OpenedThread } from "../root/message.ts";
 import { Wire } from "../wire.ts";
-import { DeleteThreadCmd, ListThreadsCmd, QuickStartCmd } from "./command.ts";
-import { DeletedThread, OpenedThread, type RailMessage, type RailOutMessage } from "./message.ts";
+import { DeleteThreadCmd, ListThreadsCmd } from "./command.ts";
+import { DeletedThread, type RailMessage, type RailOutMessage } from "./message.ts";
 import { Model, threadList } from "./model.ts";
 
 export type Commands = ReadonlyArray<Command.Command<RailMessage, never, Wire>>;
@@ -60,26 +61,6 @@ export const update = (model: Model, message: RailMessage): UpdateReturn =>
       // The registry broadcast: keep the list current (a thread's state,
       // env, or name changed — the auto-title lands here).
       ThreadChanged: ({ thread }) => [upsertThread(model, thread), none, Option.none()],
-
-      // quick start
-      RailInputChanged: ({ text }) => [evo(model, { input: (_) => text }), none, Option.none()],
-      QuickStartRequested: () => {
-        const text = model.input.trim();
-        if (text === "") return [model, none, Option.none()];
-        return [evo(model, { input: (_) => "" }), [QuickStartCmd({ text })], Option.none()];
-      },
-      // A thread was born: surface it upward — the root pushes its URL,
-      // exactly as if the user had clicked the row.
-      ThreadCreated: ({ thread }) => [
-        upsertThread(model, thread),
-        none,
-        Option.some(OpenedThread({ id: thread.id })),
-      ],
-      CreateFailed: ({ error }) => [
-        evo(model, { notice: (_) => error.message }),
-        none,
-        Option.none(),
-      ],
 
       // delete
       // A row clicked: surface the fact upward and let the root navigate.
