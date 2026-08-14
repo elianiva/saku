@@ -72,7 +72,7 @@ export interface EnvDaemonOptions {
   /** Default workspace for connections that omit `cwd` in their hello. */
   readonly cwd?: string;
   readonly fs: FileSystem.FileSystem;
-  readonly log?: (message: string) => void;
+  readonly log?: (message: string) => Effect.Effect<void, never, never>;
 }
 
 export interface EnvDaemonShape {
@@ -87,7 +87,7 @@ export interface EnvConnectionContext {
   readonly token: string;
   readonly cwd: string;
   readonly fs: FileSystem.FileSystem;
-  readonly log: (message: string) => void;
+  readonly log: (message: string) => Effect.Effect<void, never, never>;
 }
 
 const decodeOp = (value: unknown): Result.Result<EnvOpType, string> =>
@@ -260,7 +260,7 @@ export const handleEnvConnection = (
       });
     });
     if (Result.isFailure(helloOutcome)) {
-      ctx.log(helloOutcome.failure);
+      yield* ctx.log(helloOutcome.failure);
       drop(helloOutcome.failure);
       return;
     }
@@ -357,7 +357,7 @@ export const makeEnvDaemon = (
 ): Effect.Effect<EnvDaemonShape, Error, Scope.Scope> =>
   Effect.gen(function* () {
     const { token, fs } = options;
-    const log = options.log ?? (() => {});
+    const log = options.log ?? (() => Effect.void);
     const ctx: EnvConnectionContext = {
       token,
       cwd: options.cwd ?? process.cwd(),
@@ -373,7 +373,8 @@ export const makeEnvDaemon = (
         void Effect.runFork(Effect.scoped(handleEnvConnection(socket, ctx)));
       });
       server.on("error", (error) => {
-        log(`server error: ${error.message}`);
+        // The socket callback is outside the Effect runtime: fork the log.
+        void Effect.runFork(log(`server error: ${error.message}`));
         resume(Effect.fail(error));
       });
       server.on("listening", () => resume(Effect.succeed(server)));

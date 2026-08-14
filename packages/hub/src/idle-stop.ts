@@ -42,7 +42,7 @@ export interface IdleStopDeps {
   /** The thread's wire view; `fire` broadcasts it after the env flip. */
   readonly infoOf: (threadId: string) => Effect.Effect<ThreadInfo, HubError, never>;
   /** The hub's fan-out (the wire server's `thread_changed` broadcasts). */
-  readonly emitThreadChanged: (thread: ThreadInfo) => void;
+  readonly emitThreadChanged: (thread: ThreadInfo) => Effect.Effect<void, never, never>;
   /** Idle before a sandbox env is stopped; the hub supplies the default. */
   readonly idleStopMs: number;
   /**
@@ -135,7 +135,7 @@ export const makeIdleStop = (deps: IdleStopDeps): Effect.Effect<IdleStop, never,
         yield* workerRef.setEnvHandle(threadId, null).pipe(Effect.catch(() => Effect.void));
         yield* registry.setEnv(threadId, "stopped");
         const after = yield* infoOf(threadId);
-        emitThreadChanged(after);
+        yield* emitThreadChanged(after);
       });
 
     const close: Effect.Effect<void, never> = Ref.get(timersRef).pipe(

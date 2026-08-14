@@ -79,13 +79,13 @@ class AuthJsonCredentialStore implements CredentialStore {
         // knowing (the daemon never mutates credentials in v1, so a malformed
         // file is the user's to fix).
         if (!isNotFound(content.failure)) {
-          console.error(`[worker] failed to read auth.json: ${String(content.failure)}`);
+          yield* Effect.logError(`[worker] failed to read auth.json: ${String(content.failure)}`);
         }
         return new AuthJsonCredentialStore(path, fs, {});
       }
       const parsed = Result.try(() => JSON.parse(content.success) as unknown);
       if (Result.isFailure(parsed)) {
-        console.error(`[worker] failed to read auth.json: ${String(parsed.failure)}`);
+        yield* Effect.logError(`[worker] failed to read auth.json: ${String(parsed.failure)}`);
         return new AuthJsonCredentialStore(path, fs, {});
       }
       if (typeof parsed.success === "object" && parsed.success !== null) {

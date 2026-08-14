@@ -171,6 +171,7 @@ export const threadIdleStop = (
 /** Push a report/event/idle-stop firing to the hub (best-effort). */
 export const pushToHub = (env: DeploymentEnv, push: HubPush): void => {
   void hubRpc(env, "/push", push).catch((error: unknown) => {
-    console.error(`[thread-do] hub push failed: ${String(error)}`);
+    // The push is a plain promise boundary: fork the log.
+    void Effect.runFork(Effect.logError(`[thread-do] hub push failed: ${String(error)}`));
   });
 };

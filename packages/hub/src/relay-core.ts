@@ -30,7 +30,7 @@ const DECODE_ATTACH = Schema.decodeUnknownSync(RelayAttach);
 export interface RelayServerOptions {
   /** The deployment secret both sides present in their first frame. */
   readonly token: string;
-  readonly log?: (message: string) => void;
+  readonly log?: (message: string) => Effect.Effect<void, never, never>;
 }
 
 export interface HubRelayShape {
@@ -75,7 +75,7 @@ export const makeHubRelayCore = (
   options: RelayServerOptions,
 ): Effect.Effect<HubRelayCoreShape, never, never> =>
   Effect.gen(function* () {
-    const log = options.log ?? (() => {});
+    const log = options.log ?? (() => Effect.void);
     const envsRef = yield* Ref.make<Map<string, SocketLike>>(new Map());
     const waitingRef = yield* Ref.make<Map<string, Set<SocketLike>>>(new Map());
     const closedRef = yield* Ref.make(false);
@@ -225,11 +225,12 @@ export const makeHubRelayCore = (
             failSocket(socket, "invalid relay token");
             return;
           }
-          log(`env registered: ${hello.success.envId.slice(0, 8)}`);
+          // The relay's callbacks are outside the Effect runtime: fork the logs.
+          void Effect.runFork(log(`env registered: ${hello.success.envId.slice(0, 8)}`));
           register(hello.success.envId, socket);
           socket.once("close", () => {
             unregister(hello.success.envId, socket);
-            log(`env unregistered: ${hello.success.envId.slice(0, 8)}`);
+            void Effect.runFork(log(`env unregistered: ${hello.success.envId.slice(0, 8)}`));
           });
           return;
         }

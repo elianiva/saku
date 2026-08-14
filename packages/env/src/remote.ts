@@ -42,6 +42,7 @@ import {
   toPiError,
   type EnvOp as EnvOpType,
 } from "./protocol.ts";
+import { Effect } from "effect";
 import { type SocketLike } from "./socket.ts";
 
 export {
@@ -104,7 +105,7 @@ export interface RemoteEnvOptions {
   readonly relay?: { readonly envId: string; readonly token: string };
   /** Per-request cap; `exec` may override with its own timeout. Default: none. */
   readonly requestTimeoutMs?: number;
-  readonly log?: (message: string) => void;
+  readonly log?: (message: string) => Effect.Effect<void, never, never>;
 }
 
 interface Pending {
@@ -150,7 +151,7 @@ export class RemoteEnv implements ExecutionEnv {
   private readonly socketFactory: (url: string) => SocketLike;
   private readonly relay: { readonly envId: string; readonly token: string } | undefined;
   private readonly requestTimeoutMs: number | undefined;
-  private readonly log: (message: string) => void;
+  private readonly log: (message: string) => Effect.Effect<void, never, never>;
 
   private socket: SocketLike | null = null;
   private pending = new Map<string, Pending>();
@@ -167,7 +168,7 @@ export class RemoteEnv implements ExecutionEnv {
     this.socketFactory = options.socket;
     this.relay = options.relay;
     this.requestTimeoutMs = options.requestTimeoutMs;
-    this.log = options.log ?? (() => {});
+    this.log = options.log ?? (() => Effect.void);
   }
 
   /** Open the connection, attach through the relay if configured, hello. */
@@ -208,7 +209,8 @@ export class RemoteEnv implements ExecutionEnv {
       socket.on("message", (data) => this.onMessage(data));
       socket.on("error", (error) => {
         const message = error instanceof Error ? error.message : String(error);
-        this.log(`env connection error: ${message}`);
+        // The socket callback is outside the Effect runtime: fork the log.
+        void Effect.runFork(this.log(`env connection error: ${message}`));
         fail(
           new EnvConnectionError({
             kind: "socket_error",

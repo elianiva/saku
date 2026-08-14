@@ -81,11 +81,8 @@ export const makeHubServer = (
     const closedRef = yield* Ref.make(false);
     const serverRef = yield* Ref.make<Option.Option<WebSocketServer>>(Option.none());
 
-    const log = (message: string): void => {
-      // The lint gate allows warn/error only; server failures are the
-      // interesting events (the URL is returned to the caller, not logged).
-      console.error(`[saku-hub] ${message}`);
-    };
+    const log = (message: string): Effect.Effect<void, never, never> =>
+      Effect.logError(`[saku-hub] ${message}`);
 
     const close = (): Effect.Effect<void, never> =>
       Effect.gen(function* () {
@@ -116,7 +113,8 @@ export const makeHubServer = (
         void Effect.runFork(core.runConnection(asSocketLike(socket)).pipe(Effect.scoped));
       },
       onError: (error) => {
-        log(`server error: ${error.message}`);
+        // The listenWs mapper is a sync callback: fork the log.
+        void Effect.runFork(log(`server error: ${error.message}`));
         return new HubError({ kind: "startup", message: error.message, cause: error });
       },
     });

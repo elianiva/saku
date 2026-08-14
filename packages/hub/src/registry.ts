@@ -96,11 +96,12 @@ const load = (kv: KvStoreShape): Effect.Effect<readonly HubRecord[], never> =>
     const entries = yield* kv.list({ prefix: "threads/" });
     return yield* Effect.forEach(entries, (entry) =>
       Effect.try(() => decodeRecord(entry.value)).pipe(
-        Effect.catch((error) => {
+        Effect.catch((error) =>
           // Corrupt record: skip (the key stays on disk for inspection).
-          console.warn(`[hub] skipping corrupt registry record: ${String(error)}`);
-          return Effect.succeed(undefined);
-        }),
+          Effect.logWarning(`[hub] skipping corrupt registry record: ${String(error)}`).pipe(
+            Effect.as(undefined),
+          ),
+        ),
       ),
     ).pipe(Effect.map((records) => records.filter((record) => record !== undefined)));
   });

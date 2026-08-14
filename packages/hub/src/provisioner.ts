@@ -104,7 +104,7 @@ export interface ProvisionerDeps {
   readonly readBundle: () => Effect.Effect<string, HubError, never>;
   /** The env protocol token minted per box (test seam; random by default). */
   readonly envToken?: () => string;
-  readonly log?: (message: string) => void;
+  readonly log?: (message: string) => Effect.Effect<void, never, never>;
 }
 
 export interface EnvProvisioner {
@@ -126,7 +126,7 @@ export interface EnvProvisioner {
 }
 
 /** Poll options with the provisioner's log when set (exactOptional-safe). */
-const pollOptions = (deps: ProvisionerDeps): { log?: (message: string) => void } =>
+const pollOptions = (deps: ProvisionerDeps): { log?: (message: string) => Effect.Effect<void, never, never> } =>
   deps.log === undefined ? {} : { log: deps.log };
 
 const toHubError =
@@ -168,7 +168,7 @@ const bootstrapBox = (
   box: BoxInfo,
 ): Effect.Effect<EnvHandle, HubError, never> =>
   Effect.gen(function* () {
-    const log = deps.log ?? (() => {});
+    const log = deps.log ?? (() => Effect.void);
     const fail = toHubError(`box ${box.id} bootstrap failed`);
     const bundle = yield* deps.readBundle();
     const envToken = deps.envToken?.() ?? randomToken();
@@ -195,7 +195,7 @@ const bootstrapBox = (
         ),
       );
     }
-    log(`box ${box.id} daemon installed; waiting for its URL`);
+    yield* log(`box ${box.id} daemon installed; waiting for its URL`);
     // The wrapper writes host.url shortly after systemd starts it.
     const url = yield* readHostUrl(deps, box.id);
     yield* probeDaemon(url, envToken);

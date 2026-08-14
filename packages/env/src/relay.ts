@@ -33,7 +33,7 @@ export interface RelayClientOptions {
   /** The env protocol hello this connection presents after the attach. */
   readonly hello: Pick<EnvHello, "token" | "version" | "cwd">;
   readonly fs: EnvConnectionContext["fs"];
-  readonly log?: (message: string) => void;
+  readonly log?: (message: string) => Effect.Effect<void, never, never>;
 }
 
 export interface RelayClientShape {
@@ -88,10 +88,10 @@ const runRegistration = (
       });
     });
     if (Result.isFailure(outcome)) {
-      options.log?.(`relay failed: ${outcome.failure}`);
+      yield* (options.log?.(`relay failed: ${outcome.failure}`) ?? Effect.void);
       return false;
     }
-    options.log?.(`relay registered (${options.envId.slice(0, 8)})`);
+    yield* (options.log?.(`relay registered (${options.envId.slice(0, 8)})`) ?? Effect.void);
     // Registration accepted: serve the env protocol on this socket until it
     // drops; the hub pipes a worker's attach onto it.
     yield* handleEnvConnection(socket, ctx);
@@ -107,7 +107,7 @@ export const makeEnvRelayClient = (
   options: RelayClientOptions,
 ): Effect.Effect<RelayClientShape, never, Scope.Scope> =>
   Effect.gen(function* () {
-    const log = options.log ?? (() => {});
+    const log = options.log ?? (() => Effect.void);
     const ctx: EnvConnectionContext = {
       token: options.hello.token,
       cwd: options.hello.cwd ?? process.cwd(),
@@ -121,7 +121,7 @@ export const makeEnvRelayClient = (
         const registered = yield* runRegistration(options, ctx);
         yield* Ref.set(connectedRef, registered);
         if (!(yield* Ref.get(runningRef))) return;
-        log("relay disconnected; reconnecting");
+        yield* log("relay disconnected; reconnecting");
         yield* Effect.sleep(`${BACKOFF_MS} millis`);
       }
     });

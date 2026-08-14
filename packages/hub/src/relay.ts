@@ -12,7 +12,7 @@ export const makeHubRelay = (
   options: RelayServerOptions,
 ): Effect.Effect<HubRelayShape, Error, Scope.Scope> =>
   Effect.gen(function* () {
-    const log = options.log ?? (() => {});
+    const log = options.log ?? (() => Effect.void);
     const core = yield* makeHubRelayCore({ token: options.token, log });
     // listenWs owns the server's lifetime: it resolves once the server is
     // listening and closes it when the scope closes (interruption) — the
@@ -20,7 +20,8 @@ export const makeHubRelay = (
     const server = yield* listenWs<Error>({
       onConnection: (socket) => core.handleConnection(socket as never),
       onError: (error) => {
-        log(`relay error: ${error.message}`);
+        // The listenWs mapper is a sync callback: fork the log.
+        void Effect.runFork(log(`relay error: ${error.message}`));
         return error;
       },
     });

@@ -141,20 +141,20 @@ export const makeHub = (deps: HubDeps): Effect.Effect<HubShape, never, never> =>
     // no runSync/runFork discipline split on the same structure.
     const listeners = new Set<HubListener>();
 
-    const notify = (event: HubEvent): void => {
-      // A throwing listener must not take the hub down. The snapshot keeps
-      // a listener that unsubscribes itself mid-notify from starving others.
-      for (const listener of Array.from(listeners)) {
-        const result = Result.try(() => listener(event));
-        if (Result.isFailure(result)) {
-          console.warn(`[hub] listener failed: ${messageOf(result.failure)}`);
+    const notify = (event: HubEvent): Effect.Effect<void, never, never> =>
+      Effect.gen(function* () {
+        // A throwing listener must not take the hub down. The snapshot keeps
+        // a listener that unsubscribes itself mid-notify from starving others.
+        for (const listener of Array.from(listeners)) {
+          const result = Result.try(() => listener(event));
+          if (Result.isFailure(result)) {
+            yield* Effect.logWarning(`[hub] listener failed: ${messageOf(result.failure)}`);
+          }
         }
-      }
-    };
+      });
 
-    const emitThreadChanged = (thread: ThreadInfo): void => {
+    const emitThreadChanged = (thread: ThreadInfo): Effect.Effect<void, never, never> =>
       notify({ type: "thread_changed", thread });
-    };
 
     const infoOf = (threadId: string): Effect.Effect<ThreadInfo, HubError, never> =>
       Effect.gen(function* () {
@@ -216,10 +216,9 @@ export const makeHub = (deps: HubDeps): Effect.Effect<HubShape, never, never> =>
           Option.isSome(after) &&
           !threadInfoEq(before.value, after.value)
         ) {
-          emitThreadChanged(after.value);
+          yield* emitThreadChanged(after.value);
         }
       });
-
     const events: HubEventSink = {
       sessionEvent: (threadId, event, tailSeq) => {
         // Fire-and-forget pushes: a failing arm (the controller's alarm
@@ -229,7 +228,7 @@ export const makeHub = (deps: HubDeps): Effect.Effect<HubShape, never, never> =>
             yield* registry.setTailSeq(threadId, tailSeq);
             // Any event is activity: reset the idle timer.
             yield* idleStop.arm(threadId);
-            notify({ type: "session_event", threadId, event });
+            yield* notify({ type: "session_event", threadId, event });
           }).pipe(Effect.catch(() => Effect.void)),
         );
       },
@@ -258,7 +257,7 @@ export const makeHub = (deps: HubDeps): Effect.Effect<HubShape, never, never> =>
         if (Result.isFailure(outcome)) {
           yield* registry.setEnv(thread.id, "error");
           const info = yield* infoOf(thread.id);
-          emitThreadChanged(info);
+          yield* emitThreadChanged(info);
           return yield* Effect.fail(makeHubError("provisioner", outcome.failure.message));
         }
         if (Option.isSome(outcome.success)) {
@@ -270,7 +269,7 @@ export const makeHub = (deps: HubDeps): Effect.Effect<HubShape, never, never> =>
           .setEnvHandle(thread.id, Option.getOrNull(outcome.success))
           .pipe(Effect.catch(() => Effect.void));
         const info = yield* infoOf(thread.id);
-        emitThreadChanged(info);
+        yield* emitThreadChanged(info);
         // The thread is idle until the command runs: arm the timer now.
         yield* idleStop.arm(thread.id);
       });
@@ -296,7 +295,7 @@ export const makeHub = (deps: HubDeps): Effect.Effect<HubShape, never, never> =>
             );
           }
           const info = yield* infoOf(record.id);
-          emitThreadChanged(info);
+          yield* emitThreadChanged(info);
           return info;
         }),
       getThread: (threadIdInput) =>
@@ -314,7 +313,7 @@ export const makeHub = (deps: HubDeps): Effect.Effect<HubShape, never, never> =>
           // A user rename wins over auto-title forever (CONTEXT.md: Auto-title).
           yield* registry.update(threadId, { name: trimmed, autoName: false });
           const info = yield* infoOf(threadId);
-          emitThreadChanged(info);
+          yield* emitThreadChanged(info);
           return info;
         }),
       deleteThread: (threadIdInput) =>
@@ -331,7 +330,7 @@ export const makeHub = (deps: HubDeps): Effect.Effect<HubShape, never, never> =>
               .pipe(Effect.catch(() => Effect.void));
           }
           yield* registry.delete(threadId);
-          emitThreadChanged(info);
+          yield* emitThreadChanged(info);
           return info;
         }),
       runSessionCommand: (threadIdInput, command) =>

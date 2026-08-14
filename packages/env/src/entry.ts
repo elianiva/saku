@@ -43,9 +43,8 @@ const program = Effect.gen(function* () {
   const cwd = args.get("--cwd") ?? process.cwd();
   const port = Number(args.get("--port") ?? "0");
   const fs = yield* FileSystem.FileSystem;
-  const log = (message: string): void => {
-    console.log(`[saku-env] ${message}`);
-  };
+  const log = (message: string): Effect.Effect<void, never, never> =>
+    Effect.logInfo(`[saku-env] ${message}`);
 
   const daemon = yield* makeEnvDaemon({
     token,
@@ -54,7 +53,7 @@ const program = Effect.gen(function* () {
     log,
     ...(Number.isInteger(port) && port > 0 ? { port } : {}),
   });
-  log(`listening on ${daemon.url}`);
+  yield* log(`listening on ${daemon.url}`);
   // The CLI reads the URL from ~/.saku/env.url; create the dir first.
   yield* fs
     .makeDirectory(dirname(getEnvUrlPath()), { recursive: true })
@@ -74,7 +73,7 @@ const program = Effect.gen(function* () {
     const envId = args.get("--env-id");
     const hubToken = args.get("--hub-token");
     if (envId === undefined || hubToken === undefined) {
-      log("--hub requires --env-id and --hub-token; skipping relay registration");
+      yield* log("--hub requires --env-id and --hub-token; skipping relay registration");
     } else {
       yield* makeEnvRelayClient({
         url: hub,
@@ -84,7 +83,7 @@ const program = Effect.gen(function* () {
         fs,
         log,
       });
-      log(`relay client started for ${envId.slice(0, 8)} (${hub})`);
+      yield* log(`relay client started for ${envId.slice(0, 8)} (${hub})`);
     }
   }
 });

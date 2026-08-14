@@ -45,11 +45,12 @@ export const makeSkillsStore = (): Effect.Effect<SkillsStoreShape, HubError, KvS
     const entries = yield* kv.list({ prefix: "skills/" });
     const loaded = yield* Effect.forEach(entries, (entry) =>
       Effect.try(() => decodeSkill(entry.value)).pipe(
-        Effect.catch((error) => {
+        Effect.catch((error) =>
           // Corrupt record: skip (the key stays on disk for inspection).
-          console.warn(`[hub] skipping corrupt skill record: ${String(error)}`);
-          return Effect.succeed(undefined);
-        }),
+          Effect.logWarning(`[hub] skipping corrupt skill record: ${String(error)}`).pipe(
+            Effect.as(undefined),
+          ),
+        ),
       ),
     ).pipe(Effect.map((skills) => skills.filter((skill) => skill !== undefined)));
     const skillsRef = yield* Ref.make<ReadonlyMap<string, SkillInfo>>(

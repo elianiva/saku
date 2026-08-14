@@ -160,9 +160,8 @@ export const makeSakuDaemon = (options: {
     // not build two live hosts for one thread.
     const hostSemaphore = yield* Semaphore.make(1);
 
-    const log = (message: string): void => {
-      console.log(`[saku-worker] ${message}`);
-    };
+    const log = (message: string): Effect.Effect<void, never, never> =>
+      Effect.logInfo(`[saku-worker] ${message}`);
 
     // -- event sinks ---------------------------------------------------------
 
@@ -429,7 +428,7 @@ export const makeSakuDaemon = (options: {
           const existing = hosts.get(threadId);
           if (existing !== undefined) {
             if (existing.threadState !== "crashed") return existing;
-            log(`thread ${threadId.slice(0, 8)} crashed; rebuilding host`);
+            yield* log(`thread ${threadId.slice(0, 8)} crashed; rebuilding host`);
             yield* existing.dispose();
             yield* Ref.update(hostsRef, (hosts) => {
               const next = new Map(hosts);
@@ -551,7 +550,8 @@ export const makeSakuDaemon = (options: {
         void Effect.runFork(Effect.scoped(core.runConnection(socket as unknown as ServerSocket)));
       },
       onError: (error) => {
-        log(`server error: ${error.message}`);
+        // The listenWs mapper is a sync callback: fork the log.
+        void Effect.runFork(log(`server error: ${error.message}`));
         return new DaemonError({ code: "startup", message: error.message, cause: error });
       },
     });
@@ -560,13 +560,9 @@ export const makeSakuDaemon = (options: {
     void Effect.runFork(
       fs
         .writeFileString(urlPath, `${url}\n`)
-        .pipe(
-          Effect.catch((error) =>
-            Effect.sync(() => log(`failed to write ${urlPath}: ${error.message}`)),
-          ),
-        ),
+        .pipe(Effect.catch((error) => log(`failed to write ${urlPath}: ${error.message}`))),
     );
-    log(`listening on ${url}`);
+    yield* log(`listening on ${url}`);
     yield* Ref.set(serverRef, Option.some(server));
     yield* Effect.addFinalizer(() => close());
     return { url, close };

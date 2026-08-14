@@ -233,13 +233,13 @@ const emit = (
   kind: ClientEventKind,
   payload: ClientEvents[ClientEventKind],
 ): Effect.Effect<void, never, never> =>
-  Effect.sync(() => {
+  Effect.gen(function* () {
     const set = deps.listeners.get(kind);
     if (set === undefined) return;
     for (const listener of set) {
       const result = Result.try(() => listener(payload));
       if (Result.isFailure(result)) {
-        console.error("[wire] listener failed:", result.failure);
+        yield* Effect.logError("[wire] listener failed:", result.failure);
       }
     }
   });

@@ -62,7 +62,7 @@ const boxProvisioner = (env: DeploymentEnv) =>
         for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
         return new TextDecoder().decode(bytes);
       }),
-    log: (message) => console.error(`[hub-do] box: ${message}`),
+    log: (message) => Effect.logError(`[hub-do] box: ${message}`),
   });
 
 /**
@@ -203,7 +203,8 @@ export class SakuHubDO {
       // are per-connection (the socket closes, the hub keeps serving).
       const core = await this.wireCore();
       void Effect.runPromise(Effect.scoped(core.runConnection(socket))).catch((error: unknown) => {
-        console.error(`[hub-do] connection failed: ${String(error)}`);
+        // The DO's fetch is a plain promise boundary: fork the log.
+        void Effect.runFork(Effect.logError(`[hub-do] connection failed: ${String(error)}`));
       });
     } else {
       this.relayCore().handleConnection(socket);

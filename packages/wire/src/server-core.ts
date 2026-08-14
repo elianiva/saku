@@ -78,7 +78,7 @@ export interface WireServerOptions {
   readonly pid?: number;
   readonly handlers: WireServerHandlers;
   /** Send/error diagnostics (the daemon's log; the hub's warn). */
-  readonly log?: (message: string) => void;
+  readonly log?: (message: string) => Effect.Effect<void, never, never>;
 }
 
 export interface WireServerShape {
@@ -109,17 +109,16 @@ export const makeWireServer = (
     const pid = options.pid ?? (typeof process !== "undefined" ? process.pid : 0);
     const clientsRef = yield* Ref.make<ReadonlySet<Client>>(new Set());
 
-    const log = (message: string): void => {
-      if (options.log !== undefined) options.log(message);
-    };
+    const log = (message: string): Effect.Effect<void, never, never> =>
+      options.log === undefined ? Effect.void : options.log(message);
 
     const send = (client: Client, event: WireEvent): Effect.Effect<void, never> =>
-      Effect.sync(() => {
+      Effect.gen(function* () {
         // A socket that closed between the check and the send is a no-op;
         // the close handler cleans the client up.
         const sent = Result.try(() => client.socket.send(serializeFrame(event)));
         if (Result.isFailure(sent)) {
-          log(`send failed: ${String(sent.failure)}`);
+          yield* log(`send failed: ${String(sent.failure)}`);
         }
       });
 
@@ -244,7 +243,10 @@ export const makeWireServer = (
           }
         };
         const onError = (error: unknown): void => {
-          log(`socket error: ${error instanceof Error ? error.message : String(error)}`);
+          // The socket callback is outside the Effect runtime: fork the log.
+          void Effect.runFork(
+            log(`socket error: ${error instanceof Error ? error.message : String(error)}`),
+          );
         };
         socket.on("message", onMessage);
         socket.on("error", onError);

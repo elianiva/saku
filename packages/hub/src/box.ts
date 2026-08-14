@@ -83,7 +83,7 @@ class PollNotReady extends Schema.TaggedError<PollNotReady>()("PollNotReady", {
 export const pollUntilReady = (
   api: BoxApi,
   boxId: string,
-  options: { intervalMs?: number; timeoutMs?: number; log?: (message: string) => void } = {},
+  options: { intervalMs?: number; timeoutMs?: number; log?: (message: string) => Effect.Effect<void, never, never> } = {},
 ): Effect.Effect<BoxInfo, BoxError, never> => {
   const intervalMs = options.intervalMs ?? 1000;
   const timeoutMs = options.timeoutMs ?? 5 * 60 * 1000;

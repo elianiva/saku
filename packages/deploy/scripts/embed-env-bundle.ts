@@ -13,6 +13,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { Effect } from "effect";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "..");
@@ -32,4 +33,4 @@ export const ENV_BUNDLE_BASE64 = ${JSON.stringify(encoded)};
 
 await mkdir(dirname(outPath), { recursive: true });
 await writeFile(outPath, out);
-console.log(`embedded ${bundle.length} bytes -> ${outPath}`);
+await Effect.runPromise(Effect.logInfo(`embedded ${bundle.length} bytes -> ${outPath}`));

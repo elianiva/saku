@@ -246,7 +246,7 @@ describe("makeIdleStop — the policy directly", () => {
             }
             return info.value;
           }),
-        emitThreadChanged: (thread) => changed.push(thread),
+        emitThreadChanged: (thread) => Effect.sync(() => changed.push(thread)),
         idleStopMs: options.idleStopMs ?? IDLE_MS,
         controller: options.controller,
       }).pipe(Effect.map((idleStop) => ({ idleStop, released, handles, envs, changed }))),

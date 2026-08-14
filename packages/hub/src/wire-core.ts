@@ -115,7 +115,7 @@ export const makeWireCore = (
     const core: WireServerShape = yield* makeWireServer({
       token: () => Effect.succeed(token),
       pid,
-      log: (message) => console.warn(`[saku-hub] ${message}`),
+      log: (message) => Effect.logWarning(`[saku-hub] ${message}`),
       handlers: {
         runHubCommand: runHubCommand(hub),
         runSessionCommand: (threadId, command) => hub.runSessionCommand(threadId, command),

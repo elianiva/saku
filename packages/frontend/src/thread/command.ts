@@ -36,9 +36,10 @@ export const LoadTrailCmd = Command.define("LoadTrail", {
       Effect.gen(function* () {
         const { client } = yield* Wire;
         const result = yield* client.getEntries(id, 0);
-        const entries = result.entries
-          .map(decodeEntry)
-          .filter((entry): entry is EntryProjection => entry !== undefined);
+        const decoded = yield* Effect.forEach(result.entries, decodeEntry);
+        const entries = decoded.filter(
+          (entry): entry is EntryProjection => entry !== undefined,
+        );
         return TrailLoaded({ entries, tailSeq: result.tailSeq });
       }),
       (error) => TrailFailed({ error: error.message }),
