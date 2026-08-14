@@ -23,7 +23,7 @@
  * - `/disarm-idle`     — `deleteAlarm()`
  */
 
-import { Effect, Option } from "effect";
+import { Effect, Match, Option } from "effect";
 import { RemoteEnv, workerdSocketFactory, type EnvHandle } from "@saku/env/remote";
 import {
   SessionHost,
@@ -118,24 +118,22 @@ export class SakuThreadDO {
   async fetch(request: Request): Promise<Response> {
     const path = new URL(request.url).pathname;
     try {
-      switch (path) {
-        case "/create":
-          return await this.handleCreate(request);
-        case "/delete":
-          return await this.handleDelete();
-        case "/command":
-          return await this.handleCommand(request);
-        case "/set-env-handle":
-          return await this.handleSetEnvHandle(request);
-        case "/arm-idle":
+      return await Match.value(path).pipe(
+        Match.withReturnType<Promise<Response>>(),
+        Match.when("/create", () => this.handleCreate(request)),
+        Match.when("/delete", () => this.handleDelete()),
+        Match.when("/command", () => this.handleCommand(request)),
+        Match.when("/set-env-handle", () => this.handleSetEnvHandle(request)),
+        Match.when("/arm-idle", async () => {
           await this.state.storage.setAlarm(Date.now() + this.idleStopMs());
           return jsonOk({});
-        case "/disarm-idle":
+        }),
+        Match.when("/disarm-idle", async () => {
           await this.state.storage.deleteAlarm();
           return jsonOk({});
-        default:
-          return jsonError("malformed", `unknown path: ${path}`);
-      }
+        }),
+        Match.orElse(() => Promise.resolve(jsonError("malformed", `unknown path: ${path}`))),
+      );
     } catch (error) {
       // The tagged `CommandError` (SessionHostError | RegistryError) rejects
       // through the boundary; the envelope keeps its kind, so the hub never

@@ -20,7 +20,7 @@
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
-import { Data, Effect, FileSystem, Option, Result } from "effect";
+import { Data, Effect, FileSystem, Match, Option, Result } from "effect";
 import {
   ExecutionError,
   FileError,
@@ -41,18 +41,16 @@ const errnoCode = (error: unknown): string | undefined => {
     cause?: { code?: string };
   };
   if (e._tag === "PlatformError" && e.reason !== undefined) {
-    switch (e.reason._tag) {
-      case "NotFound":
-        return "ENOENT";
-      case "PermissionDenied":
-        return "EACCES";
-      case "BadResource": {
-        const code = (e.reason.cause as NodeJS.ErrnoException | undefined)?.code;
+    return Match.value(e.reason).pipe(
+      Match.withReturnType<string | undefined>(),
+      Match.when({ _tag: "NotFound" }, () => "ENOENT"),
+      Match.when({ _tag: "PermissionDenied" }, () => "EACCES"),
+      Match.when({ _tag: "BadResource" }, (reason) => {
+        const code = (reason.cause as NodeJS.ErrnoException | undefined)?.code;
         return code === "EISDIR" || code === "ENOTDIR" ? code : undefined;
-      }
-      default:
-        return undefined;
-    }
+      }),
+      Match.orElse(() => undefined),
+    );
   }
   if (e._tag === "NotFound") return "ENOENT";
   if (e._tag === "PermissionDenied") return "EACCES";
@@ -63,21 +61,27 @@ const errnoCode = (error: unknown): string | undefined => {
 
 const mapFileError = (path: string, error: unknown): FileError => {
   const code = errnoCode(error);
-  switch (code) {
-    case "ENOENT":
-      return new FileError("not_found", `no such file or directory: ${path}`, path, asError(error));
-    case "EACCES":
-    case "EPERM":
-      return new FileError("permission_denied", `permission denied: ${path}`, path, asError(error));
-    case "EISDIR":
-      return new FileError("is_directory", `is a directory: ${path}`, path, asError(error));
-    case "ENOTDIR":
-      return new FileError("not_directory", `not a directory: ${path}`, path, asError(error));
-    case "EINVAL":
-      return new FileError("invalid", `invalid path: ${path}`, path, asError(error));
-    default:
-      return new FileError("unknown", `filesystem error: ${String(error)}`, path, asError(error));
-  }
+  return Match.value(code).pipe(
+    Match.withReturnType<FileError>(),
+    Match.when("ENOENT", () =>
+      new FileError("not_found", `no such file or directory: ${path}`, path, asError(error)),
+    ),
+    Match.whenOr("EACCES", "EPERM", () =>
+      new FileError("permission_denied", `permission denied: ${path}`, path, asError(error)),
+    ),
+    Match.when("EISDIR", () =>
+      new FileError("is_directory", `is a directory: ${path}`, path, asError(error)),
+    ),
+    Match.when("ENOTDIR", () =>
+      new FileError("not_directory", `not a directory: ${path}`, path, asError(error)),
+    ),
+    Match.when("EINVAL", () =>
+      new FileError("invalid", `invalid path: ${path}`, path, asError(error)),
+    ),
+    Match.orElse(() =>
+      new FileError("unknown", `filesystem error: ${String(error)}`, path, asError(error)),
+    ),
+  );
 };
 
 const asError = (error: unknown): Error | undefined =>

@@ -30,6 +30,8 @@ import {
   type SessionStats,
 } from "@earendil-works/pi-agent-core";
 
+import { Match } from "effect";
+
 /** One log mutation — pi's jsonl mutation vocabulary, verbatim. */
 export type SessionMutation =
   | { kind: "entry"; lane?: string; entry: Entry }
@@ -129,8 +131,8 @@ export class SessionState {
           ? mutation.record.seq
           : mutation.seq;
     if (seq !== this.sequence + 1) invalidMutation(`has non-consecutive seq ${seq}`);
-    switch (mutation.kind) {
-      case "entry": {
+    Match.value(mutation).pipe(
+      Match.discriminator("kind")("entry", (mutation) => {
         if (this.usedIds.has(mutation.entry.id))
           invalidMutation(`contains duplicate id ${mutation.entry.id}`);
         if (mutation.lane !== undefined) {
@@ -149,9 +151,8 @@ export class SessionState {
         if (mutation.lane !== undefined) this.lanes.set(mutation.lane, mutation.entry.id);
         this.log.push({ kind: "entry", seq, entry: mutation.entry });
         if (mutation.entry.type === "message") this.stats.messageCount += 1;
-        break;
-      }
-      case "record": {
+      }),
+      Match.discriminator("kind")("record", (mutation) => {
         if (!this.lanes.has(mutation.record.lane))
           invalidMutation(`references missing lane ${mutation.record.lane}`);
         if (this.usedIds.has(mutation.record.id))
@@ -177,17 +178,16 @@ export class SessionState {
           this.stats.totalTokens += mutation.record.usage.totalTokens;
           this.stats.costTotal += mutation.record.usage.cost.total;
         }
-        break;
-      }
-      case "lane":
+      }),
+      Match.discriminator("kind")("lane", (mutation) => {
         if (mutation.leafId !== null && !this.entriesById.has(mutation.leafId)) {
           invalidMutation(`references missing lane target ${mutation.leafId}`);
         }
         this.sequence = seq;
         this.lanes.set(mutation.lane, mutation.leafId);
         this.log.push({ kind: "lane", seq, lane: mutation.lane, leafId: mutation.leafId });
-        break;
-      case "fact":
+      }),
+      Match.discriminator("kind")("fact", (mutation) => {
         if (mutation.fact === "label" && !this.entriesById.has(mutation.targetId)) {
           invalidMutation(`references missing label target ${mutation.targetId}`);
         }
@@ -206,8 +206,9 @@ export class SessionState {
             label: mutation.label,
           });
         }
-        break;
-    }
+      }),
+      Match.exhaustive,
+    );
   }
 
   getEntry(id: string): Entry | undefined {

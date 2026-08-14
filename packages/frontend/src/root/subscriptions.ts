@@ -16,7 +16,7 @@
  * reload.
  */
 
-import { Stream, Schema as S } from "effect";
+import { Match, Stream, Schema as S } from "effect";
 import { Subscription } from "foldkit";
 
 import { decodeSessionEvent } from "../thread/projection.ts";
@@ -35,23 +35,21 @@ import type { Model } from "./model.ts";
 const RETRY_INTERVAL = "2 seconds";
 
 /** One bridged wire event, projected into the root's message vocabulary. */
-const bridgeToMessage = (event: BridgeEvent): RootMessage => {
-  switch (event._tag) {
-    case "event":
-      // Decode at the boundary: the wire's TS-typed event becomes the
-      // console's schema projection (ADR 0005) before anything folds it.
-      return WireEvent({
-        threadId: event.threadId,
-        event: decodeSessionEvent(event.event),
-      });
-    case "thread_changed":
-      return ThreadChanged({ thread: event.thread });
-    case "error":
-      return ServerErrorNotice({ message: event.message });
-    case "close":
-      return ConnectionClosed();
-  }
-};
+const bridgeToMessage = (event: BridgeEvent): RootMessage =>
+  Match.value(event).pipe(
+    Match.tagsExhaustive({
+      event: (event) =>
+        // Decode at the boundary: the wire's TS-typed event becomes the
+        // console's schema projection (ADR 0005) before anything folds it.
+        WireEvent({
+          threadId: event.threadId,
+          event: decodeSessionEvent(event.event),
+        }),
+      thread_changed: (event) => ThreadChanged({ thread: event.thread }),
+      error: (event) => ServerErrorNotice({ message: event.message }),
+      close: () => ConnectionClosed(),
+    }),
+  );
 
 export const subscriptions = Subscription.make<Model, RootMessage, Wire>()((entry) => ({
   wire: Subscription.persistent(

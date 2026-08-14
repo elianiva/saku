@@ -32,6 +32,7 @@ import {
   Context,
   Effect,
   FileSystem,
+  Match,
   Layer,
   Option,
   Ref,
@@ -218,169 +219,172 @@ export const makeSakuDaemon = (options: {
       command: ThreadCommand | SkillCommand | PiSessionCommand,
     ): Effect.Effect<ResponsePayload, CommandError, never> =>
       Effect.gen(function* () {
-        switch (command._tag) {
-          case "list_threads": {
-            const records = yield* registry.list();
-            const threads = yield* Effect.forEach(records, (record) => infoOf(record.id), {
-              concurrency: "unbounded",
-            });
-            return ListThreadsResponse.make({ threads });
-          }
-          case "create_thread": {
-            const record = yield* registry.create({
-              name: command.name,
-              ...(command.cwd === undefined ? {} : { cwd: command.cwd }),
-              ...(command.mode === undefined ? {} : { mode: command.mode }),
-              ...(command.autoName === undefined ? {} : { autoName: command.autoName }),
-            });
-            const info = yield* infoOf(record.id);
-            yield* emitThreadChanged(info);
-            return CreateThreadResponse.make({ thread: info });
-          }
-          case "get_thread": {
-            const threadId = yield* resolveThreadId(command.threadId);
-            const info = yield* infoOf(threadId);
-            return GetThreadResponse.make({ thread: info });
-          }
-          case "delete_thread": {
-            const threadId = yield* resolveThreadId(command.threadId);
-            // Capture the info before the record is removed — the broadcast
-            // tells every console the thread is gone.
-            const info = yield* infoOf(threadId);
-            const hosts = yield* Ref.get(hostsRef);
-            const host = hosts.get(threadId);
-            if (host !== undefined) {
-              yield* host.dispose();
-              yield* Ref.update(hostsRef, (hosts) => {
-                const next = new Map(hosts);
-                next.delete(threadId);
-                return next;
-              });
-            }
-            yield* registry.delete(threadId);
-            yield* emitThreadChanged(info);
-            return DeleteThreadResponse.make({});
-          }
-          case "rename_thread": {
-            const threadId = yield* resolveThreadId(command.threadId);
-            const name = command.name.trim();
-            if (name.length === 0) {
-              return yield* Effect.fail(
-                new DaemonError({ code: "empty_name", message: "name must not be empty" }),
-              );
-            }
-            // A user rename wins over auto-title forever (CONTEXT.md: Auto-title).
-            yield* registry.update(threadId, { name, nameAuto: false });
-            const info = yield* infoOf(threadId);
-            yield* emitThreadChanged(info);
-            return RenameThreadResponse.make({ thread: info });
-          }
-          case "list_skills":
-          case "import_skill":
-          case "delete_skill":
-            // The skills store is hub-hosted (ADR 0007); the local daemon
-            // deliberately does not implement it.
-            return yield* Effect.fail(
-              new DaemonError({
-                code: "skills_not_served",
-                message: "skills are served by the hub, not the local daemon",
+        // The skills store is hub-hosted (ADR 0007); the local daemon
+        // deliberately does not implement it.
+        const skillsNotServed = (): Effect.Effect<ResponsePayload, CommandError, never> =>
+          Effect.fail(
+            new DaemonError({
+              code: "skills_not_served",
+              message: "skills are served by the hub, not the local daemon",
+            }),
+          );
+        return yield* Match.value(command).pipe(
+          Match.withReturnType<Effect.Effect<ResponsePayload, CommandError, never>>(),
+          Match.tagsExhaustive({
+            list_threads: () =>
+              Effect.gen(function* () {
+                const records = yield* registry.list();
+                const threads = yield* Effect.forEach(records, (record) => infoOf(record.id), {
+                  concurrency: "unbounded",
+                });
+                return ListThreadsResponse.make({ threads });
               }),
-            );
-          case "list_pi_sessions": {
-            // pi's session files live on the user's machine; only the local
-            // daemon can read them (the mirror of skills_not_served).
-            const sessions = yield* listPiSessions(fs).pipe(
-              Effect.mapError(
-                (error) =>
-                  new DaemonError({
-                    code: "pi_sessions",
-                    message: error.message,
-                    cause: error,
-                  }),
-              ),
-            );
-            return ListPiSessionsResponse.make({ sessions });
-          }
-          case "import_pi_session": {
-            // Adoption is idempotent per pi session file: one thread per
-            // source (the record's provenance field is the key).
-            const records = yield* registry.list();
-            const adopted = records.find(
-              (record) => record.source?.kind === "pi" && record.source.path === command.path,
-            );
-            if (adopted !== undefined) {
-              return yield* Effect.fail(
-                new DaemonError({
-                  code: "already_imported",
-                  message: `already imported as ${shortThreadId(adopted.id)} (${adopted.name})`,
-                }),
-              );
-            }
-            const session = yield* readPiSession(fs, command.path).pipe(
-              Effect.mapError(
-                (error) =>
-                  new DaemonError({
-                    code: "pi_sessions",
-                    message: error.message,
-                    cause: error,
-                  }),
-              ),
-            );
-            const name =
-              session.name ??
-              (session.firstMessage !== undefined && session.firstMessage !== "(no messages)"
-                ? session.firstMessage.length > 80
-                  ? `${session.firstMessage.slice(0, 80)}…`
-                  : session.firstMessage
-                : undefined) ??
-              session.cwd.split("/").filter(Boolean).pop() ??
-              "pi session";
-            const record = yield* registry.create({
-              name,
-              cwd: session.cwd,
-              mode: "local",
-              source: { kind: "pi", sessionId: session.id, path: command.path },
-            });
-            // Adopt the trail: replay the pi mutations into the thread's own
-            // kv store, then back-fill the session id. A failure rolls the
-            // record back — an import must be all-or-nothing.
-            const importOutcome = yield* Effect.gen(function* () {
-              const kv = yield* KvStore;
-              return yield* Effect.tryPromise({
-                try: () =>
-                  new DoSessionRepo(kv).import(record.id, {
-                    cwd: session.cwd,
-                    createdAt: session.createdAt,
-                    mutations: session.mutations,
-                  }),
-                catch: (error) =>
-                  new DaemonError({
-                    code: "pi_sessions",
-                    message: `failed to import ${command.path}: ${error instanceof Error ? error.message : String(error)}`,
-                    cause: error,
-                  }),
-              });
-            })
-              .pipe(Effect.provide(KvStore.file(fs, getThreadTrailRoot(record.id))))
-              .pipe(Effect.result);
-            if (Result.isFailure(importOutcome)) {
-              yield* registry.delete(record.id);
-              return yield* Effect.fail(importOutcome.failure);
-            }
-            yield* registry.update(record.id, { sessionId: record.id });
-            const info = yield* infoOf(record.id);
-            yield* emitThreadChanged(info);
-            return ImportPiSessionResponse.make({ thread: info });
-          }
-          default: {
-            // Exhaustiveness: a new command tag must be handled here.
-            const exhaustive: never = command;
-            void exhaustive;
-            return yield* Effect.fail(
-              new DaemonError({ code: "unknown_command", message: "unknown command" }),
-            );
-          }
-        }
+            create_thread: (command) =>
+              Effect.gen(function* () {
+                const record = yield* registry.create({
+                  name: command.name,
+                  ...(command.cwd === undefined ? {} : { cwd: command.cwd }),
+                  ...(command.mode === undefined ? {} : { mode: command.mode }),
+                  ...(command.autoName === undefined ? {} : { autoName: command.autoName }),
+                });
+                const info = yield* infoOf(record.id);
+                yield* emitThreadChanged(info);
+                return CreateThreadResponse.make({ thread: info });
+              }),
+            get_thread: (command) =>
+              Effect.gen(function* () {
+                const threadId = yield* resolveThreadId(command.threadId);
+                const info = yield* infoOf(threadId);
+                return GetThreadResponse.make({ thread: info });
+              }),
+            delete_thread: (command) =>
+              Effect.gen(function* () {
+                const threadId = yield* resolveThreadId(command.threadId);
+                // Capture the info before the record is removed — the broadcast
+                // tells every console the thread is gone.
+                const info = yield* infoOf(threadId);
+                const hosts = yield* Ref.get(hostsRef);
+                const host = hosts.get(threadId);
+                if (host !== undefined) {
+                  yield* host.dispose();
+                  yield* Ref.update(hostsRef, (hosts) => {
+                    const next = new Map(hosts);
+                    next.delete(threadId);
+                    return next;
+                  });
+                }
+                yield* registry.delete(threadId);
+                yield* emitThreadChanged(info);
+                return DeleteThreadResponse.make({});
+              }),
+            rename_thread: (command) =>
+              Effect.gen(function* () {
+                const threadId = yield* resolveThreadId(command.threadId);
+                const name = command.name.trim();
+                if (name.length === 0) {
+                  return yield* Effect.fail(
+                    new DaemonError({ code: "empty_name", message: "name must not be empty" }),
+                  );
+                }
+                // A user rename wins over auto-title forever (CONTEXT.md: Auto-title).
+                yield* registry.update(threadId, { name, nameAuto: false });
+                const info = yield* infoOf(threadId);
+                yield* emitThreadChanged(info);
+                return RenameThreadResponse.make({ thread: info });
+              }),
+            list_skills: skillsNotServed,
+            import_skill: skillsNotServed,
+            delete_skill: skillsNotServed,
+            list_pi_sessions: () =>
+              Effect.gen(function* () {
+                // pi's session files live on the user's machine; only the local
+                // daemon can read them (the mirror of skills_not_served).
+                const sessions = yield* listPiSessions(fs).pipe(
+                  Effect.mapError(
+                    (error) =>
+                      new DaemonError({
+                        code: "pi_sessions",
+                        message: error.message,
+                        cause: error,
+                      }),
+                  ),
+                );
+                return ListPiSessionsResponse.make({ sessions });
+              }),
+            import_pi_session: (command) =>
+              Effect.gen(function* () {
+                // Adoption is idempotent per pi session file: one thread per
+                // source (the record's provenance field is the key).
+                const records = yield* registry.list();
+                const adopted = records.find(
+                  (record) => record.source?.kind === "pi" && record.source.path === command.path,
+                );
+                if (adopted !== undefined) {
+                  return yield* Effect.fail(
+                    new DaemonError({
+                      code: "already_imported",
+                      message: `already imported as ${shortThreadId(adopted.id)} (${adopted.name})`,
+                    }),
+                  );
+                }
+                const session = yield* readPiSession(fs, command.path).pipe(
+                  Effect.mapError(
+                    (error) =>
+                      new DaemonError({
+                        code: "pi_sessions",
+                        message: error.message,
+                        cause: error,
+                      }),
+                  ),
+                );
+                const name =
+                  session.name ??
+                  (session.firstMessage !== undefined && session.firstMessage !== "(no messages)"
+                    ? session.firstMessage.length > 80
+                      ? `${session.firstMessage.slice(0, 80)}…`
+                      : session.firstMessage
+                    : undefined) ??
+                  session.cwd.split("/").filter(Boolean).pop() ??
+                  "pi session";
+                const record = yield* registry.create({
+                  name,
+                  cwd: session.cwd,
+                  mode: "local",
+                  source: { kind: "pi", sessionId: session.id, path: command.path },
+                });
+                // Adopt the trail: replay the pi mutations into the thread's own
+                // kv store, then back-fill the session id. A failure rolls the
+                // record back — an import must be all-or-nothing.
+                const importOutcome = yield* Effect.gen(function* () {
+                  const kv = yield* KvStore;
+                  return yield* Effect.tryPromise({
+                    try: () =>
+                      new DoSessionRepo(kv).import(record.id, {
+                        cwd: session.cwd,
+                        createdAt: session.createdAt,
+                        mutations: session.mutations,
+                      }),
+                    catch: (error) =>
+                      new DaemonError({
+                        code: "pi_sessions",
+                        message: `failed to import ${command.path}: ${error instanceof Error ? error.message : String(error)}`,
+                        cause: error,
+                      }),
+                  });
+                })
+                  .pipe(Effect.provide(KvStore.file(fs, getThreadTrailRoot(record.id))))
+                  .pipe(Effect.result);
+                if (Result.isFailure(importOutcome)) {
+                  yield* registry.delete(record.id);
+                  return yield* Effect.fail(importOutcome.failure);
+                }
+                yield* registry.update(record.id, { sessionId: record.id });
+                const info = yield* infoOf(record.id);
+                yield* emitThreadChanged(info);
+                return ImportPiSessionResponse.make({ thread: info });
+              }),
+          }),
+        );
       });
 
     const handleSessionCommand = (

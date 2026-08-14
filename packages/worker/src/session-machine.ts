@@ -131,16 +131,13 @@ export type HostCommandEvent = Extract<
   }
 >;
 /** The wire-visible state of a machine state (crashed and compacting look idle). */
-export const wireStateOf = (state: HostStateV): ThreadState => {
-  switch (state._tag) {
-    case "Working":
-      return "working";
-    case "Interrupted":
-      return "interrupted";
-    default:
-      return "idle";
-  }
-};
+export const wireStateOf = (state: HostStateV): ThreadState =>
+  Match.value(state).pipe(
+    Match.withReturnType<ThreadState>(),
+    Match.when({ _tag: "Working" }, () => "working"),
+    Match.when({ _tag: "Interrupted" }, () => "interrupted"),
+    Match.orElse(() => "idle"),
+  );
 
 /** The wire-visible tag, plus the host-local `crashed` the daemon rebuilds on. */
 export const hostStateOf = (state: HostStateV): SessionHostState =>

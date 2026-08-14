@@ -22,7 +22,7 @@
  * actor.
  */
 
-import { Cause, Deferred, Effect, Option, Ref, Result, Schedule, Schema } from "effect";
+import { Cause, Deferred, Effect, Match, Option, Ref, Result, Schedule, Schema } from "effect";
 import { Event, Machine, State, type MachineType } from "effect-machine";
 import type {
   CompactResult,
@@ -532,35 +532,31 @@ const resolveResponse = (
 /** Dispatch one decoded server frame in `Connected`. */
 const handleFrame = (deps: ClientDeps, frame: WireEvent): Effect.Effect<void, never, never> =>
   Effect.gen(function* () {
-    switch (frame._tag) {
-      case "response":
-        yield* frame.ok
-          ? resolveResponse(deps, frame.id, Result.succeed(frame.payload))
-          : resolveResponse(
-              deps,
-              frame.id,
-              Result.fail(new WireError({ code: "command_failed", message: frame.error })),
-            );
-        return;
-      case "event":
-        // The envelope's event payload is opaque JSON by design (ADR 0005:
-        // pi's event vocabulary crosses the wire unvalidated); the console
-        // narrows it to the projected `SessionWireEvent` at this boundary.
-        yield* emit(deps, "event", {
-          threadId: frame.threadId,
-          event: narrowPi<SessionWireEvent>(frame.event),
-        });
-        return;
-      case "thread_changed":
-        yield* emit(deps, "thread_changed", frame.thread);
-        return;
-      case "hello_ok":
-        yield* emit(deps, "hello_ok", frame);
-        return;
-      case "error":
-        yield* emit(deps, "error", { message: frame.message });
-        return;
-    }
+    yield* Match.value(frame).pipe(
+      Match.withReturnType<Effect.Effect<void, never, never>>(),
+      Match.tagsExhaustive({
+        response: (frame) =>
+          frame.ok
+            ? resolveResponse(deps, frame.id, Result.succeed(frame.payload))
+            : resolveResponse(
+                deps,
+                frame.id,
+                Result.fail(new WireError({ code: "command_failed", message: frame.error })),
+              ),
+        event: (frame) =>
+          // The envelope's event payload is opaque JSON by design (ADR 0005:
+          // pi's event vocabulary crosses the wire unvalidated); the console
+          // narrows it to the projected `SessionWireEvent` at this boundary.
+          emit(deps, "event", {
+            threadId: frame.threadId,
+            event: narrowPi<SessionWireEvent>(frame.event),
+          }),
+        thread_changed: (frame) => emit(deps, "thread_changed", frame.thread),
+        hello_ok: (frame) => emit(deps, "hello_ok", frame),
+        error: (frame) => emit(deps, "error", { message: frame.message }),
+      }),
+    );
+    return;
   });
 
 /** Decode one frame line, or surface the failure as an error event. */

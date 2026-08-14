@@ -16,7 +16,7 @@
  */
 
 import { AsyncData, Submodel } from "foldkit";
-import { Option, Stream } from "effect";
+import { Match, Option, Stream } from "effect";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import type { PiSessionInfo, ThreadEnvState, ThreadState } from "@saku/wire";
 
@@ -121,28 +121,25 @@ const trailStatus = (h: HtmlBuilder<ThreadMessage>, text: string): Html =>
     [text],
   );
 
-const renderEntry = (entry: EntryProjection, h: HtmlBuilder<ThreadMessage>): Html => {
-  switch (entry.type) {
-    case "message":
-      return renderMessageEntry(entry.message ?? {}, h);
-    case "compaction":
-      return metaRow(h, `▚ compacted — ${summaryLine(entry.summary)}`);
-    case "branch_summary":
-      return metaRow(h, `⑂ branch — ${summaryLine(entry.summary)}`);
-    case "model_change":
-      return metaRow(h, `~ model → ${asString(entry.provider)}/${asString(entry.modelId)}`);
-    case "thinking_level_change":
-      return metaRow(h, `~ thinking → ${asString(entry.thinkingLevel)}`);
-    case "active_tools_change": {
+const renderEntry = (entry: EntryProjection, h: HtmlBuilder<ThreadMessage>): Html =>
+  Match.value(entry.type).pipe(
+    Match.when("message", () => renderMessageEntry(entry.message ?? {}, h)),
+    Match.when("compaction", () => metaRow(h, `▚ compacted — ${summaryLine(entry.summary)}`)),
+    Match.when("branch_summary", () => metaRow(h, `⑂ branch — ${summaryLine(entry.summary)}`)),
+    Match.when("model_change", () =>
+      metaRow(h, `~ model → ${asString(entry.provider)}/${asString(entry.modelId)}`),
+    ),
+    Match.when("thinking_level_change", () =>
+      metaRow(h, `~ thinking → ${asString(entry.thinkingLevel)}`),
+    ),
+    Match.when("active_tools_change", () => {
       const tools = Array.isArray(entry.activeToolNames)
         ? entry.activeToolNames.map(asString).join(", ")
         : "";
       return metaRow(h, `~ tools → ${tools}`);
-    }
-    default:
-      return metaRow(h, `· ${asString(entry.type) || "entry"}`);
-  }
-};
+    }),
+    Match.orElse((type) => metaRow(h, `· ${asString(type) || "entry"}`)),
+  );
 
 const metaRow = (h: HtmlBuilder<ThreadMessage>, text: string): Html =>
   h.div([h.Class("px-4 py-1 border-b border-line text-[11px] text-subtle italic")], [text]);

@@ -8,6 +8,7 @@
  * `Got*Message` boundary (ADR 0009).
  */
 
+import { Match } from "effect";
 import type { Document, Html, HtmlBuilder } from "foldkit/html";
 
 import { view as railView } from "../rail/view.ts";
@@ -64,35 +65,34 @@ const topBar = (model: Model, h: HtmlBuilder<RootMessage>): Html =>
     ],
   );
 
-const connStatus = (model: Model, h: HtmlBuilder<RootMessage>): Html => {
-  switch (model.conn._tag) {
-    case "Connecting":
-      return h.span([h.Class("text-muted")], ["◇ connecting"]);
-    case "Online":
-      return h.span([h.Class("text-foam")], [`● online · pid ${model.conn.pid}`]);
-    case "Offline":
-      // The retry subscription (root/subscriptions.ts) reconnects
-      // automatically every couple of seconds, so offline always means
-      // "retrying".
-      return h.div(
-        [h.Class("flex items-center gap-2")],
-        [
-          h.span([h.Class("text-love")], ["✕ offline"]),
-          h.span([h.Class("text-muted")], ["· retrying"]),
-          model.conn.error === undefined
-            ? null
-            : h.span([h.Class("text-subtle max-w-64 truncate")], [model.conn.error]),
-          h.button(
-            [
-              h.Class("border border-line px-2 py-0.5 hover:border-subtle text-subtle"),
-              h.OnClick(RetryRequested()),
-            ],
-            ["retry"],
-          ),
-        ],
-      );
-  }
-};
+const connStatus = (model: Model, h: HtmlBuilder<RootMessage>): Html =>
+  Match.value(model.conn).pipe(
+    Match.tagsExhaustive({
+      Connecting: () => h.span([h.Class("text-muted")], ["◇ connecting"]),
+      Online: (conn) => h.span([h.Class("text-foam")], [`● online · pid ${conn.pid}`]),
+      Offline: (conn) =>
+        // The retry subscription (root/subscriptions.ts) reconnects
+        // automatically every couple of seconds, so offline always means
+        // "retrying".
+        h.div(
+          [h.Class("flex items-center gap-2")],
+          [
+            h.span([h.Class("text-love")], ["✕ offline"]),
+            h.span([h.Class("text-muted")], ["· retrying"]),
+            conn.error === undefined
+              ? null
+              : h.span([h.Class("text-subtle max-w-64 truncate")], [conn.error]),
+            h.button(
+              [
+                h.Class("border border-line px-2 py-0.5 hover:border-subtle text-subtle"),
+                h.OnClick(RetryRequested()),
+              ],
+              ["retry"],
+            ),
+          ],
+        ),
+    }),
+  );
 
 const banner = (model: Model, h: HtmlBuilder<RootMessage>): Html =>
   model.banner === null

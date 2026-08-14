@@ -9,7 +9,7 @@
  * half: this fixture keeps hub tests deterministic and socket-free.
  */
 
-import { Effect, Option } from "effect";
+import { Effect, Match, Option } from "effect";
 import {
   GetAvailableModelsResponse,
   GetAvailableThinkingLevelsResponse,
@@ -96,34 +96,37 @@ export interface ScriptedWorker {
 const canned = (
   _threadId: string,
   command: SessionCommand,
-): Effect.Effect<WorkerCommandResult, HubError, never> => {
-  switch (command._tag) {
-    case "get_entries":
-      return Effect.succeed({
-        payload: GetEntriesResponse.make({ entries: [], tailSeq: 0, leafId: null }),
-        tailSeq: 0,
-      });
-    case "get_state":
-      return Effect.succeed({
-        payload: GetStateResponse.make({
-          state: { sessionId: null, state: "idle", tailSeq: 0, model: null, thinkingLevel: "off" },
+): Effect.Effect<WorkerCommandResult, HubError, never> =>
+  Match.value(command).pipe(
+    Match.withReturnType<Effect.Effect<WorkerCommandResult, HubError, never>>(),
+    Match.tags({
+      get_entries: () =>
+        Effect.succeed({
+          payload: GetEntriesResponse.make({ entries: [], tailSeq: 0, leafId: null }),
+          tailSeq: 0,
         }),
-        tailSeq: 0,
-      });
-    case "get_available_models":
-      return Effect.succeed({
-        payload: GetAvailableModelsResponse.make({ models: [MOCK_MODEL] }),
-        tailSeq: 0,
-      });
-    case "get_available_thinking_levels":
-      return Effect.succeed({
-        payload: GetAvailableThinkingLevelsResponse.make({ levels: [...THINKING_LEVELS] }),
-        tailSeq: 0,
-      });
-    default:
-      return Effect.fail(makeHubError("command", `unscripted command: ${command._tag}`));
-  }
-};
+      get_state: () =>
+        Effect.succeed({
+          payload: GetStateResponse.make({
+            state: { sessionId: null, state: "idle", tailSeq: 0, model: null, thinkingLevel: "off" },
+          }),
+          tailSeq: 0,
+        }),
+      get_available_models: () =>
+        Effect.succeed({
+          payload: GetAvailableModelsResponse.make({ models: [MOCK_MODEL] }),
+          tailSeq: 0,
+        }),
+      get_available_thinking_levels: () =>
+        Effect.succeed({
+          payload: GetAvailableThinkingLevelsResponse.make({ levels: [...THINKING_LEVELS] }),
+          tailSeq: 0,
+        }),
+    }),
+    Match.orElse((command) =>
+      Effect.fail(makeHubError("command", `unscripted command: ${command._tag}`)),
+    ),
+  );
 
 export const scriptedWorker = (): ScriptedWorker => {
   const created: string[] = [];

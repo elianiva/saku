@@ -10,7 +10,7 @@
  * The daemon auto-starts on demand for every command except `daemon stop`.
  */
 
-import { Effect, Option, Result } from "effect";
+import { Effect, Match, Option, Result } from "effect";
 
 import {
   makeWireClient,
@@ -41,17 +41,16 @@ import { ensure, spawn, status, stop } from "./lifecycle.ts";
  * so connect uses that connection info — the storage layout stays in the
  * lifecycle module.
  */
-const connect = (): Effect.Effect<WireClient, CliError | WireError, never> =>
-  Effect.gen(function* () {
-    const connection = yield* ensure(workerLifecycle);
-    const client = yield* makeWireClient({
-      url: connection.url,
-      token: connection.token,
-      role: "cli",
-    });
-    yield* client.connect();
-    return client;
+const connect = Effect.gen(function* () {
+  const connection = yield* ensure(workerLifecycle);
+  const client = yield* makeWireClient({
+    url: connection.url,
+    token: connection.token,
+    role: "cli",
   });
+  yield* client.connect();
+  return client;
+});
 
 /**
  * Print the error and exit; the only imperative boundary of the CLI. The
@@ -89,7 +88,7 @@ const pad = (text: string, width: number): string => text.padEnd(width).slice(0,
 
 const cmdList = (): Effect.Effect<void, WireError | CliError, never> =>
   Effect.gen(function* () {
-    const client = yield* connect();
+    const client = yield* connect;
     const threads = yield* run(client.listThreads(), "list threads");
     if (threads.length === 0) {
       console.log("no threads — create one with: saku new <name>");
@@ -126,7 +125,7 @@ const cmdNew = (
         }),
       );
     }
-    const client = yield* connect();
+    const client = yield* connect;
     const thread = yield* run(
       mode === undefined
         ? client.createThread(name, { cwd })
@@ -144,7 +143,7 @@ const cmdRm = (threadArg: string | undefined): Effect.Effect<void, WireError | C
         new CliError({ code: "usage", message: "saku rm requires a thread: saku rm <id-or-name>" }),
       );
     }
-    const client = yield* connect();
+    const client = yield* connect;
     const threads = yield* run(client.listThreads(), "list threads");
     const resolved = resolveThread(threads, threadArg);
     if (Result.isFailure(resolved)) {
@@ -167,16 +166,14 @@ const fmtWhen = (ms: number): string => {
 /** saku pi list — pi's sessions on this machine, through the local daemon. */
 const cmdPiList = (): Effect.Effect<void, WireError | CliError, never> =>
   Effect.gen(function* () {
-    const client = yield* connect();
+    const client = yield* connect;
     const sessions = yield* run(client.listPiSessions(), "list pi sessions");
     if (sessions.length === 0) {
       console.log("no pi sessions found — nothing to import yet");
       yield* client.disconnect();
       return;
     }
-    console.log(
-      pad("ID", 14) + pad("NAME", 28) + pad("MSGS", 7) + pad("MODIFIED", 14) + "CWD",
-    );
+    console.log(pad("ID", 14) + pad("NAME", 28) + pad("MSGS", 7) + pad("MODIFIED", 14) + "CWD");
     for (const session of sessions) {
       console.log(
         pad(session.id.slice(0, 14), 14) +
@@ -195,10 +192,13 @@ const cmdPiImport = (arg: string | undefined): Effect.Effect<void, WireError | C
   Effect.gen(function* () {
     if (arg === undefined || arg.length === 0) {
       return yield* Effect.fail(
-        new CliError({ code: "usage", message: "saku pi import requires a session: saku pi import <id-or-path>" }),
+        new CliError({
+          code: "usage",
+          message: "saku pi import requires a session: saku pi import <id-or-path>",
+        }),
       );
     }
-    const client = yield* connect();
+    const client = yield* connect;
     // Accept a session id, a bare filename, or a full path.
     const sessions = yield* run(client.listPiSessions(), "list pi sessions");
     const match =
@@ -220,59 +220,61 @@ const cmdPiImport = (arg: string | undefined): Effect.Effect<void, WireError | C
     yield* client.disconnect();
   });
 
-const cmdPi = (sub: string | undefined, arg: string | undefined): Effect.Effect<void, WireError | CliError, never> =>
+const cmdPi = (
+  sub: string | undefined,
+  arg: string | undefined,
+): Effect.Effect<void, WireError | CliError, never> =>
   Effect.gen(function* () {
-    switch (sub) {
-      case "list":
-        yield* cmdPiList();
-        return;
-      case "import":
-        yield* cmdPiImport(arg);
-        return;
-      default:
-        return yield* Effect.fail(
-          new CliError({ code: "usage", message: "saku pi <list|import>" }),
-        );
-    }
+    yield* Match.value(sub).pipe(
+      Match.withReturnType<Effect.Effect<void, WireError | CliError, never>>(),
+      Match.when("list", () => cmdPiList()),
+      Match.when("import", () => cmdPiImport(arg)),
+      Match.orElse(() =>
+        Effect.fail(new CliError({ code: "usage", message: "saku pi <list|import>" })),
+      ),
+    );
   });
 
 const cmdDaemon = (sub: string | undefined): Effect.Effect<void, CliError, never> =>
   Effect.gen(function* () {
-    switch (sub) {
-      case "start": {
-        const current = yield* status(workerLifecycle);
-        if (current.running && current.pid !== undefined) {
-          console.log(`already running (pid ${current.pid})`);
-          return;
-        }
-        const pid = yield* spawn(workerLifecycle);
-        console.log(`started (pid ${pid})`);
-        return;
-      }
-      case "stop": {
-        const pid = yield* stop(workerLifecycle);
-        console.log(
-          Option.match(pid, {
-            onNone: () => "not running",
-            onSome: (value) => `stopped (pid ${value})`,
-          }),
-        );
-        return;
-      }
-      case "status": {
-        const current = yield* status(workerLifecycle);
-        if (current.running) {
-          console.log(`running (pid ${current.pid}, wire ${current.version})`);
-        } else {
-          console.log("not running");
-        }
-        return;
-      }
-      default:
-        return yield* Effect.fail(
-          new CliError({ code: "usage", message: "saku daemon <start|stop|status>" }),
-        );
-    }
+    yield* Match.value(sub).pipe(
+      Match.withReturnType<Effect.Effect<void, CliError, never>>(),
+      Match.when("start", () =>
+        Effect.gen(function* () {
+          const current = yield* status(workerLifecycle);
+          if (current.running && current.pid !== undefined) {
+            console.log(`already running (pid ${current.pid})`);
+            return;
+          }
+          const pid = yield* spawn(workerLifecycle);
+          console.log(`started (pid ${pid})`);
+        }),
+      ),
+      Match.when("stop", () =>
+        Effect.gen(function* () {
+          const pid = yield* stop(workerLifecycle);
+          console.log(
+            Option.match(pid, {
+              onNone: () => "not running",
+              onSome: (value) => `stopped (pid ${value})`,
+            }),
+          );
+        }),
+      ),
+      Match.when("status", () =>
+        Effect.gen(function* () {
+          const current = yield* status(workerLifecycle);
+          if (current.running) {
+            console.log(`running (pid ${current.pid}, wire ${current.version})`);
+          } else {
+            console.log("not running");
+          }
+        }),
+      ),
+      Match.orElse(() =>
+        Effect.fail(new CliError({ code: "usage", message: "saku daemon <start|stop|status>" })),
+      ),
+    );
   });
 
 const cmdEnv = (
@@ -280,55 +282,61 @@ const cmdEnv = (
   hubUrl: string | undefined,
 ): Effect.Effect<void, CliError, never> =>
   Effect.gen(function* () {
-    switch (sub) {
-      case "start": {
-        const config = yield* ensureEnvConfig(hubUrl).pipe(
-          Effect.mapError(
-            (error) =>
-              new CliError({
-                code: "env_config",
-                message: `failed to write the env config: ${error instanceof Error ? error.message : String(error)}`,
-                cause: error,
-              }),
-          ),
-        );
-        const lifecycle = envLifecycle(hubUrl);
-        const current = yield* status(lifecycle);
-        if (current.running && current.pid !== undefined) {
-          console.log(`env already running (pid ${current.pid})`);
-          return;
-        }
-        const connection = yield* ensure(lifecycle);
-        const relay = config.hubUrl !== undefined ? ` (relay to ${config.hubUrl})` : "";
-        console.log(`env started (pid ${connection.pid}, ${connection.url})${relay}`);
-        return;
-      }
-      case "stop": {
-        const pid = yield* stop(envLifecycle());
-        console.log(
-          Option.match(pid, {
-            onNone: () => "env not running",
-            onSome: (value) => `env stopped (pid ${value})`,
-          }),
-        );
-        return;
-      }
-      case "status": {
-        const current = yield* status(envLifecycle());
-        if (current.running) {
-          console.log(
-            `running (pid ${current.pid}, protocol ${current.version}, cwd ${current.cwd})`,
+    yield* Match.value(sub).pipe(
+      Match.withReturnType<Effect.Effect<void, CliError, never>>(),
+      Match.when("start", () =>
+        Effect.gen(function* () {
+          const config = yield* ensureEnvConfig(hubUrl).pipe(
+            Effect.mapError(
+              (error) =>
+                new CliError({
+                  code: "env_config",
+                  message: `failed to write the env config: ${error instanceof Error ? error.message : String(error)}`,
+                  cause: error,
+                }),
+            ),
           );
-        } else {
-          console.log("not running");
-        }
-        return;
-      }
-      default:
-        return yield* Effect.fail(
+          const lifecycle = envLifecycle(hubUrl);
+          const current = yield* status(lifecycle);
+          if (current.running && current.pid !== undefined) {
+            console.log(`env already running (pid ${current.pid})`);
+            return;
+          }
+          const connection = yield* ensure(lifecycle);
+          const relay = config.hubUrl !== undefined ? ` (relay to ${config.hubUrl})` : "";
+          console.log(`env started (pid ${connection.pid}, ${connection.url})${relay}`);
+          return;
+        }),
+      ),
+      Match.when("stop", () =>
+        Effect.gen(function* () {
+          const pid = yield* stop(envLifecycle());
+          console.log(
+            Option.match(pid, {
+              onNone: () => "env not running",
+              onSome: (value) => `env stopped (pid ${value})`,
+            }),
+          );
+        }),
+      ),
+      Match.when("status", () =>
+        Effect.gen(function* () {
+          const current = yield* status(envLifecycle());
+          if (current.running) {
+            console.log(
+              `running (pid ${current.pid}, protocol ${current.version}, cwd ${current.cwd})`,
+            );
+          } else {
+            console.log("not running");
+          }
+        }),
+      ),
+      Match.orElse(() =>
+        Effect.fail(
           new CliError({ code: "usage", message: "saku env <start|stop|status> [--hub <url>]" }),
-        );
-    }
+        ),
+      ),
+    );
   });
 
 const usage = (): void => {
@@ -361,45 +369,30 @@ const main = (): Effect.Effect<void, WireError | CliError, never> =>
       return rest[index + 1] ?? fallback;
     };
 
-    switch (command) {
-      case "daemon":
-        yield* cmdDaemon(rest[0]);
-        return;
-      case "env":
-        yield* cmdEnv(
+    yield* Match.value(command).pipe(
+      Match.withReturnType<Effect.Effect<void, WireError | CliError, never>>(),
+      Match.when("daemon", () => cmdDaemon(rest[0])),
+      Match.when("env", () =>
+        cmdEnv(
           rest[0],
           rest.includes("--hub") ? rest[rest.indexOf("--hub") + 1] : undefined,
-        );
-        return;
-      case "list":
-        yield* cmdList();
-        return;
-      case "new": {
+        ),
+      ),
+      Match.when("list", () => cmdList()),
+      Match.when("new", () => {
         const name = rest[0];
         const cwd = flagValue(["--cwd", "-c"], process.cwd());
         const modeArg = flagValue(["--mode", "-m"], "local");
         const mode: ThreadMode = modeArg === "sandbox" || modeArg === "any" ? modeArg : "local";
-        yield* cmdNew(name, cwd, mode);
-        return;
-      }
-      case "pi":
-        yield* cmdPi(rest[0], rest[1]);
-        return;
-      case "rm":
-      case "remove":
-      case "delete":
-        yield* cmdRm(rest[0]);
-        return;
-      case "help":
-      case "--help":
-      case "-h":
-        usage();
-        return;
-      default:
-        return yield* Effect.fail(
-          new CliError({ code: "usage", message: `unknown command "${command}"` }),
-        );
-    }
+        return cmdNew(name, cwd, mode);
+      }),
+      Match.when("pi", () => cmdPi(rest[0], rest[1])),
+      Match.whenOr("rm", "remove", "delete", () => cmdRm(rest[0])),
+      Match.whenOr("help", "--help", "-h", () => Effect.sync(usage)),
+      Match.orElse((command) =>
+        Effect.fail(new CliError({ code: "usage", message: `unknown command "${command}"` })),
+      ),
+    );
   });
 
 Effect.runPromise(main()).catch(fail);

@@ -16,7 +16,7 @@
  * resolved like the scripted worker's `attach`).
  */
 
-import { Effect, FileSystem, Option, Ref } from "effect";
+import { Effect, FileSystem, Match, Option, Ref } from "effect";
 import type { ExecutionEnv, StreamFn } from "@earendil-works/pi-agent-core";
 import {
   getThreadTrailRoot,
@@ -231,94 +231,111 @@ export const inProcessWorker = (
       command: SessionCommand,
     ): Effect.Effect<ResponsePayload, HubError, never> =>
       Effect.gen(function* () {
-        switch (command._tag) {
-          case "prompt":
-            yield* host
-              .prompt(command.text, command.images)
-              .pipe(Effect.mapError(toHubError("prompt")));
-            return PromptResponse.make({});
-          case "steer":
-            yield* host.steer(command.text).pipe(Effect.mapError(toHubError("steer")));
-            return SteerResponse.make({});
-          case "follow_up":
-            yield* host.followUp(command.text).pipe(Effect.mapError(toHubError("follow_up")));
-            return FollowUpResponse.make({});
-          case "abort":
-            yield* host.abort().pipe(Effect.mapError(toHubError("abort")));
-            return AbortResponse.make({});
-          case "set_steering_mode":
-            yield* host.setSteeringMode(command.mode);
-            return SetSteeringModeResponse.make({});
-          case "set_follow_up_mode":
-            yield* host.setFollowUpMode(command.mode);
-            return SetFollowUpModeResponse.make({});
-          case "compact":
-            return CompactResponse.make({
-              result: yield* host
+        return yield* Match.value(command).pipe(
+          Match.withReturnType<Effect.Effect<ResponsePayload, HubError, never>>(),
+          Match.tagsExhaustive({
+            prompt: (command) =>
+              host
+                .prompt(command.text, command.images)
+                .pipe(Effect.mapError(toHubError("prompt")), Effect.as(PromptResponse.make({}))),
+            steer: (command) =>
+              host
+                .steer(command.text)
+                .pipe(Effect.mapError(toHubError("steer")), Effect.as(SteerResponse.make({}))),
+            follow_up: (command) =>
+              host
+                .followUp(command.text)
+                .pipe(
+                  Effect.mapError(toHubError("follow_up")),
+                  Effect.as(FollowUpResponse.make({})),
+                ),
+            abort: () =>
+              host
+                .abort()
+                .pipe(Effect.mapError(toHubError("abort")), Effect.as(AbortResponse.make({}))),
+            set_steering_mode: (command) =>
+              host.setSteeringMode(command.mode).pipe(Effect.as(SetSteeringModeResponse.make({}))),
+            set_follow_up_mode: (command) =>
+              host.setFollowUpMode(command.mode).pipe(Effect.as(SetFollowUpModeResponse.make({}))),
+            compact: (command) =>
+              host
                 .compact(command.customInstructions)
-                .pipe(Effect.mapError(toHubError("compact"))),
-            });
-          case "set_auto_compaction":
-            yield* host
-              .setAutoCompaction(command.enabled)
-              .pipe(Effect.mapError(toHubError("set_auto_compaction")));
-            return SetAutoCompactionResponse.make({});
-          case "set_model": {
-            const model = yield* host
-              .setModel(command.provider, command.modelId)
-              .pipe(Effect.mapError(toHubError("set_model")));
-            return SetModelResponse.make({ model });
-          }
-          case "set_thinking_level":
-            return SetThinkingLevelResponse.make({
-              level: yield* host
+                .pipe(
+                  Effect.mapError(toHubError("compact")),
+                  Effect.map((result) => CompactResponse.make({ result })),
+                ),
+            set_auto_compaction: (command) =>
+              host
+                .setAutoCompaction(command.enabled)
+                .pipe(
+                  Effect.mapError(toHubError("set_auto_compaction")),
+                  Effect.as(SetAutoCompactionResponse.make({})),
+                ),
+            set_model: (command) =>
+              host
+                .setModel(command.provider, command.modelId)
+                .pipe(
+                  Effect.mapError(toHubError("set_model")),
+                  Effect.map((model) => SetModelResponse.make({ model })),
+                ),
+            set_thinking_level: (command) =>
+              host
                 .setThinkingLevel(command.level)
-                .pipe(Effect.mapError(toHubError("set_thinking_level"))),
-            });
-          case "set_session_name":
-            yield* host
-              .setSessionName(command.name)
-              .pipe(Effect.mapError(toHubError("set_session_name")));
-            return SetSessionNameResponse.make({});
-          case "branch":
-            return BranchResponse.make({
-              leafId: yield* host
+                .pipe(
+                  Effect.mapError(toHubError("set_thinking_level")),
+                  Effect.map((level) => SetThinkingLevelResponse.make({ level })),
+                ),
+            set_session_name: (command) =>
+              host
+                .setSessionName(command.name)
+                .pipe(
+                  Effect.mapError(toHubError("set_session_name")),
+                  Effect.as(SetSessionNameResponse.make({})),
+                ),
+            branch: (command) =>
+              host
                 .branch(command.entryId)
-                .pipe(Effect.mapError(toHubError("branch"))),
-            });
-          case "get_session_stats":
-            return GetSessionStatsResponse.make({
-              stats: yield* host
+                .pipe(
+                  Effect.mapError(toHubError("branch")),
+                  Effect.map((leafId) => BranchResponse.make({ leafId })),
+                ),
+            get_session_stats: () =>
+              host
                 .getSessionStats()
-                .pipe(Effect.mapError(toHubError("get_session_stats"))),
-            });
-          case "get_entries": {
-            const { entries, tailSeq, leafId } = yield* host
-              .getEntries(command.sinceSeq)
-              .pipe(Effect.mapError(toHubError("get_entries")));
-            return GetEntriesResponse.make({ entries, tailSeq, leafId });
-          }
-          case "get_state":
-            return GetStateResponse.make({
-              state: yield* host.getState().pipe(Effect.mapError(toHubError("get_state"))),
-            });
-          case "get_available_models":
-            return GetAvailableModelsResponse.make({
-              models: (yield* catalog.available()).map((model) => catalog.toWireInfo(model)),
-            });
-          case "get_available_thinking_levels":
-            return GetAvailableThinkingLevelsResponse.make({
-              levels: yield* host.getAvailableThinkingLevels(),
-            });
-          default: {
-            // Exhaustiveness: a new SessionCommand tag must be handled here.
-            const exhaustive: never = command;
-            void exhaustive;
-            return yield* Effect.fail(
-              new HubError({ kind: "command", message: "unknown session command" }),
-            );
-          }
-        }
+                .pipe(
+                  Effect.mapError(toHubError("get_session_stats")),
+                  Effect.map((stats) => GetSessionStatsResponse.make({ stats })),
+                ),
+            get_entries: (command) =>
+              host
+                .getEntries(command.sinceSeq)
+                .pipe(
+                  Effect.mapError(toHubError("get_entries")),
+                  Effect.map(({ entries, tailSeq, leafId }) =>
+                    GetEntriesResponse.make({ entries, tailSeq, leafId }),
+                  ),
+                ),
+            get_state: () =>
+              host
+                .getState()
+                .pipe(
+                  Effect.mapError(toHubError("get_state")),
+                  Effect.map((state) => GetStateResponse.make({ state })),
+                ),
+            get_available_models: () =>
+              catalog.available().pipe(
+                Effect.map((models) =>
+                  GetAvailableModelsResponse.make({
+                    models: models.map((model) => catalog.toWireInfo(model)),
+                  }),
+                ),
+              ),
+            get_available_thinking_levels: () =>
+              host.getAvailableThinkingLevels().pipe(
+                Effect.map((levels) => GetAvailableThinkingLevelsResponse.make({ levels })),
+              ),
+          }),
+        );
       });
 
     return {
