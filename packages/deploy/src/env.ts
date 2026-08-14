@@ -12,7 +12,11 @@
 
 /** The vars a deployment may set (all optional; the defaults in the stack). */
 export interface DeploymentVars {
-  /** "box" (default) or "static" — see src/static-provisioner.ts. */
+  /**
+   * "box" (default — incomplete, ADR 0008), "static" (dev/celld shape),
+   * or "freestyle" (the intended provider, ADR 0008 — the backend is in
+   * preparation, so the hub fails loudly until it lands).
+   */
   readonly SAKU_ENV_PROVISIONER?: string;
   /** Static provisioner: the env daemon's endpoint + token. */
   readonly SAKU_ENV_URL?: string;
@@ -29,8 +33,12 @@ export interface DeploymentEnv extends DeploymentVars {
   readonly THREAD: DurableObjectNamespace;
   /** The deployment secret consoles present in `hello` (v1 auth). */
   readonly DEPLOYMENT_SECRET: string;
-  /** The Box API key (ascii.dev); empty for static-provisioner deploys. */
+  /** The Box API key (ascii.dev); empty for static-provisioner deploys.
+   * Box is incomplete (ADR 0008) — kept for parity until Freestyle lands. */
   readonly BOX_API_KEY: string;
+  /** The Freestyle API key (freestyle.sh); unused until the freestyle
+   * provisioner backend lands (ADR 0008). */
+  readonly FREESTYLE_API_KEY: string;
 }
 
 /** The hub DO's instance name (the single control-plane instance). */

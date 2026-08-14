@@ -14,7 +14,7 @@ locally) owns the thread registry, provisions environments, and routes one
 **wire** protocol. Each **worker** (a Durable Object per thread) runs
 pi-agent-core's `Agent` + `Session` over DO storage — the brain. Each **env** is
 the hands: the local machine (an env daemon that dials out to the hub) or a
-**Box** (ascii.dev sandbox). Consoles — the foldkit frontend and a thin CLI —
+**Box** (ascii.dev sandbox — **incomplete**, ADR 0008). Consoles — the foldkit frontend and a thin CLI —
 never hold session state; they attach, tail, and command.
 
 ## Features
@@ -28,8 +28,9 @@ never hold session state; they attach, tail, and command.
   (`idle` / `working` / `interrupted`) broadcasts as `thread_changed` events.
 - **Remote hands** — tools execute on an env daemon: your own machine (local
   mode, reachable through the hub's relay with no open ports) or a disposable
-  ascii.dev Box (sandbox mode, lazily provisioned, snapshot-stopped when idle
-  and resumed on the next prompt). A thread's mode is pinned at creation.
+  sandbox VM (sandbox mode — Freestyle, ADR 0008; the ascii.dev Box
+  integration is **incomplete**; both are lazily provisioned, stopped when
+  idle, resumed on the next prompt). A thread's mode is pinned at creation.
 - **Web console** — a foldkit frontend (humanlayer-style pseudo-TUI, rose pine
   light): thread rail, entry trail with live tool activity, and a composer.
   Boots against the local daemon for development or any deployed hub.
@@ -46,9 +47,9 @@ never hold session state; they attach, tail, and command.
 | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
 | `packages/wire`   | the wire protocol: JSONL over WebSocket, hello/version, thread + session + skills commands, typed `WireClient` (an effect-machine actor) |
 | `packages/store`  | the durability seam: the `KvStore` Effect service (the Durable Object storage contract) with memory, file, and DO storage backend layers |
-| `packages/hub`    | the control-plane DO: registry, Box provisioning, skills store, auth, routing, fan-out                                                  |
+| `packages/hub`    | the control-plane DO: registry, env provisioning (Box — incomplete, Freestyle planned), skills store, auth, routing, fan-out                              |
 | `packages/worker` | the thread DO: pi-agent-core `Agent` + `Session` over DO storage, env client, idle-stop                                                 |
-| `packages/env`    | the hands daemon: pi tool surface over a streaming protocol, local and in-Box                                                           |
+| `packages/env`    | the hands daemon: pi tool surface over a streaming protocol, local and in-VM                                                           |
 | `packages/cli`    | local daemon management: `saku env start\|stop\|status`                                                                                 |
 | `packages/deploy` | the deployment's own code: the alchemy program (`alchemy.run.ts`), the workerd DOs (`SakuHubDO`/`SakuThreadDO`), the celld twin (`celld/`) |
 
@@ -147,7 +148,10 @@ ports, `SAKU_FAKE_MODEL`), so CI needs no cloud credentials.
 The deployment lives in `packages/deploy` (the same code both hosts ship):
 
 - **Cloudflare** (production): `bun alchemy deploy` with the secrets as env
-  vars — `BOX_API_KEY` (Box provisioning) and `SAKU_ENV_*` for the
+  vars — `BOX_API_KEY` (Box provisioning — **incomplete**, ADR 0008),
+  `FREESTYLE_API_KEY` (Freestyle provisioning, once the backend lands — the
+  deployment fails loudly on `SAKU_ENV_PROVISIONER=freestyle` until then), and
+  `SAKU_ENV_*` for the
   static-provisioner shape (a single configured env daemon instead of Boxes).
   Model credentials are separate: the local daemon reads pi's `auth.json` +
   `models.json`; a deployed worker resolves the opencode gateway's
@@ -162,10 +166,11 @@ Details in `packages/deploy/celld/README.md`.
 ## Documentation
 
 - [`CONTEXT.md`](./CONTEXT.md) — the vocabulary: threads, workers, hub, envs,
-  relay, Box, idle-stop, and the rest of the domain model.
+  relay, Freestyle, idle-stop, and the rest of the domain model.
 - `docs/adr/` — architecture decision records (highlights: managed-agents
   spine with per-thread DO workers; cloud-primary with a celld twin; one env
-  daemon for local and Box; the wire is pi's vocabulary verbatim over
+  daemon for local and sandbox; Freestyle as the sandbox provider (Box
+  incomplete); the wire is pi's vocabulary verbatim over
   WebSocket; pi-only; no approval gates; hub-hosted skills).
 - `docs/style.md` — house style for the code.
 

@@ -40,7 +40,8 @@ celld deploy packages/deploy/celld --bucket <your-bucket>
 | `SAKU_ENV_TOKEN`    | The daemon's token (`saku env start` writes it to `~/.saku/env.json`).  |
 | `SAKU_IDLE_STOP_MS` | Idle window before the thread DO's alarm stops the env (default 300s).  |
 | `SAKU_FAKE_MODEL`   | `"1"` adds the scripted `saku-fake` provider (no LLM keys needed).      |
-| `BOX_API_KEY`       | Unused in the static twin (kept for parity with the Cloudflare shape).  |
+| `BOX_API_KEY`       | Unused in the static twin (kept for parity with the Cloudflare shape). Box is incomplete — ADR 0008. |
+| `FREESTYLE_API_KEY` | The Freestyle sandbox key (ADR 0008) — unused until the freestyle provisioner backend lands. |
 
 ## Known celld-specific checks
 

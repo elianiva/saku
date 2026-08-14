@@ -5,7 +5,10 @@
  * SAKU_ENV_TOKEN), and idle-stop releases nothing (a local daemon never
  * stops, ADR 0003).
  *
- * The production default remains the Box provisioner (makeProvisioner);
+ * The Box provisioner (makeProvisioner) remains the selectable default
+ * but is incomplete (ADR 0008); the intended production provider is
+ * Freestyle (`SAKU_ENV_PROVISIONER=freestyle` — the backend is in
+ * preparation, so the hub fails loudly until it lands).
  * `SAKU_ENV_PROVISIONER=static` opts the deployment into this mode.
  */
 

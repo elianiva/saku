@@ -25,10 +25,13 @@ import type { SakuHubDO, SakuThreadDO } from "./src/worker.ts";
 export interface StackOptions {
   /** The deployment secret (default: a persistent random value). */
   readonly secret?: Redacted.Redacted<string>;
-  /** The Box API key (default: the BOX_API_KEY secret). */
+  /** The Box API key (default: the BOX_API_KEY secret). Box is incomplete — ADR 0008. */
   readonly boxApiKey?: Redacted.Redacted<string>;
-  /** "box" (default) or "static" (a configured env daemon, dev/celld). */
-  readonly provisioner?: "box" | "static";
+  /** The Freestyle API key (default: the FREESTYLE_API_KEY secret; unused
+   * until the freestyle provisioner backend lands — ADR 0008). */
+  readonly freestyleApiKey?: Redacted.Redacted<string>;
+  /** "box" (default, incomplete), "static", or "freestyle" (fails loudly until the backend lands). */
+  readonly provisioner?: "box" | "static" | "freestyle";
   /** Static provisioner: the env daemon's endpoint + token. */
   readonly envUrl?: string;
   readonly envToken?: string;
@@ -60,6 +63,9 @@ export const makeStack = (options: StackOptions = {}) =>
           BOX_API_KEY:
             options.boxApiKey ??
             Config.redacted("BOX_API_KEY").pipe(Config.withDefault(Redacted.make(""))),
+          FREESTYLE_API_KEY:
+            options.freestyleApiKey ??
+            Config.redacted("FREESTYLE_API_KEY").pipe(Config.withDefault(Redacted.make(""))),
           SAKU_ENV_PROVISIONER: Config.string("SAKU_ENV_PROVISIONER").pipe(
             Config.withDefault(options.provisioner ?? "box"),
           ),

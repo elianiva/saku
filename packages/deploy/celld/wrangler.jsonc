@@ -16,8 +16,11 @@
     // the fleet bucket).
     "DEPLOYMENT_SECRET": "",
     // Box provisioning is off in the celld twin (static provisioner);
-    // keep the key slot for parity with the Cloudflare deployment.
+    // keep the key slots for parity with the Cloudflare deployment. Box
+    // is incomplete (ADR 0008); FREESTYLE_API_KEY is unused until the
+    // freestyle backend lands.
     "BOX_API_KEY": "",
+    "FREESTYLE_API_KEY": "",
     "SAKU_ENV_PROVISIONER": "static",
     "SAKU_ENV_URL": "",
     "SAKU_ENV_TOKEN": "",

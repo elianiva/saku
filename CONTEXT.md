@@ -39,11 +39,11 @@ Starting a thread with its first prompt in one gesture: the thread is created (n
 _Avoid_: new-thread dialog, quick-fire
 
 **Mode**:
-A thread's hands policy, hard-pinned at creation: `local` (the user's own machine is the hands, through the **env daemon**); `sandbox` (a **Box**); `any` (local preferred, Box fallback). The pin is deliberate — switching modes mid-thread changes which filesystem the hands see, which would corrupt a thread's identity.
+A thread's hands policy, hard-pinned at creation: `local` (the user's own machine is the hands, through the **env daemon**); `sandbox` (a **Freestyle** VM); `any` (local preferred, sandbox fallback). The pin is deliberate — switching modes mid-thread changes which filesystem the hands see, which would corrupt a thread's identity.
 _Avoid_: type, flavor, exec-target
 
 **Env**:
-The hands provider behind a thread's mode: the local machine (via the **env daemon**) or a **Box**. The worker never knows which; the thread's mode decides.
+The hands provider behind a thread's mode: the local machine (via the **env daemon**) or a sandbox VM (**Freestyle** — the provider of record, ADR 0008; the **Box** integration it replaces is incomplete). The worker never knows which; the thread's mode decides.
 _Avoid_: executor, shell, runtime, sandbox (that's the mode name)
 
 **Env daemon**:
@@ -55,8 +55,12 @@ The hub's outbound bridge: the env daemon dials the hub (relay_hello, deployment
 _Avoid_: tunnel, vpn, proxy
 
 **Box**:
-The remote sandbox provider (ascii.dev). One Box per thread, lazily provisioned by the hub on first use, stopped by **idle-stop** between uses. A Box is a disposable machine: snapshot on stop, resume in seconds.
+The former remote sandbox provider (ascii.dev). One Box per thread, lazily provisioned by the hub on first use, stopped by **idle-stop** between uses. A Box is a disposable machine: snapshot on stop, resume in seconds. **Incomplete — superseded by Freestyle (ADR 0008)**: kept selectable for development/parity (`SAKU_ENV_PROVISIONER=box`), not the production path.
 _Avoid_: sandbox (the mode name), orb (amp's word), VM
+
+**Freestyle**:
+The remote sandbox provider (freestyle.sh), chosen by ADR 0008 to replace Box. Full Linux VMs (root, Docker, nested KVM) with suspend/resume — only storage is billed while suspended. One VM per thread, lazily provisioned by the hub on first use (`SAKU_ENV_PROVISIONER=freestyle` + `FREESTYLE_API_KEY`), suspended by **idle-stop** between uses. The backend is in preparation: the deployment fails loudly until it lands.
+_Avoid_: sandbox (the mode name), box (the ascii.dev provider)
 
 **Idle-stop**:
 The env lifecycle policy: a Box that has been idle is stopped (snapshot, billing paused) by the hub and resumed on the next prompt; local envs never stop. In the deployment, the thread DO owns the timer as a Durable Object alarm (armed via the hub's `/arm-idle`, cleared on activity): the alarm fires in the worker and pushes `idleStopFired` back to the hub, which validates, releases, and flips the env axis.
@@ -83,5 +87,5 @@ What the hub hands the worker after provisioning: the env daemon's URL + token (
 _Avoid_: credentials, ticket, lease
 
 **Static provisioner**:
-The deployment's `SAKU_ENV_PROVISIONER=static` mode (dev/celld shape): one configured env daemon at `SAKU_ENV_URL` is every thread's env — no Box, no provisioning loop. The Box provisioner stays the production default.
+The deployment's `SAKU_ENV_PROVISIONER=static` mode (dev/celld shape): one configured env daemon at `SAKU_ENV_URL` is every thread's env — no provisioning loop. The Box provisioner remains the selectable default but is **incomplete**; the intended production provider is Freestyle (ADR 0008).
 _Avoid_: local mode (the mode name is a per-thread pin, this is a deployment shape)

@@ -13,7 +13,9 @@
  *
  * Everything durable lives on DO storage through the `KvStore` seam; the
  * worker seam is the thread-DO namespace; provisioning is the Box
- * provisioner (or the static one, `SAKU_ENV_PROVISIONER=static`); the
+ * provisioner (incomplete — ADR 0008), the static one
+ * (`SAKU_ENV_PROVISIONER=static`), or — once the backend lands — Freestyle
+ * (`SAKU_ENV_PROVISIONER=freestyle`, fails loudly until then); the
  * idle-stop window is armed in the thread DOs as durable alarms (the
  * hub's `IdleStopController`), and the fire path runs here.
  */
@@ -28,7 +30,8 @@ import {
   makeWireCore,
   makeBoxApi,
   workerdSocket,
-  type HubError,
+  HubError,
+  type EnvProvisioner,
   type HubShape,
   type HubRelayCoreShape,
   type SocketLike,
@@ -45,7 +48,8 @@ import { ENV_BUNDLE_BASE64 } from "./generated/env-bundle.ts";
 
 export const IDLE_STOP_DEFAULT_MS = 300_000;
 
-/** The Box provisioner with the deployment's key and embedded bundle. */
+/** The Box provisioner with the deployment's key and embedded bundle.
+ * Box is incomplete (ADR 0008) — kept selectable until Freestyle lands. */
 const boxProvisioner = (env: DeploymentEnv) =>
   makeProvisioner({
     boxApi: makeBoxApi({ apiKey: env.BOX_API_KEY }),
@@ -63,12 +67,24 @@ const boxProvisioner = (env: DeploymentEnv) =>
 
 /**
  * The deployment's provisioner: `SAKU_ENV_PROVISIONER=static` opts into
- * the configured-daemon mode (dev/celld); anything else is the Box.
+ * the configured-daemon mode (dev/celld); `freestyle` is the chosen
+ * sandbox provider (ADR 0008) — the backend is in preparation, so it
+ * fails loudly at hub build rather than silently falling back; anything
+ * else is the Box (incomplete, ADR 0008).
  */
-const provisionerFor = (env: DeploymentEnv) =>
-  varOrDefault(env, "SAKU_ENV_PROVISIONER", "box") === "static"
-    ? staticProvisioner(env)
-    : boxProvisioner(env);
+const provisionerFor = (env: DeploymentEnv): Effect.Effect<EnvProvisioner, HubError, never> =>
+  Match.value(varOrDefault(env, "SAKU_ENV_PROVISIONER", "box")).pipe(
+    Match.when("static", () => Effect.succeed(staticProvisioner(env))),
+    Match.when("freestyle", () =>
+      Effect.fail(
+        new HubError({
+          kind: "provisioner",
+          message: "freestyle provisioner is not implemented yet — see ADR 0008",
+        }),
+      ),
+    ),
+    Match.orElse(() => Effect.succeed(boxProvisioner(env))),
+  );
 
 /**
  * The `/push` contract lives in one place (do-protocol.ts): the payload
@@ -116,7 +132,7 @@ export class SakuHubDO {
         registry: yield* makeHubRegistry(),
         skills: yield* makeSkillsStore(),
         workerRef: threadWorkerRef(env),
-        provisioner: provisionerFor(env),
+        provisioner: yield* provisionerFor(env),
         idleStopMs,
         idleStop,
       });
