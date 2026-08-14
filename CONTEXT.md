@@ -85,6 +85,10 @@ _Avoid_: timeout, auto-stop (Box's own wall-clock TTL — a different thing)
 Hub-owned index of threads (id → name, cwd, mode, env). Consoles list and attach through the hub. Future: a factory hub enumerating every machine's threads.
 _Avoid_: db, table, catalog
 
+**Pi sessions**:
+The pi session files on the user's machine (`~/.pi/agent/sessions/` — v3, the format pi's shell writes today, and v4, pi-agent-core's jsonl format), listed and imported through the local daemon. Import is **adoption**: the file is read once through pi's own semantics and replayed into the thread's own trail; the pi file is never written, and the thread record's `source` provenance pins where it came from (re-import is idempotent). Only the local daemon serves these commands — the hub has no `~/.pi` (the mirror of skills being hub-only).
+_Avoid_: migration, bridge, sync, export
+
 **Wire**:
 The protocol between consoles and the hub: pi's own session vocabulary (`pi-agent-core`'s `AgentEvent`/`Entry` types, partial snapshots stripped as pi's own shell does) extended with a thread layer (registry ops, session commands, `settled`/`entry_appended`). The standing rule: **extend pi, never shim it** — pi's public types go on the wire verbatim; saku only adds what pi lacks (threads). JSONL frames over WebSocket; the hub's domain is the address, a deployment secret the credential.
 _Avoid_: api, rpc-as-a-name (pi calls its JSONL framing “RPC”; the wire is the full protocol)

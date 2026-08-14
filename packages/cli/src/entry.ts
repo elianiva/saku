@@ -155,6 +155,87 @@ const cmdRm = (threadArg: string | undefined): Effect.Effect<void, WireError | C
     yield* client.disconnect();
   });
 
+const fmtWhen = (ms: number): string => {
+  const date = new Date(ms);
+  const now = Date.now();
+  const days = Math.floor((now - ms) / 86_400_000);
+  if (days <= 0) return date.toLocaleTimeString();
+  if (days < 7) return `${days}d ago`;
+  return date.toLocaleDateString();
+};
+
+/** saku pi list — pi's sessions on this machine, through the local daemon. */
+const cmdPiList = (): Effect.Effect<void, WireError | CliError, never> =>
+  Effect.gen(function* () {
+    const client = yield* connect();
+    const sessions = yield* run(client.listPiSessions(), "list pi sessions");
+    if (sessions.length === 0) {
+      console.log("no pi sessions found — nothing to import yet");
+      yield* client.disconnect();
+      return;
+    }
+    console.log(
+      pad("ID", 14) + pad("NAME", 28) + pad("MSGS", 7) + pad("MODIFIED", 14) + "CWD",
+    );
+    for (const session of sessions) {
+      console.log(
+        pad(session.id.slice(0, 14), 14) +
+          pad(session.name ?? "—", 28) +
+          pad(String(session.messageCount), 7) +
+          pad(fmtWhen(session.modifiedAt), 14) +
+          session.cwd,
+      );
+    }
+    console.log(`\nimport one with: saku pi import <id-or-path>`);
+    yield* client.disconnect();
+  });
+
+/** saku pi import <id-or-path> — adopt a pi session as a saku thread. */
+const cmdPiImport = (arg: string | undefined): Effect.Effect<void, WireError | CliError, never> =>
+  Effect.gen(function* () {
+    if (arg === undefined || arg.length === 0) {
+      return yield* Effect.fail(
+        new CliError({ code: "usage", message: "saku pi import requires a session: saku pi import <id-or-path>" }),
+      );
+    }
+    const client = yield* connect();
+    // Accept a session id, a bare filename, or a full path.
+    const sessions = yield* run(client.listPiSessions(), "list pi sessions");
+    const match =
+      sessions.find((session) => session.id === arg) ??
+      sessions.find((session) => session.path === arg) ??
+      sessions.find((session) => session.path.endsWith(`/${arg}`));
+    if (match === undefined) {
+      return yield* Effect.fail(
+        new CliError({
+          code: "resolution",
+          message: `no pi session matches "${arg}" — try: saku pi list`,
+        }),
+      );
+    }
+    const thread = yield* run(client.importPiSession(match.path), "import pi session");
+    console.log(
+      `imported ${match.id.slice(0, 12)} as ${shortThreadId(thread.id)} (${thread.name}) — continue with any saku command`,
+    );
+    yield* client.disconnect();
+  });
+
+const cmdPi = (sub: string | undefined, arg: string | undefined): Effect.Effect<void, WireError | CliError, never> =>
+  Effect.gen(function* () {
+    switch (sub) {
+      case "list":
+        yield* cmdPiList();
+        return;
+      case "import":
+        yield* cmdPiImport(arg);
+        return;
+      default:
+        return yield* Effect.fail(
+          new CliError({ code: "usage", message: "saku pi <list|import>" }),
+        );
+    }
+  });
+
 const cmdDaemon = (sub: string | undefined): Effect.Effect<void, CliError, never> =>
   Effect.gen(function* () {
     switch (sub) {
@@ -259,6 +340,8 @@ usage:
   saku list
   saku new <name> [--cwd <dir>] [--mode local|sandbox|any]
   saku rm <thread>
+  saku pi list
+  saku pi import <id-or-path>
 `);
 };
 
@@ -299,6 +382,9 @@ const main = (): Effect.Effect<void, WireError | CliError, never> =>
         yield* cmdNew(name, cwd, mode);
         return;
       }
+      case "pi":
+        yield* cmdPi(rest[0], rest[1]);
+        return;
       case "rm":
       case "remove":
       case "delete":

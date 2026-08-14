@@ -14,9 +14,13 @@
  */
 
 import { Schema as S } from "effect";
-import { ThreadInfo } from "@saku/wire";
+import { AsyncData } from "foldkit";
+import { PiSessionInfo, ThreadInfo, WireError } from "@saku/wire";
 
 import { emptyLiveRegion, LiveRegion, Trail } from "./live.ts";
+
+/** The pi session list `listPiSessions()` returns, held as AsyncData. */
+export const PiPicker = AsyncData.Schema(S.Array(PiSessionInfo), WireError);
 
 export const Model = S.Struct({
   /** The active thread id; null renders the pane's welcome. */
@@ -35,6 +39,10 @@ export const Model = S.Struct({
   focused: S.Boolean,
   /** A transient failure notice (create/send failures); null when clean. */
   notice: S.NullOr(S.String),
+  /** The welcome's "from pi…" picker: Idle = closed (live.ts). */
+  piPicker: PiPicker.schema,
+  /** A pi import is in flight (guards double imports); null when clean. */
+  importing: S.NullOr(S.String),
 });
 export type Model = S.Schema.Type<typeof Model>;
 
@@ -47,4 +55,6 @@ export const initialModel = (): Model => ({
   starting: false,
   focused: false,
   notice: null,
+  piPicker: PiPicker.Idle(),
+  importing: null,
 });

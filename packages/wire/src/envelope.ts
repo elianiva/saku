@@ -11,6 +11,7 @@ import { Schema as S } from "effect";
 
 import { HelloOk } from "./hello.ts";
 import { ThreadChanged } from "./thread.ts";
+import { PiSessionCommand } from "./pi-sessions.ts";
 import { ResponsePayload, SessionCommand } from "./session.ts";
 import { SkillCommand } from "./skills.ts";
 import { ThreadCommand } from "./thread.ts";
@@ -18,9 +19,9 @@ import { ThreadCommand } from "./thread.ts";
 /** One JSON frame from console to server. */
 export const WireCommand = S.TaggedStruct("command", {
   id: S.String,
-  /** Present on session commands; hub-level commands (threads, skills) omit it. */
+  /** Present on session commands; hub-level commands (threads, skills, pi sessions) omit it. */
   threadId: S.optional(S.String),
-  command: S.Union([SessionCommand, ThreadCommand, SkillCommand]),
+  command: S.Union([SessionCommand, ThreadCommand, SkillCommand, PiSessionCommand]),
 });
 export type WireCommand = S.Schema.Type<typeof WireCommand>;
 

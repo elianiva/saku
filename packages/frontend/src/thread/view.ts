@@ -18,7 +18,7 @@
 import { AsyncData, Submodel } from "foldkit";
 import { Option, Stream } from "effect";
 import type { Html, HtmlBuilder } from "foldkit/html";
-import type { ThreadEnvState, ThreadState } from "@saku/wire";
+import type { PiSessionInfo, ThreadEnvState, ThreadState } from "@saku/wire";
 
 import { headerState } from "../presentation.ts";
 import {
@@ -37,6 +37,9 @@ import {
   ComposerBlurred,
   ComposerChanged,
   ComposerFocused,
+  PiImportRequested,
+  PiPickerClosed,
+  PiSessionsRequested,
   SendRequested,
   type ThreadMessage,
 } from "./message.ts";
@@ -427,5 +430,79 @@ const welcome = (model: Model, h: HtmlBuilder<ThreadMessage>): Html =>
       h.div([h.Class("text-[26px] font-bold uppercase tracking-[0.35em] text-text")], ["saku"]),
       h.div([h.Class("text-[13px] text-subtle")], ["Welcome back! What should we work on today?"]),
       h.div([h.Class("w-full max-w-xl mt-2")], [composerBox(model, h, "welcome")]),
+      h.div([h.Class("w-full max-w-xl mt-1")], [piPicker(model, h)]),
     ],
   );
+
+/** The welcome's "from pi…" affordance: pick a pi session to adopt. */
+const piPicker = (model: Model, h: HtmlBuilder<ThreadMessage>): Html =>
+  h.div([h.Class("flex flex-col")], [
+    model.piPicker._tag === "Idle"
+      ? h.button(
+          [
+            h.Class("text-[11px] text-subtle hover:text-pine self-start"),
+            h.OnClick(PiSessionsRequested()),
+          ],
+          ["from pi…"],
+        )
+      : piPickerPanel(model, h),
+  ]);
+
+/** The open picker: pi's sessions on this machine, newest first. */
+const piPickerPanel = (model: Model, h: HtmlBuilder<ThreadMessage>): Html =>
+  h.div(
+    [h.Class("border border-line bg-base")],
+    [
+      h.div(
+        [h.Class("flex items-center gap-2 px-3 py-1.5 border-b border-line text-[10px] uppercase tracking-[0.18em] text-subtle")],
+        [
+          h.span([h.Class("flex-1")], ["pi sessions — adopt one as a thread"]),
+          h.button(
+            [h.Class("px-1 hover:text-love"), h.OnClick(PiPickerClosed()), h.AriaLabel("close pi picker")],
+            ["✕"],
+          ),
+        ],
+      ),
+      AsyncData.match(model.piPicker, {
+        onIdle: () => piPickerStatus(h, ""),
+        onLoading: () => piPickerStatus(h, "reading ~/.pi…"),
+        onRefreshing: () => piPickerStatus(h, "reading ~/.pi…"),
+        onStale: () => piPickerStatus(h, "reading ~/.pi…"),
+        onFailure: (error) => piPickerStatus(h, error.message),
+        onSuccess: (sessions) =>
+          sessions.length === 0
+            ? piPickerStatus(h, "no pi sessions found")
+            : h.div(
+                [h.Class("max-h-56 overflow-y-auto")],
+                sessions.map((session) => piSessionRow(session, model.importing, h)),
+              ),
+      }),
+    ],
+  );
+
+const piPickerStatus = (h: HtmlBuilder<ThreadMessage>, text: string): Html =>
+  h.div([h.Class("px-3 py-2 text-[12px] text-muted")], [text]);
+
+const piSessionRow = (
+  session: PiSessionInfo,
+  importing: string | null,
+  h: HtmlBuilder<ThreadMessage>,
+): Html => {
+  const busy = importing === session.path;
+  const title = session.name ?? (session.firstMessage === "(no messages)" ? session.id : session.firstMessage);
+  return h.button(
+    [
+      h.Class(
+        `w-full flex items-center gap-2 px-3 py-1.5 border-b border-line last:border-b-0 text-left text-[12px] ${busy ? "text-muted" : "hover:bg-overlay/60"}`,
+      ),
+      h.OnClick(PiImportRequested({ path: session.path })),
+      h.Disabled(busy),
+      h.Title(session.path),
+    ],
+    [
+      h.span([h.Class("flex-1 truncate min-w-0")], [busy ? "importing…" : title]),
+      h.span([h.Class("text-muted shrink-0")], [`${session.messageCount} msgs`]),
+      h.span([h.Class("text-muted truncate shrink-0 max-w-40")], [session.cwd]),
+    ],
+  );
+};

@@ -14,7 +14,7 @@
 
 import { Schema as S } from "effect";
 import { Message } from "foldkit";
-import { ThreadInfo } from "@saku/wire";
+import { PiSessionInfo, ThreadInfo, WireError } from "@saku/wire";
 
 import type { OpenedThread } from "../root/message.ts";
 import { EntryProjection, SessionEventProjection } from "./projection.ts";
@@ -54,6 +54,23 @@ export const ComposerBlurred = Message.m("ComposerBlurred");
 export const ThreadCreated = Message.m("ThreadCreated", { thread: ThreadInfo });
 export const CreateFailed = Message.m("CreateFailed", { message: S.String });
 
+// -- pi session picker (the welcome's "from pi…" flow) -----------------------
+
+/** The welcome's "from pi…" affordance was clicked: open the picker. */
+export const PiSessionsRequested = Message.m("PiSessionsRequested");
+/** The local daemon's answer: pi's sessions on this machine. */
+export const PiSessionsListed = Message.m("PiSessionsListed", {
+  sessions: S.Array(PiSessionInfo),
+});
+export const PiSessionsListFailed = Message.m("PiSessionsListFailed", { error: WireError });
+/** A picker row was clicked: adopt that pi session as a thread. */
+export const PiImportRequested = Message.m("PiImportRequested", { path: S.String });
+/** The import landed: a thread was born from the pi session. */
+export const PiImported = Message.m("PiImported", { thread: ThreadInfo });
+export const PiImportFailed = Message.m("PiImportFailed", { error: WireError });
+/** The picker's close button. */
+export const PiPickerClosed = Message.m("PiPickerClosed");
+
 export const AbortRequested = Message.m("AbortRequested");
 export const AbortDone = Message.m("AbortDone");
 
@@ -75,6 +92,13 @@ export const ThreadMessage = S.Union([
   ComposerBlurred,
   ThreadCreated,
   CreateFailed,
+  PiSessionsRequested,
+  PiSessionsListed,
+  PiSessionsListFailed,
+  PiImportRequested,
+  PiImported,
+  PiImportFailed,
+  PiPickerClosed,
   AbortRequested,
   AbortDone,
   ScrollDone,

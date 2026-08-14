@@ -331,6 +331,23 @@ describe("skills", () => {
   });
 });
 
+describe("pi sessions", () => {
+  it("rejects the pi-session commands at the hub (they are local-daemon-only)", async () => {
+    const client = await connect();
+    await run(client.connect());
+
+    await expect(run(client.listPiSessions())).rejects.toMatchObject({
+      code: "command_failed",
+      message: "pi sessions are served by the local daemon, not the hub",
+    });
+    await expect(run(client.importPiSession("/tmp/whatever.jsonl"))).rejects.toMatchObject({
+      code: "command_failed",
+      message: "pi sessions are served by the local daemon, not the hub",
+    });
+    await run(client.disconnect());
+  });
+});
+
 describe("fan-out", () => {
   it("delivers every session event to every console", async () => {
     const a = await connect();

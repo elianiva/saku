@@ -53,6 +53,7 @@ import {
   type ThreadCommand,
   type ThreadInfo,
   type ThreadMode,
+  type PiSessionCommand,
 } from "../src/index.ts";
 import { makeWireServer, listenWs, wsUrlOf } from "../src/server-core.ts";
 
@@ -72,6 +73,7 @@ export class FixtureError extends S.TaggedError<FixtureError>()("FixtureError", 
     "empty_name",
     "unknown_entry",
     "unknown_skill",
+    "pi_sessions_not_served",
   ]),
   message: S.String,
 }) {}
@@ -189,7 +191,7 @@ export const startHubFixture = (): Effect.Effect<HubFixture, Error, never> =>
     // -- command routing (the fixture's scripted semantics) --------------------
 
     const runHubCommand = (
-      command: ThreadCommand | SkillCommand,
+      command: ThreadCommand | SkillCommand | PiSessionCommand,
     ): Effect.Effect<ResponsePayload, FixtureError, never> =>
       Match.value(command).pipe(
         Match.withReturnType<Effect.Effect<ResponsePayload, FixtureError, never>>(),
@@ -286,6 +288,23 @@ export const startHubFixture = (): Effect.Effect<HubFixture, Error, never> =>
               skills.delete(command.id);
               return DeleteSkillResponse.make({});
             }),
+          // The fixture is the hub's shape: pi sessions live on the user's
+          // machine, so only the local daemon serves these (mirror of the
+          // daemon rejecting hub-only skills commands).
+          list_pi_sessions: () =>
+            Effect.fail(
+              new FixtureError({
+                kind: "pi_sessions_not_served",
+                message: "pi sessions are served by the local daemon, not the hub",
+              }),
+            ),
+          import_pi_session: () =>
+            Effect.fail(
+              new FixtureError({
+                kind: "pi_sessions_not_served",
+                message: "pi sessions are served by the local daemon, not the hub",
+              }),
+            ),
         }),
       );
 

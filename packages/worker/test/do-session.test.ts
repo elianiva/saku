@@ -131,6 +131,110 @@ describe("durability", () => {
     });
   });
 
+  it("load replays the log in seq order even when the store lists out of order", async () => {
+    await withFileKv(async (kv) => {
+      // Write the mutations directly, in scrambled order — a store that
+      // lists keys arbitrarily (the file backend's readdir) must not
+      // scramble the replay: the sequence numbers are the only order.
+      const id = "scrambled";
+      const put = (seq: number, mutation: unknown): Promise<void> =>
+        Effect.runPromise(
+          kv.put(`session/${id}/log/${String(seq).padStart(12, "0")}`, new TextEncoder().encode(JSON.stringify(mutation))),
+        );
+      await put(3, { kind: "fact", seq: 3, fact: "name", name: "third" });
+      await put(1, {
+        kind: "entry",
+        entry: {
+          type: "message",
+          id: "u1",
+          parentId: null,
+          seq: 1,
+          timestamp: 1,
+          message: { role: "user", content: [], timestamp: 1 },
+        },
+      });
+      await put(2, {
+        kind: "entry",
+        entry: {
+          type: "message",
+          id: "a1",
+          parentId: "u1",
+          seq: 2,
+          timestamp: 2,
+          message: { role: "assistant", content: [], timestamp: 2 },
+        },
+      });
+      await Effect.runPromise(
+        kv.put(`session/${id}/meta`, new TextEncoder().encode(JSON.stringify({ id, createdAt: 1, cwd: "" }))),
+      );
+
+      const repo = new DoSessionRepo(kv);
+      const [metadata] = await repo.list();
+      const reopened = await repo.open(metadata);
+      expect(await reopened.getName()).toBe("third");
+      expect((await reopened.getLog()).map((item) => item.seq)).toEqual([1, 2, 3]);
+    });
+  });
+
+  it("an imported pi trail replays and continues onto the last message", async () => {
+    await withFileKv(async (kv) => {
+      const repo = new DoSessionRepo(kv);
+      // The mutation stream a pi session import produces: three entries, a
+      // name fact, and the synthesized main-lane pin (pi-sessions.ts).
+      const imported = await repo.import("adopted-thread", {
+        cwd: "/tmp/pi-workspace",
+        createdAt: 1780500000000,
+        mutations: [
+          {
+            kind: "entry",
+            entry: {
+              type: "message",
+              id: "u1",
+              parentId: null,
+              seq: 1,
+              timestamp: 1780500000001,
+              message: { role: "user", content: [{ type: "text", text: "hi" }], timestamp: 1780500000001 },
+            },
+          },
+          {
+            kind: "entry",
+            entry: {
+              type: "message",
+              id: "a1",
+              parentId: "u1",
+              seq: 2,
+              timestamp: 1780500000002,
+              message: { role: "assistant", content: [{ type: "text", text: "hello" }], timestamp: 1780500000002 },
+            },
+          },
+          { kind: "fact", seq: 3, fact: "name", name: "adopted" },
+          { kind: "lane", seq: 4, lane: "main", leafId: "a1" },
+        ],
+      });
+      expect((await imported.getMetadata()).cwd).toBe("/tmp/pi-workspace");
+
+      // The host opens the trail by thread id — the import must be visible
+      // to a fresh repo as the thread's own session.
+      const second = new DoSessionRepo(kv);
+      const [metadata] = await second.list();
+      expect(metadata.id).toBe("adopted-thread");
+      const reopened = await second.open(metadata);
+      expect(await reopened.getName()).toBe("adopted");
+      expect((await reopened.getLog()).filter((i) => i.kind === "entry")).toHaveLength(2);
+
+      // Continuation chains onto the last imported message (the lane pin).
+      const appended = await reopened.appendMessage({
+        role: "user",
+        content: [{ type: "text", text: "next" }],
+        timestamp: Date.now(),
+      });
+      const [leaf] = await reopened.getLanes();
+      expect(leaf.leafId).toBe(appended);
+      const [last] = (await reopened.getLog()).slice(-1);
+      expect(last.kind === "entry" ? last.entry.parentId : null).toBe("a1");
+    });
+  });
+
   it("delete removes the session's keys", async () => {
     const kv = await buildKv(KvStore.memory());
     const repo = new DoSessionRepo(kv);

@@ -75,6 +75,12 @@ import {
   SkillInfo,
   type SkillScope,
 } from "./skills.ts";
+import {
+  ImportPiSessionCommand,
+  ListPiSessionsCommand,
+  PiSessionCommand,
+  PiSessionInfo,
+} from "./pi-sessions.ts";
 import { WIRE_VERSION } from "./version.ts";
 
 export class WireError extends Schema.TaggedError<WireError>()("WireError", {
@@ -426,7 +432,9 @@ const makeMachine = (
 
 interface CommandSpec<A extends object, K extends ResponsePayload["_tag"], T> {
   /** The command's schema; its static `make` builds the wire payload. */
-  readonly schema: { readonly make: (args: A) => SessionCommand | ThreadCommand | SkillCommand };
+  readonly schema: {
+    readonly make: (args: A) => SessionCommand | ThreadCommand | SkillCommand | PiSessionCommand;
+  };
   /** Session commands ride the frame's threadId; hub-level commands don't. */
   readonly threadScoped: boolean;
   /** The response variant this command's reply carries. */
@@ -439,7 +447,9 @@ interface CommandSpec<A extends object, K extends ResponsePayload["_tag"], T> {
 const command = <A extends object, K extends ResponsePayload["_tag"], T>(
   threadScoped: boolean,
   tag: K,
-  schema: { readonly make: (args: A) => SessionCommand | ThreadCommand | SkillCommand },
+  schema: {
+    readonly make: (args: A) => SessionCommand | ThreadCommand | SkillCommand | PiSessionCommand;
+  },
   extract: (payload: SessionResponse<K>) => T,
 ): CommandSpec<A, K, T> => ({ schema, threadScoped, tag, extract });
 
@@ -491,6 +501,11 @@ const COMMANDS = {
   listSkills: command(false, "list_skills", ListSkillsCommand, (p) => [...p.skills]),
   importSkill: command(false, "import_skill", ImportSkillCommand, (p) => p.skill),
   deleteSkill: command(false, "delete_skill", DeleteSkillCommand, () => undefined),
+  // -- pi sessions (local-daemon-only: pi's files live on the user's machine)
+  listPiSessions: command(false, "list_pi_sessions", ListPiSessionsCommand, (p) => [
+    ...p.sessions,
+  ]),
+  importPiSession: command(false, "import_pi_session", ImportPiSessionCommand, (p) => p.thread),
 };
 
 /** Resolve a correlated request; a late/abandoned id is a no-op. */
@@ -598,6 +613,9 @@ export interface WireClient {
     name: string,
   ) => Effect.Effect<ThreadInfo, WireError, never>;
   readonly deleteThread: (threadId: string) => Effect.Effect<void, WireError, never>;
+  // -- pi sessions (local-daemon-only: pi's files live on the user's machine)
+  readonly listPiSessions: () => Effect.Effect<PiSessionInfo[], WireError, never>;
+  readonly importPiSession: (path: string) => Effect.Effect<ThreadInfo, WireError, never>;
   // -- session
   readonly prompt: (
     threadId: string,
@@ -843,5 +861,8 @@ export const makeWireClient = (
       listSkills: () => request(COMMANDS.listSkills, {}),
       importSkill: (source, scope) => request(COMMANDS.importSkill, { source, scope }),
       deleteSkill: (id) => request(COMMANDS.deleteSkill, { id }),
+      // -- pi session commands
+      listPiSessions: () => request(COMMANDS.listPiSessions, {}),
+      importPiSession: (path) => request(COMMANDS.importPiSession, { path }),
     };
   });

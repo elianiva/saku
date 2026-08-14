@@ -19,6 +19,7 @@
 export * from "./version.ts";
 export * from "./hello.ts";
 export * from "./thread.ts";
+export * from "./pi-sessions.ts";
 export * from "./session.ts";
 export * from "./skills.ts";
 export * from "./envelope.ts";

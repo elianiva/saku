@@ -32,6 +32,7 @@ import {
   decodeFrame,
   parseFrame,
   serializeFrame,
+  type PiSessionCommand,
   type ResponsePayload,
   type SessionCommand as SessionCommandType,
   type SkillCommand,
@@ -62,7 +63,7 @@ export interface ServerSocket {
 /** The command handlers the core routes to (the daemon's and the hub's own). */
 export interface WireServerHandlers {
   readonly runHubCommand: (
-    command: ThreadCommand | SkillCommand,
+    command: ThreadCommand | SkillCommand | PiSessionCommand,
   ) => Effect.Effect<ResponsePayload, unknown, never>;
   readonly runSessionCommand: (
     threadId: string,
@@ -98,7 +99,7 @@ const DECODE_COMMAND = Schema.decodeUnknownSync(Schema.Union([Hello, WireCommand
 
 /** Whether a decoded command is thread-scoped (session vocabulary vs. hub-level). */
 const isSessionCommand = (
-  c: SessionCommandType | ThreadCommand | SkillCommand,
+  c: SessionCommandType | ThreadCommand | SkillCommand | PiSessionCommand,
 ): c is SessionCommandType => Schema.is(SessionCommand)(c);
 
 export const makeWireServer = (

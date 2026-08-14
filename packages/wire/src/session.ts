@@ -23,6 +23,7 @@ import type {
 } from "@earendil-works/pi-agent-core";
 
 import { SkillResponse } from "./skills.ts";
+import { PiSessionResponse } from "./pi-sessions.ts";
 import { ThreadInfo } from "./thread.ts";
 
 // ---------------------------------------------------------------------------
@@ -192,6 +193,7 @@ export const ResponsePayload = S.Union([
   DeleteThreadResponse,
   RenameThreadResponse,
   SkillResponse,
+  PiSessionResponse,
 ]);
 export type ResponsePayload = S.Schema.Type<typeof ResponsePayload>;
 

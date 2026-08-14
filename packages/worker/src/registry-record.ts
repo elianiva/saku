@@ -8,7 +8,7 @@
  */
 
 import { Schema } from "effect";
-import { ThreadMode } from "@saku/wire";
+import { ThreadMode, ThreadSource } from "@saku/wire";
 
 export const ThreadRecordSchema = Schema.Struct({
   id: Schema.String,
@@ -21,6 +21,8 @@ export const ThreadRecordSchema = Schema.Struct({
   sessionId: Schema.Union([Schema.Null, Schema.String]),
   /** The name is an auto-generated prompt snippet awaiting auto-title (CONTEXT.md: Quick start, Auto-title). */
   nameAuto: Schema.Boolean,
+  /** Adoption provenance; absent on threads created from scratch. */
+  source: Schema.optional(ThreadSource),
 });
 
 /**

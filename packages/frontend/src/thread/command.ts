@@ -14,6 +14,10 @@ import { Wire } from "../wire.ts";
 import {
   AbortDone,
   CreateFailed,
+  PiImportFailed,
+  PiImported,
+  PiSessionsListed,
+  PiSessionsListFailed,
   PromptAcked,
   ScrollDone,
   SendFailed,
@@ -72,6 +76,35 @@ export const QuickStartCmd = Command.define("QuickStart", {
         return ThreadCreated({ thread });
       }),
       (error) => CreateFailed({ message: error.message }),
+    ),
+});
+
+/** List pi's sessions on this machine (the local daemon serves these). */
+export const ListPiSessionsCmd = Command.define("ListPiSessions", {
+  messages: [PiSessionsListed, PiSessionsListFailed],
+  execute: catchWireError(
+    Effect.gen(function* () {
+      const { client } = yield* Wire;
+      const sessions = yield* client.listPiSessions();
+      return PiSessionsListed({ sessions });
+    }),
+    (error) => PiSessionsListFailed({ error }),
+  ),
+});
+
+/** Adopt a pi session as a thread (adoption, not a bridge — the pi file is
+ *  never written; the thread's trail is saku's own). */
+export const ImportPiSessionCmd = Command.define("ImportPiSession", {
+  args: { path: S.String },
+  messages: [PiImported, PiImportFailed],
+  execute: ({ path }) =>
+    catchWireError(
+      Effect.gen(function* () {
+        const { client } = yield* Wire;
+        const thread = yield* client.importPiSession(path);
+        return PiImported({ thread });
+      }),
+      (error) => PiImportFailed({ error }),
     ),
 });
 

@@ -8,17 +8,24 @@
 
 import { describe, expect, it } from "vitest";
 import { Option } from "effect";
-import type { ThreadInfo } from "@saku/wire";
+import { WireError, type PiSessionInfo, type ThreadInfo } from "@saku/wire";
 
 import { ThreadsRoute, ThreadRoute } from "../route.ts";
 import { informRouteChanged, update } from "./update.ts";
-import { initialModel, type Model } from "./model.ts";
+import { initialModel, PiPicker, type Model } from "./model.ts";
 import { Trail } from "./live.ts";
 import {
   ComposerBlurred,
   ComposerChanged,
   ComposerFocused,
   CreateFailed,
+  PiImportFailed,
+  PiImportRequested,
+  PiImported,
+  PiPickerClosed,
+  PiSessionsListed,
+  PiSessionsListFailed,
+  PiSessionsRequested,
   PromptAcked,
   SendFailed,
   SendRequested,
@@ -40,6 +47,17 @@ const threadInfo = (id: string, name = id): ThreadInfo => ({
   env: "ready",
   sessionId: null,
   tailSeq: 0,
+});
+
+const piSession = (id: string): PiSessionInfo => ({
+  id,
+  cwd: "/tmp/work",
+  name: "adopt me",
+  createdAt: 1,
+  modifiedAt: 2,
+  messageCount: 3,
+  firstMessage: "hi",
+  path: `/tmp/work/${id}.jsonl`,
 });
 
 describe("thread update", () => {
@@ -171,5 +189,66 @@ describe("thread update", () => {
     const focused = { ...initialModel(), focused: true };
     expect(informRouteChanged(focused, ThreadRoute({ id: "a" }))[0].focused).toBe(false);
     expect(informRouteChanged(focused, ThreadsRoute())[0].focused).toBe(false);
+  });
+
+  it("the pi picker opens on the welcome and fires the list command", () => {
+    const [model, commands] = update(initialModel(), PiSessionsRequested());
+    expect(model.piPicker._tag).toBe("Loading");
+    expect(commands).toHaveLength(1);
+  });
+
+  it("the pi picker will not open on a pinned thread", () => {
+    const [model, commands] = update(modelWith("a"), PiSessionsRequested());
+    expect(model.piPicker._tag).toBe("Idle");
+    expect(commands).toHaveLength(0);
+  });
+
+  it("the pi list lands as Success and a failed list lands as Failure", () => {
+    const opened = update(initialModel(), PiSessionsRequested())[0];
+    const [listed] = update(opened, PiSessionsListed({ sessions: [piSession("s1")] }));
+    expect(listed.piPicker).toEqual(PiPicker.Success({ data: [piSession("s1")] }));
+
+    const error = new WireError({ code: "command_failed", message: "scan failed" });
+    const [failed] = update(initialModel(), PiSessionsListFailed({ error }));
+    expect(failed.piPicker._tag).toBe("Failure");
+  });
+
+  it("a row click fires the import command, guarded per path", () => {
+    const session = piSession("s1");
+    const [importing, commands] = update(initialModel(), PiImportRequested({ path: session.path }));
+    expect(importing.importing).toBe(session.path);
+    expect(commands).toHaveLength(1);
+    // A second click while in flight is a no-op.
+    const [again, againCommands] = update(importing, PiImportRequested({ path: session.path }));
+    expect(again.importing).toBe(session.path);
+    expect(againCommands).toHaveLength(0);
+  });
+
+  it("an imported thread clears the picker and surfaces OpenedThread", () => {
+    const opened = {
+      ...initialModel(),
+      piPicker: PiPicker.Success({ data: [piSession("s1")] }),
+      importing: "/tmp/work/s1.jsonl",
+    };
+    const [model, , out] = update(opened, PiImported({ thread: threadInfo("b", "adopt me") }));
+    expect(model.piPicker._tag).toBe("Idle");
+    expect(model.importing).toBeNull();
+    expect(out).toEqual(Option.some({ _tag: "OpenedThread", id: "b" }));
+  });
+
+  it("a failed import releases the guard and shows the notice", () => {
+    const opened = { ...initialModel(), importing: "/tmp/work/s1.jsonl" };
+    const [model] = update(
+      opened,
+      PiImportFailed({ error: new WireError({ code: "command_failed", message: "nope" }) }),
+    );
+    expect(model.importing).toBeNull();
+    expect(model.notice).toBe("nope");
+  });
+
+  it("closing the picker returns it to Idle", () => {
+    const opened = { ...initialModel(), piPicker: PiPicker.Loading() };
+    const [model] = update(opened, PiPickerClosed());
+    expect(model.piPicker._tag).toBe("Idle");
   });
 });

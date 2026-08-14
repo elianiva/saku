@@ -44,6 +44,20 @@ export type ThreadState = S.Schema.Type<typeof ThreadState>;
 export const ThreadEnvState = S.Literals(["stopped", "provisioning", "ready", "error"]);
 export type ThreadEnvState = S.Schema.Type<typeof ThreadEnvState>;
 
+/**
+ * Where a thread's session came from. Present only on adopted threads
+ * (imported pi sessions); provenance makes re-import idempotent and
+ * delete semantics explicit (removing a thread never touches the source).
+ */
+export const ThreadSource = S.Struct({
+  kind: S.Literal("pi"),
+  /** The pi session id (the file header's id). */
+  sessionId: S.String,
+  /** The pi session file this thread was adopted from. */
+  path: S.String,
+});
+export type ThreadSource = S.Schema.Type<typeof ThreadSource>;
+
 /** Registry view of a thread, broadcast on every mutation. */
 export const ThreadInfo = S.Struct({
   id: S.String,
@@ -57,6 +71,8 @@ export const ThreadInfo = S.Struct({
   sessionId: S.Union([S.Null, S.String]),
   /** Highest durable-log sequence the thread has reached. */
   tailSeq: S.Number,
+  /** Adopted-thread provenance; absent on threads created from scratch. */
+  source: S.optional(ThreadSource),
 });
 export type ThreadInfo = S.Schema.Type<typeof ThreadInfo>;
 

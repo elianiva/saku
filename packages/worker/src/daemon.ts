@@ -46,10 +46,14 @@ import {
   DeleteThreadResponse,
   EventFrame,
   GetThreadResponse,
+  ImportPiSessionResponse,
+  ListPiSessionsResponse,
   ListThreadsResponse,
   RenameThreadResponse,
   ThreadChanged,
   resolveThread,
+  shortThreadId,
+  type PiSessionCommand,
   type ResponsePayload,
   type SessionCommand as SessionCommandType,
   type SessionWireEvent,
@@ -82,6 +86,8 @@ import { RegistryError } from "./registry-error.ts";
 import { ModelCatalog, ModelCatalogLive, type ModelCatalogShape } from "./model-catalog.ts";
 import { SessionHost, SessionHostError } from "./session-host.ts";
 import { runSessionCommand } from "./session-commands.ts";
+import { DoSessionRepo } from "./do-session.ts";
+import { listPiSessions, readPiSession } from "./pi-sessions.ts";
 
 export interface DaemonOptions {
   /** Override the URL file path (tests). Defaults to ~/.saku/worker.url. */
@@ -94,6 +100,9 @@ export class DaemonError extends Schema.TaggedError<DaemonError>()("DaemonError"
     "unknown_thread",
     "empty_name",
     "skills_not_served",
+    "pi_sessions_not_served",
+    "pi_sessions",
+    "already_imported",
     "unknown_command",
     "startup",
     "resolution",
@@ -206,7 +215,7 @@ export const makeSakuDaemon = (options: {
     // -- command routing -----------------------------------------------------
 
     const runHubCommand = (
-      command: ThreadCommand | SkillCommand,
+      command: ThreadCommand | SkillCommand | PiSessionCommand,
     ): Effect.Effect<ResponsePayload, CommandError, never> =>
       Effect.gen(function* () {
         switch (command._tag) {
@@ -277,6 +286,92 @@ export const makeSakuDaemon = (options: {
                 message: "skills are served by the hub, not the local daemon",
               }),
             );
+          case "list_pi_sessions": {
+            // pi's session files live on the user's machine; only the local
+            // daemon can read them (the mirror of skills_not_served).
+            const sessions = yield* listPiSessions(fs).pipe(
+              Effect.mapError(
+                (error) =>
+                  new DaemonError({
+                    code: "pi_sessions",
+                    message: error.message,
+                    cause: error,
+                  }),
+              ),
+            );
+            return ListPiSessionsResponse.make({ sessions });
+          }
+          case "import_pi_session": {
+            // Adoption is idempotent per pi session file: one thread per
+            // source (the record's provenance field is the key).
+            const records = yield* registry.list();
+            const adopted = records.find(
+              (record) => record.source?.kind === "pi" && record.source.path === command.path,
+            );
+            if (adopted !== undefined) {
+              return yield* Effect.fail(
+                new DaemonError({
+                  code: "already_imported",
+                  message: `already imported as ${shortThreadId(adopted.id)} (${adopted.name})`,
+                }),
+              );
+            }
+            const session = yield* readPiSession(fs, command.path).pipe(
+              Effect.mapError(
+                (error) =>
+                  new DaemonError({
+                    code: "pi_sessions",
+                    message: error.message,
+                    cause: error,
+                  }),
+              ),
+            );
+            const name =
+              session.name ??
+              (session.firstMessage !== undefined && session.firstMessage !== "(no messages)"
+                ? session.firstMessage.length > 80
+                  ? `${session.firstMessage.slice(0, 80)}…`
+                  : session.firstMessage
+                : undefined) ??
+              session.cwd.split("/").filter(Boolean).pop() ??
+              "pi session";
+            const record = yield* registry.create({
+              name,
+              cwd: session.cwd,
+              mode: "local",
+              source: { kind: "pi", sessionId: session.id, path: command.path },
+            });
+            // Adopt the trail: replay the pi mutations into the thread's own
+            // kv store, then back-fill the session id. A failure rolls the
+            // record back — an import must be all-or-nothing.
+            const importOutcome = yield* Effect.gen(function* () {
+              const kv = yield* KvStore;
+              return yield* Effect.tryPromise({
+                try: () =>
+                  new DoSessionRepo(kv).import(record.id, {
+                    cwd: session.cwd,
+                    createdAt: session.createdAt,
+                    mutations: session.mutations,
+                  }),
+                catch: (error) =>
+                  new DaemonError({
+                    code: "pi_sessions",
+                    message: `failed to import ${command.path}: ${error instanceof Error ? error.message : String(error)}`,
+                    cause: error,
+                  }),
+              });
+            })
+              .pipe(Effect.provide(KvStore.file(fs, getThreadTrailRoot(record.id))))
+              .pipe(Effect.result);
+            if (Result.isFailure(importOutcome)) {
+              yield* registry.delete(record.id);
+              return yield* Effect.fail(importOutcome.failure);
+            }
+            yield* registry.update(record.id, { sessionId: record.id });
+            const info = yield* infoOf(record.id);
+            yield* emitThreadChanged(info);
+            return ImportPiSessionResponse.make({ thread: info });
+          }
           default: {
             // Exhaustiveness: a new command tag must be handled here.
             const exhaustive: never = command;

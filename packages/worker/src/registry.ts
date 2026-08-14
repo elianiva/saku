@@ -10,7 +10,7 @@
  */
 
 import { Context, Effect, FileSystem, Layer, Option, Ref } from "effect";
-import { ThreadMode, type ThreadInfo, type ThreadState } from "@saku/wire";
+import { ThreadMode, type ThreadInfo, type ThreadSource, type ThreadState } from "@saku/wire";
 
 import { isNotFound } from "@saku/store";
 import { getThreadDir, getThreadFile } from "./paths.ts";
@@ -43,6 +43,8 @@ export interface ThreadRegistryShape extends HostRegistryShape {
     cwd?: string;
     mode?: ThreadMode;
     autoName?: boolean;
+    /** Adoption provenance for imported pi sessions (pi-sessions.ts). */
+    source?: ThreadSource;
   }) => Effect.Effect<ThreadRecord, RegistryError>;
   /** Delete the record AND the thread's directory (sessions included). */
   readonly delete: (threadId: string) => Effect.Effect<boolean, RegistryError>;
@@ -171,6 +173,7 @@ export const ThreadRegistryLive: Layer.Layer<ThreadRegistry, RegistryError, File
               createdAt: Date.now(),
               sessionId: null,
               nameAuto: input.autoName === true,
+              ...(input.source === undefined ? {} : { source: input.source }),
             };
             yield* persist(fs, record);
             yield* Ref.update(recordsRef, (records) => new Map(records).set(record.id, record));
@@ -230,6 +233,7 @@ export const ThreadRegistryLive: Layer.Layer<ThreadRegistry, RegistryError, File
               env: "ready",
               sessionId: record.sessionId,
               tailSeq,
+              ...(record.source === undefined ? {} : { source: record.source }),
             });
           }),
       });

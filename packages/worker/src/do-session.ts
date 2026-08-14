@@ -132,7 +132,12 @@ export class DoSessionStorage implements SessionStorage<DoSessionMetadata> {
     }
     const state = new SessionState();
     const loaded = await Effect.runPromise(kv.list({ prefix: "log/" }));
-    const mutations = [...loaded].sort((a, b) => Number(a.key.slice(4)) - Number(b.key.slice(4)));
+    // Keys arrive as `log/<seq>` through the prefixed kv — the last path
+    // segment is the zero-padded sequence. (A bare `slice(4)` would break
+    // on a direct list; the file backend's readdir order is not sorted.)
+    const mutations = [...loaded].sort(
+      (a, b) => Number(a.key.slice(a.key.lastIndexOf("/") + 1)) - Number(b.key.slice(b.key.lastIndexOf("/") + 1)),
+    );
     for (const mutation of mutations) {
       state.applyMutation(parseMutation(mutation.key, mutation.value));
     }
@@ -360,6 +365,33 @@ export class DoSessionRepo implements SessionRepo<DoSessionMetadata> {
     };
     const storage = await DoSessionStorage.create(prefixedKv(this.kv, prefix), metadata);
     return new Session(storage);
+  }
+
+  /**
+   * Adopt a parsed pi session (pi-sessions.ts): write its mutations into
+   * this repo as a fresh session, then load it back — the load replays the
+   * whole log through `SessionState`, so an invalid import (broken chain,
+   * duplicate id, non-consecutive seq) fails here, before a thread points
+   * at it. The session id must be the thread's own id: the host looks up
+   * the trail by thread id (session-host.ts).
+   */
+  async import(
+    id: string,
+    data: { readonly cwd: string; readonly createdAt: number; readonly mutations: readonly SessionMutation[] },
+  ): Promise<Session<DoSessionMetadata>> {
+    validateSessionId(id);
+    const prefix = sessionPrefix(id);
+    if (Option.isSome(await Effect.runPromise(this.kv.get(`${prefix}meta`)))) {
+      throw new SessionError("already_exists", `Session already exists: ${id}`);
+    }
+    const metadata: DoSessionMetadata = { id, createdAt: data.createdAt, cwd: data.cwd };
+    await Effect.runPromise(this.kv.put(`${prefix}meta`, encode(JSON.stringify(metadata))));
+    for (const mutation of data.mutations) {
+      await Effect.runPromise(
+        this.kv.put(`${prefix}${logKey(mutationSeq(mutation))}`, encode(JSON.stringify(mutation))),
+      );
+    }
+    return this.open(metadata);
   }
 
   async open(metadata: DoSessionMetadata): Promise<Session<DoSessionMetadata>> {

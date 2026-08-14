@@ -24,6 +24,7 @@ import {
   ListThreadsResponse,
   RenameThreadResponse,
   ThreadChanged,
+  type PiSessionCommand,
   type ResponsePayload,
   type SkillCommand,
   type ThreadCommand,
@@ -31,7 +32,7 @@ import {
 } from "@saku/wire";
 import { makeWireServer, type WireServerShape } from "@saku/wire/server";
 
-import { HubError } from "./hub-error.ts";
+import { HubError, makeHubError } from "./hub-error.ts";
 import type { HubEvent, HubShape } from "./hub.ts";
 import type { SocketLike } from "./socket.ts";
 
@@ -53,7 +54,7 @@ export interface WireCoreShape {
 /** The hub-shaped thread/skill routing (the semantics live in `hub.ts`). */
 const runHubCommand =
   (hub: HubShape) =>
-  (command: ThreadCommand | SkillCommand): Effect.Effect<ResponsePayload, HubError, never> =>
+  (command: ThreadCommand | SkillCommand | PiSessionCommand): Effect.Effect<ResponsePayload, HubError, never> =>
     Match.value(command).pipe(
       Match.withReturnType<Effect.Effect<ResponsePayload, HubError, never>>(),
       Match.tagsExhaustive({
@@ -86,6 +87,22 @@ const runHubCommand =
             .pipe(Effect.map((skill) => ImportSkillResponse.make({ skill }))),
         delete_skill: (command) =>
           hub.deleteSkill(command.id).pipe(Effect.map(() => DeleteSkillResponse.make({}))),
+        // pi sessions live on the user's machine; only the local daemon
+        // serves these (the mirror of the daemon's skills_not_served).
+        list_pi_sessions: () =>
+          Effect.fail(
+            makeHubError(
+              "pi_sessions",
+              "pi sessions are served by the local daemon, not the hub",
+            ),
+          ),
+        import_pi_session: () =>
+          Effect.fail(
+            makeHubError(
+              "pi_sessions",
+              "pi sessions are served by the local daemon, not the hub",
+            ),
+          ),
       }),
     );
 
