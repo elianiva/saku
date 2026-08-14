@@ -1,34 +1,45 @@
 /**
- * The saku console (main.ts): a foldkit TEA application.
+ * The saku console (main.ts): a foldkit TEA application with URL routing
+ * and DevTools, following lutra's root-application shape (lutra main.ts).
  *
- * One model, one wire connection (`Wire` service — the typed client, built
- * against the bootstrap config), one subscription feeding wire events in as
- * messages. The view is three regions: the top bar (connection), the thread
- * rail, and the thread pane (header, entry trail, live run, composer).
+ * One root Model orchestrating two Submodels behind `Got*Message`
+ * boundaries: the rail (registry) and the thread pane (trail + live run +
+ * composer), plus the connection machine. The wire connection (`Wire`
+ * service — the typed client, built against the bootstrap config) is the
+ * only resource; subscriptions feed wire events in as root messages, which
+ * the root routes to the owning submodel.
  *
  * The console never holds session state: it lists threads, loads the trail
  * with `get_entries`, streams live events into the live region, and persists
- * everything back to the worker (CONTEXT.md: Console).
+ * everything back to the worker (CONTEXT.md: Console). The URL is the
+ * selection: `/thread/:id` pins a thread; the route change drives the pane.
  */
 
-import { Runtime } from "foldkit";
+import { Runtime, Url } from "foldkit";
+import type { UrlRequest } from "foldkit/navigation";
 
-import { init } from "./init.ts";
-import { AppMessage } from "./message.ts";
-import { Model } from "./model.ts";
-import { subscriptions } from "./subscriptions.ts";
-import { update } from "./update.ts";
-import { view } from "./view.ts";
-import { WireLive, Wire } from "./wire.ts";
+import { init } from "./root/init.ts";
+import { ChangedRoute, Navigated, RootMessage } from "./root/message.ts";
+import { Model } from "./root/model.ts";
+import { subscriptions } from "./root/subscriptions.ts";
+import { update } from "./root/update.ts";
+import { view } from "./root/view.ts";
+import { parseRoute } from "./route.ts";
+import { WireLive } from "./wire.ts";
 
 export const application = Runtime.makeApplication({
   Model,
-  init,
+  init: (url: Url.Url) => init(url),
   update,
   view,
   container: document.getElementById("root"),
   resources: WireLive,
   subscriptions,
+  routing: {
+    onUrlRequest: (request: UrlRequest) => Navigated({ request }),
+    onUrlChange: (url: Url.Url) => ChangedRoute({ route: parseRoute(url) }),
+  },
+  devTools: { Message: RootMessage },
 });
 
-export type { Model, AppMessage };
+export type { Model, RootMessage };

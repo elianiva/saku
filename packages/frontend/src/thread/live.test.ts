@@ -1,5 +1,5 @@
 /**
- * The live state machine's unit tests (live.test.ts): the streaming fold —
+ * The live fold's unit tests (live.test.ts): the streaming fold —
  * message_start/update/end, tool_execution_*, the complete-entry-clears-
  * streaming-copy invariant, entry_appended during loading, dedupe, and the
  * settled reset — exercised as pure functions. No foldkit runtime, no DOM,
@@ -8,18 +8,17 @@
 
 import { describe, expect, it } from "vitest";
 
-import { emptyLiveRegion, foldLive, initialLive, type Live } from "../src/live.ts";
-import type {
-  EntryProjection,
-  MessageProjection,
-  SessionEventProjection,
-} from "../src/projection.ts";
+import { emptyLiveRegion, foldLive, Trail, type Live } from "./live.ts";
+import type { EntryProjection, MessageProjection, SessionEventProjection } from "./projection.ts";
 
 // -- fixtures ---------------------------------------------------------------
 
+/** The fold's initial state: trail idle, nothing streamed. */
+const initial = (): Live => ({ trail: Trail.Idle(), live: emptyLiveRegion() });
+
 /** A ready trail with the given entries already loaded. */
 const ready = (entries: EntryProjection[] = [], tailSeq = 0): Live => ({
-  trail: { _tag: "ready", entries, tailSeq },
+  trail: Trail.Success({ data: { entries, tailSeq } }),
   live: emptyLiveRegion(),
 });
 
@@ -90,13 +89,13 @@ const unhandled: SessionEventProjection = {
 describe("message stream", () => {
   it("folds start/update/end into the streaming message", () => {
     const state = fold(
-      initialLive(),
+      initial(),
       messageStart("hello"),
       messageUpdate("hello, world"),
       messageEnd("hello, world!"),
     );
     expect(state.live.message).toBe("hello, world!");
-    expect(state.trail).toEqual({ _tag: "loading" });
+    expect(state.trail).toEqual(Trail.Idle());
   });
 
   it("replaces the streamed text with each update's text", () => {
@@ -104,7 +103,7 @@ describe("message stream", () => {
     // (start/update/end replace, never append — an empty text keeps the
     // previous value, see below).
     const state = fold(
-      initialLive(),
+      initial(),
       messageStart([textBlock("hello")]),
       messageUpdate([textBlock("there")]),
     );
@@ -113,7 +112,7 @@ describe("message stream", () => {
 
   it("folds thinking in from updates, separately from the message body", () => {
     const state = fold(
-      initialLive(),
+      initial(),
       messageStart("hi"),
       messageUpdate([thinkingBlock("deep thought"), textBlock(" there")]),
     );
@@ -122,7 +121,7 @@ describe("message stream", () => {
   });
 
   it("preserves a stream field when an update carries an empty one", () => {
-    const state = fold(initialLive(), messageStart("hi"), messageUpdate([thinkingBlock("deep")]));
+    const state = fold(initial(), messageStart("hi"), messageUpdate([thinkingBlock("deep")]));
     expect(state.live.message).toBe("hi");
     expect(state.live.thinking).toBe("deep");
     // An update with both fields empty keeps both values.
@@ -132,7 +131,7 @@ describe("message stream", () => {
   });
 
   it("requests a scroll on every message event", () => {
-    const [start, startScroll] = foldLive(initialLive(), messageStart("hi"));
+    const [start, startScroll] = foldLive(initial(), messageStart("hi"));
     expect(start.live.message).toBe("hi");
     expect(startScroll).toBe(true);
     const [updated, updateScroll] = foldLive(start, messageUpdate("hi there"));
@@ -148,7 +147,7 @@ describe("message stream", () => {
 describe("tool execution", () => {
   it("folds start/update/end into one tool row", () => {
     const state = fold(
-      initialLive(),
+      initial(),
       toolStart("call_1", "bash"),
       toolUpdate("call_1", "compiling…"),
       toolEnd("call_1", "compiled"),
@@ -159,14 +158,14 @@ describe("tool execution", () => {
   });
 
   it("marks an error run failed with its result", () => {
-    const state = fold(initialLive(), toolStart("call_1"), toolEnd("call_1", "boom", true));
+    const state = fold(initial(), toolStart("call_1"), toolEnd("call_1", "boom", true));
     expect(state.live.tools[0]?.state).toBe("failed");
     expect(state.live.tools[0]?.result).toBe("boom");
   });
 
   it("tracks parallel tools by call id", () => {
     const state = fold(
-      initialLive(),
+      initial(),
       toolStart("call_1", "read"),
       toolStart("call_2", "bash"),
       toolUpdate("call_1", "partial one"),
@@ -180,7 +179,7 @@ describe("tool execution", () => {
 
   it("leaves the tools untouched for an unknown call id", () => {
     const state = fold(
-      initialLive(),
+      initial(),
       toolStart("call_1"),
       toolUpdate("call_9", "x"),
       toolEnd("call_9", "y"),
@@ -190,7 +189,7 @@ describe("tool execution", () => {
 
   it("stringifies non-string partials and results", () => {
     const state = fold(
-      initialLive(),
+      initial(),
       toolStart("call_1"),
       toolUpdate("call_1", { lines: 3 }),
       toolEnd("call_1", [1, 2]),
@@ -200,8 +199,8 @@ describe("tool execution", () => {
   });
 
   it("does not request a scroll for tool activity", () => {
-    const [, startScroll] = foldLive(initialLive(), toolStart("call_1"));
-    const [state, updateScroll] = foldLive(initialLive(), toolUpdate("call_1", "x"));
+    const [, startScroll] = foldLive(initial(), toolStart("call_1"));
+    const [state, updateScroll] = foldLive(initial(), toolUpdate("call_1", "x"));
     const [, endScroll] = foldLive(state, toolEnd("call_1", "y"));
     expect(startScroll).toBe(false);
     expect(updateScroll).toBe(false);
@@ -217,11 +216,11 @@ describe("entry_appended", () => {
       ready([entry("e1", "message", 1)], 1),
       entryAppended(entry("e2", "message", 5)),
     );
-    expect(state.trail).toEqual({
-      _tag: "ready",
-      entries: [entry("e1", "message", 1), entry("e2", "message", 5)],
-      tailSeq: 5,
-    });
+    expect(state.trail).toEqual(
+      Trail.Success({
+        data: { entries: [entry("e1", "message", 1), entry("e2", "message", 5)], tailSeq: 5 },
+      }),
+    );
     expect(scroll).toBe(true);
   });
 
@@ -230,11 +229,11 @@ describe("entry_appended", () => {
       ready([entry("e1", "message", 10)], 10),
       entryAppended(entry("e2", "message")),
     );
-    expect(state.trail).toEqual({
-      _tag: "ready",
-      entries: [entry("e1", "message", 10), entry("e2", "message")],
-      tailSeq: 10,
-    });
+    expect(state.trail).toEqual(
+      Trail.Success({
+        data: { entries: [entry("e1", "message", 10), entry("e2", "message")], tailSeq: 10 },
+      }),
+    );
   });
 
   it("dedupes an entry whose id matches the last entry", () => {
@@ -252,7 +251,7 @@ describe("entry_appended", () => {
   });
 
   it("is a no-op while the trail is loading", () => {
-    const before = initialLive();
+    const before = initial();
     const [state, scroll] = foldLive(before, entryAppended(entry("e1", "message", 1)));
     expect(state).toEqual(before);
     expect(scroll).toBe(false);
@@ -270,11 +269,9 @@ describe("entry_appended", () => {
     expect(state.live.thinking).toBeUndefined();
     // Tool activity and notices are not part of the message copy.
     expect(state.live.tools).toHaveLength(1);
-    expect(state.trail).toEqual({
-      _tag: "ready",
-      entries: [entry("e1", "message", 3)],
-      tailSeq: 3,
-    });
+    expect(state.trail).toEqual(
+      Trail.Success({ data: { entries: [entry("e1", "message", 3)], tailSeq: 3 } }),
+    );
     expect(scroll).toBe(true);
   });
 
@@ -282,11 +279,9 @@ describe("entry_appended", () => {
     const before = fold(ready(), messageStart("hi"));
     const [state, scroll] = foldLive(before, entryAppended(entry("e1", "toolResult", 2)));
     expect(state.live.message).toBe("hi");
-    expect(state.trail).toEqual({
-      _tag: "ready",
-      entries: [entry("e1", "toolResult", 2)],
-      tailSeq: 2,
-    });
+    expect(state.trail).toEqual(
+      Trail.Success({ data: { entries: [entry("e1", "toolResult", 2)], tailSeq: 2 } }),
+    );
     expect(scroll).toBe(true);
   });
 
@@ -299,11 +294,9 @@ describe("entry_appended", () => {
       toolStart("call_1"),
       settled,
     );
-    expect(state.trail).toEqual({
-      _tag: "ready",
-      entries: [entry("e1", "message", 1)],
-      tailSeq: 1,
-    });
+    expect(state.trail).toEqual(
+      Trail.Success({ data: { entries: [entry("e1", "message", 1)], tailSeq: 1 } }),
+    );
     expect(state.live).toEqual({ tools: [] });
   });
 });
@@ -329,23 +322,21 @@ describe("settled", () => {
 
 describe("compaction and unknown events", () => {
   it("shows the compaction notice and clears it on completion", () => {
-    const [started] = foldLive(initialLive(), compactionStart("manual"));
+    const [started] = foldLive(initial(), compactionStart("manual"));
     expect(started.live.notice).toBe("compacting (manual)");
     const [finished] = foldLive(started, compactionEnd);
     expect(finished.live.notice).toBeUndefined();
   });
 
   it("carries every compaction reason into the notice", () => {
-    expect(fold(initialLive(), compactionStart("threshold")).live.notice).toBe(
+    expect(fold(initial(), compactionStart("threshold")).live.notice).toBe(
       "compacting (threshold)",
     );
-    expect(fold(initialLive(), compactionStart("overflow")).live.notice).toBe(
-      "compacting (overflow)",
-    );
+    expect(fold(initial(), compactionStart("overflow")).live.notice).toBe("compacting (overflow)");
   });
 
   it("degrades unknown events to a no-op", () => {
-    const before = fold(initialLive(), messageStart("hi"));
+    const before = fold(initial(), messageStart("hi"));
     const [state, scroll] = foldLive(before, unhandled);
     expect(state).toEqual(before);
     expect(scroll).toBe(false);

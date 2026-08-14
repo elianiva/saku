@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@effect/platform-browser": "rc",
+    "@foldkit/devtools": "0.141.2",
     "@saku/wire": "workspace:*",
     "effect": "rc",
     "foldkit": "0.141.2",
@@ -20,6 +21,7 @@
   "devDependencies": {
     "@foldkit/vite-plugin": "^0.11.3",
     "@tailwindcss/vite": "^4.3.3",
+    "happy-dom": "^20.11.2",
     "typescript": "^5.9.0",
     "vite": "^7.0.0",
     "vitest": "^4.1.9"

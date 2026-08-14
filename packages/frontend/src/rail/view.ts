@@ -1,34 +1,49 @@
 /**
- * The thread rail (rail.ts): the registry projection. A quick-start composer
- * on top (one prompt = one thread, CONTEXT.md: Quick start), then the live
- * list — one row per thread with state, mode, and env glyphs, a delete ✕,
- * and click-to-select. Row content comes entirely from `thread_changed`
- * broadcasts; the console never computes it.
+ * The thread rail's view (rail/view.ts): the registry projection. A
+ * quick-start composer on top (one prompt = one thread, CONTEXT.md: Quick
+ * start), then the live list — one row per thread with state, mode, and env
+ * glyphs, a delete ✕, and click-to-select. Row content comes entirely from
+ * `thread_changed` broadcasts; the rail never computes it.
+ *
+ * Branded via `defineView` so it embeds under the root through
+ * `h.submodel`, with `h` typed to the rail's own Message union (the lutra
+ * gallery view pattern).
  */
 
+import { AsyncData, Submodel } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import { Option } from "effect";
 import type { ThreadInfo } from "@saku/wire";
 
+import { envPresentation, modeChar, statePresentation } from "../presentation.ts";
 import {
+  ClickedThread,
   DeleteRequested,
   QuickStartRequested,
   RailInputChanged,
   RefreshRequested,
-  SelectRequested,
-  type AppMessage,
+  type RailMessage,
 } from "./message.ts";
 import type { Model } from "./model.ts";
-import { envPresentation, modeChar, statePresentation } from "./presentation.ts";
 
-export const railPane = (model: Model, h: HtmlBuilder<AppMessage>): Html =>
+export const view = Submodel.defineView<Model, RailMessage>((model, h) =>
   h.aside(
     [h.Class("w-80 shrink-0 border-r border-line bg-surface flex flex-col min-h-0")],
-    [railHeader(model, h), quickStartComposer(model, h), railList(model, h)],
-  );
+    [railHeader(model, h), quickStartComposer(model, h), notice(model, h), railList(model, h)],
+  ),
+);
 
-const railHeader = (model: Model, h: HtmlBuilder<AppMessage>): Html => {
-  const count = model.rail._tag === "ready" ? model.rail.threads.length : 0;
+/** A transient failure notice (create/delete failures), null when clean. */
+const notice = (model: Model, h: HtmlBuilder<RailMessage>): Html | null =>
+  model.notice === null
+    ? null
+    : h.div(
+        [h.Class("border-b border-love/40 bg-overlay px-3 py-1.5 text-[11px] text-love")],
+        [model.notice],
+      );
+
+const railHeader = (model: Model, h: HtmlBuilder<RailMessage>): Html => {
+  const count = model.list._tag === "Success" ? model.list.data.length : 0;
   return h.div(
     [
       h.Class(
@@ -50,7 +65,7 @@ const railHeader = (model: Model, h: HtmlBuilder<AppMessage>): Html => {
   );
 };
 
-const quickStartComposer = (model: Model, h: HtmlBuilder<AppMessage>): Html =>
+const quickStartComposer = (model: Model, h: HtmlBuilder<RailMessage>): Html =>
   h.div(
     [h.Class("p-3 border-b border-line")],
     [
@@ -65,7 +80,7 @@ const quickStartComposer = (model: Model, h: HtmlBuilder<AppMessage>): Html =>
             h.Type("text"),
             h.Placeholder("quick start — a prompt spins up a thread"),
             h.Spellcheck(false),
-            h.Value(model.railInput),
+            h.Value(model.input),
             h.OnInput((raw) => RailInputChanged({ text: raw })),
             h.OnKeyDownPreventDefault((key, modifiers) =>
               key === "Enter" && !modifiers.shiftKey
@@ -78,25 +93,29 @@ const quickStartComposer = (model: Model, h: HtmlBuilder<AppMessage>): Html =>
     ],
   );
 
-const railList = (model: Model, h: HtmlBuilder<AppMessage>): Html => {
-  switch (model.rail._tag) {
-    case "loading":
-      return h.div([h.Class("p-4 text-muted text-[12px]")], ["loading…"]);
-    case "failed":
-      return h.div(
-        [h.Class("p-4 text-love text-[12px]")],
-        [`threads unavailable — ${model.rail.error}`],
-      );
-    case "ready":
-      return h.div(
+const railList = (model: Model, h: HtmlBuilder<RailMessage>): Html =>
+  AsyncData.match(model.list, {
+    onIdle: () => railStatus(h, "loading…"),
+    onLoading: () => railStatus(h, "loading…"),
+    onRefreshing: () => railStatus(h, "loading…"),
+    onStale: () => railStatus(h, "loading…"),
+    onFailure: (error) => railStatus(h, `threads unavailable — ${error.message}`),
+    onSuccess: (threads) =>
+      h.div(
         [h.Class("flex-1 overflow-y-auto min-h-0")],
-        model.rail.threads.map((thread) => threadRow(thread, model.active, h)),
-      );
-  }
-};
+        threads.map((thread) => threadRow(thread, model.selectedId, h)),
+      ),
+  });
 
-const threadRow = (thread: ThreadInfo, active: string | null, h: HtmlBuilder<AppMessage>): Html => {
-  const selected = thread.id === active;
+const railStatus = (h: HtmlBuilder<RailMessage>, text: string): Html =>
+  h.div([h.Class("p-4 text-muted text-[12px]")], [text]);
+
+const threadRow = (
+  thread: ThreadInfo,
+  selectedId: string | null,
+  h: HtmlBuilder<RailMessage>,
+): Html => {
+  const selected = thread.id === selectedId;
   return h.div(
     [
       h.Class(
@@ -104,7 +123,7 @@ const threadRow = (thread: ThreadInfo, active: string | null, h: HtmlBuilder<App
           selected ? "bg-overlay" : "hover:bg-overlay/60"
         }`,
       ),
-      h.OnClick(SelectRequested({ id: thread.id })),
+      h.OnClick(ClickedThread({ id: thread.id })),
     ],
     [
       stateGlyph(thread, h),
@@ -126,17 +145,17 @@ const threadRow = (thread: ThreadInfo, active: string | null, h: HtmlBuilder<App
 
 // -- glyphs -----------------------------------------------------------------
 
-const stateGlyph = (thread: ThreadInfo, h: HtmlBuilder<AppMessage>): Html => {
+const stateGlyph = (thread: ThreadInfo, h: HtmlBuilder<RailMessage>): Html => {
   const { glyph, tone, title } = statePresentation(thread.state);
   return h.span([h.Class(tone), h.Title(title)], [glyph]);
 };
 
-const envGlyph = (thread: ThreadInfo, h: HtmlBuilder<AppMessage>): Html => {
+const envGlyph = (thread: ThreadInfo, h: HtmlBuilder<RailMessage>): Html => {
   const { glyph, tone, title } = envPresentation(thread.env);
   return h.span([h.Class(tone), h.Title(title)], [glyph]);
 };
 
-const modeGlyph = (thread: ThreadInfo, h: HtmlBuilder<AppMessage>): Html =>
+const modeGlyph = (thread: ThreadInfo, h: HtmlBuilder<RailMessage>): Html =>
   h.span(
     [
       h.Class("border border-line px-1 text-[10px] text-subtle uppercase"),

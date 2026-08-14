@@ -1,15 +1,21 @@
 /**
- * The thread pane (thread-pane.ts): the selected thread's surface — header
- * (name, state, env), the entry trail, the live run (streaming message +
- * tool activity), and the composer. The trail renders pi's entries verbatim
- * (ADR 0004): user/assistant/toolResult messages, tool calls, compactions,
- * and the metadata entries as dim rails.
+ * The thread pane's view (thread/view.ts): the selected thread's surface —
+ * header (name, state, env), the entry trail, the live run (streaming
+ * message + tool activity), and the composer. The trail renders pi's
+ * entries verbatim (ADR 0004): user/assistant/toolResult messages, tool
+ * calls, compactions, and the metadata entries as dim rails.
+ *
+ * Branded via `defineView` so it embeds under the root through
+ * `h.submodel`, with `h` typed to the pane's own Message union (the lutra
+ * gallery/editor view pattern).
  */
 
+import { AsyncData, Submodel } from "foldkit";
 import { Option } from "effect";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import type { ThreadEnvState, ThreadState } from "@saku/wire";
 
+import { headerState } from "../presentation.ts";
 import {
   asString,
   messageError,
@@ -21,23 +27,32 @@ import {
   summaryLine,
 } from "./format.ts";
 import type { LiveTool } from "./live.ts";
-import { AbortRequested, ComposerChanged, SendRequested, type AppMessage } from "./message.ts";
+import { AbortRequested, ComposerChanged, SendRequested, type ThreadMessage } from "./message.ts";
 import type { Model } from "./model.ts";
-import { activeThread, headerState } from "./presentation.ts";
 import type { EntryProjection, MessageProjection } from "./projection.ts";
 
-export const threadPane = (model: Model, h: HtmlBuilder<AppMessage>): Html =>
+export const view = Submodel.defineView<Model, ThreadMessage>((model, h) =>
   h.section(
     [h.Class("flex-1 flex flex-col min-w-0 min-h-0")],
-    model.active === null
-      ? [emptyState(model, h)]
-      : [threadHeader(model, h), trailArea(model, h), composerArea(model, h)],
-  );
+    model.id === null
+      ? [emptyState(h)]
+      : [threadHeader(model, h), notice(model, h), trailArea(model, h), composerArea(model, h)],
+  ),
+);
+
+/** A transient failure notice (send failures), null when clean. */
+const notice = (model: Model, h: HtmlBuilder<ThreadMessage>): Html | null =>
+  model.notice === null
+    ? null
+    : h.div(
+        [h.Class("border-b border-love/40 bg-overlay px-4 py-1.5 text-[12px] text-love")],
+        [model.notice],
+      );
 
 // -- header -----------------------------------------------------------------
 
-const threadHeader = (model: Model, h: HtmlBuilder<AppMessage>): Html => {
-  const thread = activeThread(model);
+const threadHeader = (model: Model, h: HtmlBuilder<ThreadMessage>): Html => {
+  const info = model.info;
   return h.div(
     [
       h.Class(
@@ -45,14 +60,14 @@ const threadHeader = (model: Model, h: HtmlBuilder<AppMessage>): Html => {
       ),
     ],
     [
-      h.span([h.Class("font-bold truncate min-w-0")], [thread?.name ?? model.active]),
+      h.span([h.Class("font-bold truncate min-w-0")], [info?.name ?? model.id ?? ""]),
       h.span(
         [h.Class("text-subtle text-[11px] uppercase tracking-[0.18em] shrink-0")],
-        [thread?.mode ?? "local"],
+        [info?.mode ?? "local"],
       ),
       h.span([h.Class("flex-1")], []),
-      ...(thread?.state === "working" ? [abortButton(h)] : []),
-      headerStateLine(thread?.state, thread?.env, h),
+      ...(info?.state === "working" ? [abortButton(h)] : []),
+      headerStateLine(info?.state, info?.env, h),
     ],
   );
 };
@@ -61,13 +76,13 @@ const threadHeader = (model: Model, h: HtmlBuilder<AppMessage>): Html => {
 const headerStateLine = (
   state: ThreadState | undefined,
   env: ThreadEnvState | undefined,
-  h: HtmlBuilder<AppMessage>,
+  h: HtmlBuilder<ThreadMessage>,
 ): Html => {
   const { text, tone } = headerState(state, env);
   return h.span([h.Class(`${tone} text-[11px] uppercase tracking-[0.18em] shrink-0`)], [text]);
 };
 
-const abortButton = (h: HtmlBuilder<AppMessage>): Html =>
+const abortButton = (h: HtmlBuilder<ThreadMessage>): Html =>
   h.button(
     [
       h.Class(
@@ -80,27 +95,27 @@ const abortButton = (h: HtmlBuilder<AppMessage>): Html =>
 
 // -- the trail --------------------------------------------------------------
 
-const trailArea = (model: Model, h: HtmlBuilder<AppMessage>): Html => {
-  switch (model.trail._tag) {
-    case "loading":
-      return h.div(
-        [h.Class("flex-1 min-h-0 flex items-center justify-center text-muted text-[12px]")],
-        ["loading trail…"],
-      );
-    case "failed":
-      return h.div(
-        [h.Class("flex-1 min-h-0 flex items-center justify-center text-love text-[12px]")],
-        [`trail unavailable — ${model.trail.error}`],
-      );
-    case "ready":
-      return h.div(
+const trailArea = (model: Model, h: HtmlBuilder<ThreadMessage>): Html =>
+  AsyncData.match(model.trail, {
+    onIdle: () => trailStatus(h, "loading trail…"),
+    onLoading: () => trailStatus(h, "loading trail…"),
+    onRefreshing: () => trailStatus(h, "loading trail…"),
+    onStale: () => trailStatus(h, "loading trail…"),
+    onFailure: (error) => trailStatus(h, `trail unavailable — ${error}`),
+    onSuccess: ({ entries }) =>
+      h.div(
         [h.Class("flex-1 min-h-0 overflow-y-auto bg-base"), h.Attribute("id", "trail")],
-        [...model.trail.entries.map((entry) => renderEntry(entry, h)), liveRegion(model, h)],
-      );
-  }
-};
+        [...entries.map((entry) => renderEntry(entry, h)), liveRegion(model, h)],
+      ),
+  });
 
-const renderEntry = (entry: EntryProjection, h: HtmlBuilder<AppMessage>): Html => {
+const trailStatus = (h: HtmlBuilder<ThreadMessage>, text: string): Html =>
+  h.div(
+    [h.Class("flex-1 min-h-0 flex items-center justify-center text-muted text-[12px]")],
+    [text],
+  );
+
+const renderEntry = (entry: EntryProjection, h: HtmlBuilder<ThreadMessage>): Html => {
   switch (entry.type) {
     case "message":
       return renderMessageEntry(entry.message ?? {}, h);
@@ -123,10 +138,10 @@ const renderEntry = (entry: EntryProjection, h: HtmlBuilder<AppMessage>): Html =
   }
 };
 
-const metaRow = (h: HtmlBuilder<AppMessage>, text: string): Html =>
+const metaRow = (h: HtmlBuilder<ThreadMessage>, text: string): Html =>
   h.div([h.Class("px-4 py-1 border-b border-line text-[11px] text-subtle italic")], [text]);
 
-const renderMessageEntry = (message: MessageProjection, h: HtmlBuilder<AppMessage>): Html => {
+const renderMessageEntry = (message: MessageProjection, h: HtmlBuilder<ThreadMessage>): Html => {
   const role = messageRole(message);
   if (role === "user") {
     return h.div(
@@ -232,12 +247,12 @@ const renderMessageEntry = (message: MessageProjection, h: HtmlBuilder<AppMessag
   return metaRow(h, `· ${role || "message"}${text === "" ? "" : ` — ${summaryLine(text)}`}`);
 };
 
-const roleLabel = (h: HtmlBuilder<AppMessage>, label: string, tone: string): Html =>
+const roleLabel = (h: HtmlBuilder<ThreadMessage>, label: string, tone: string): Html =>
   h.div([h.Class(`text-[10px] uppercase tracking-[0.18em] ${tone}`)], [label]);
 
 // -- the live run -----------------------------------------------------------
 
-const liveRegion = (model: Model, h: HtmlBuilder<AppMessage>): Html => {
+const liveRegion = (model: Model, h: HtmlBuilder<ThreadMessage>): Html => {
   const { live } = model;
   const hasMessage = live.message !== undefined && live.message !== "";
   const hasTools = live.tools.length > 0;
@@ -281,7 +296,7 @@ const liveRegion = (model: Model, h: HtmlBuilder<AppMessage>): Html => {
   );
 };
 
-const liveToolRow = (tool: LiveTool, h: HtmlBuilder<AppMessage>): Html => {
+const liveToolRow = (tool: LiveTool, h: HtmlBuilder<ThreadMessage>): Html => {
   const glyph = tool.state === "running" ? "◌" : tool.state === "done" ? "✓" : "✗";
   const tone =
     tool.state === "running" ? "text-gold" : tool.state === "done" ? "text-foam" : "text-love";
@@ -312,8 +327,8 @@ const liveToolRow = (tool: LiveTool, h: HtmlBuilder<AppMessage>): Html => {
 
 // -- the composer -----------------------------------------------------------
 
-const composerArea = (model: Model, h: HtmlBuilder<AppMessage>): Html => {
-  const working = activeThread(model)?.state === "working";
+const composerArea = (model: Model, h: HtmlBuilder<ThreadMessage>): Html => {
+  const working = model.info?.state === "working";
   return h.div(
     [h.Class("shrink-0 border-t border-line bg-surface p-3")],
     [
@@ -361,7 +376,7 @@ const composerArea = (model: Model, h: HtmlBuilder<AppMessage>): Html => {
 
 // -- empty state ------------------------------------------------------------
 
-const emptyState = (model: Model, h: HtmlBuilder<AppMessage>): Html =>
+const emptyState = (h: HtmlBuilder<ThreadMessage>): Html =>
   h.div(
     [
       h.Class(
@@ -374,11 +389,5 @@ const emptyState = (model: Model, h: HtmlBuilder<AppMessage>): Html =>
         ["no thread selected"],
       ),
       h.div([], ["pick a thread from the rail, or quick-start one with a prompt"]),
-      model.rail._tag === "ready" && model.rail.threads.length === 0
-        ? h.div(
-            [h.Class("text-gold")],
-            ["◇ the factory is empty — type in the rail to spin up the first thread"],
-          )
-        : null,
     ],
   );

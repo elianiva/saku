@@ -1,21 +1,13 @@
 /**
  * Thread presentation (presentation.ts): the one derivation of how a thread
- * is shown. The active-thread lookup against the rail, the state/env glyph
- * classification (char, tone, title), the mode glyph char, and the header's
- * `state · env` line all live here — rail.ts and thread-pane.ts render from
- * these, so adding a state or env value touches exactly one file. Rendered
- * output is unchanged; only the derivation is shared.
+ * is shown. The state/env glyph classification (char, tone, title), the mode
+ * glyph char, and the header's `state · env` line all live here — the rail
+ * and pane views render from these, so adding a state or env value touches
+ * exactly one file. Rendered output is unchanged; only the derivation is
+ * shared.
  */
 
-import type { ThreadEnvState, ThreadInfo, ThreadMode, ThreadState } from "@saku/wire";
-
-import type { Model } from "./model.ts";
-
-/** The selected thread against the rail (the one active lookup). */
-export const activeThread = (model: Model): ThreadInfo | undefined =>
-  model.rail._tag === "ready"
-    ? model.rail.threads.find((candidate) => candidate.id === model.active)
-    : undefined;
+import type { ThreadEnvState, ThreadMode, ThreadState } from "@saku/wire";
 
 /** The rail's mode glyph: the hands-policy initial (CONTEXT.md: Mode). */
 export const modeChar = (mode: ThreadMode): "L" | "S" | "A" =>

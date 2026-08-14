@@ -9,5 +9,5 @@
       "@saku/wire": ["../wire/src/index.ts"]
     }
   },
-  "include": ["src/**/*", "test/**/*"]
+  "include": ["src/**/*"]
 }

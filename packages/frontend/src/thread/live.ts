@@ -1,31 +1,41 @@
 /**
- * The live-run state machine (live.ts): the active thread's wire-derived
- * view — the entry trail plus the run in flight — folded as PURE functions.
+ * The live-run fold (live.ts): the active thread's wire-derived view — the
+ * entry trail (AsyncData) plus the run in flight — folded as PURE functions.
  *
  * This is the console's most correctness-sensitive logic: the streaming
  * message/tool folds, the complete-entry-clears-streaming-copy invariant,
  * trail dedupe, and the settled reset. It lives here — no foldkit runtime,
  * no DOM, no `Wire` service at module scope — so tests exercise it in
- * isolation. update.ts delegates: wire events for the active thread fold
- * through `foldLive`, which returns the next state plus a scroll flag (the
- * event grew the scrollable view — the TEA loop maps it to the scroll
- * command). Everything else about the console stays in update.ts.
+ * isolation. thread/update.ts delegates: wire events for the active thread
+ * fold through `foldLive`, which returns the next state plus a scroll flag
+ * (the event grew the scrollable view — update maps it to the scroll
+ * command). Everything else about the pane stays in thread/update.ts.
+ *
+ * The trail is foldkit's AsyncData (Idle → Success/Failure): the pane
+ * renders what is loaded; the fold grows `Success` in place.
  */
 
 import { Match as M, Schema as S } from "effect";
+import { AsyncData } from "foldkit";
 
 import { asString, messageText, messageThinking, stringifyLive } from "./format.ts";
 import { EntryProjection, type SessionEventProjection } from "./projection.ts";
 
 // -- the active thread's view ----------------------------------------------
 
-/** The active thread's entry trail. Entries are pi's — rendered through the console's projection. */
-export const Trail = S.Union([
-  S.TaggedStruct("loading", {}),
-  S.TaggedStruct("failed", { error: S.String }),
-  S.TaggedStruct("ready", { entries: S.Array(EntryProjection), tailSeq: S.Number }),
-]);
-export type Trail = S.Schema.Type<typeof Trail>;
+/** The trail's loaded payload: the entries plus the last sequence seen. */
+export const TrailData = S.Struct({
+  entries: S.Array(EntryProjection),
+  tailSeq: S.Number,
+});
+export type TrailData = S.Schema.Type<typeof TrailData>;
+
+/** The entry trail as AsyncData: idle (nothing fetched) → success/failure. */
+export const Trail = AsyncData.Schema(TrailData, S.String);
+export const trail = Trail;
+
+/** The decoded trail state the fold grows. */
+export type TrailState = S.Schema.Type<typeof Trail.schema>;
 
 /** One tool call in the live run (tool_execution_* events). */
 export const LiveTool = S.Struct({
@@ -50,27 +60,19 @@ export type LiveRegion = S.Schema.Type<typeof LiveRegion>;
 
 /** The active thread's wire-derived view: the trail plus the run in flight. */
 export interface Live {
-  readonly trail: Trail;
+  readonly trail: TrailState;
   readonly live: LiveRegion;
 }
 
 /** The live region before anything streamed. */
 export const emptyLiveRegion = (): LiveRegion => ({ tools: [] });
 
-/**
- * A freshly selected thread: trail loading (the `get_entries` read is in
- * flight), nothing streamed. The trail/live handoff — the live run is
- * absorbed by the trail as entries land, and selecting a thread starts both
- * over.
- */
-export const initialLive = (): Live => ({ trail: { _tag: "loading" }, live: emptyLiveRegion() });
-
 // -- folding ----------------------------------------------------------------
 
 /** `entry_appended` on the active thread: grow the trail, dedupe by id. */
 const foldEntryAppended = (state: Live, entry: EntryProjection): readonly [Live, boolean] => {
-  if (state.trail._tag !== "ready") return [state, false];
-  const last = state.trail.entries[state.trail.entries.length - 1];
+  if (!AsyncData.isSuccess(state.trail)) return [state, false];
+  const last = state.trail.data.entries[state.trail.data.entries.length - 1];
   const id = asString(entry.id);
   if (last !== undefined && asString(last.id) === id) return [state, false];
   // A message entry lands complete — the live region's copy of it is stale.
@@ -81,11 +83,12 @@ const foldEntryAppended = (state: Live, entry: EntryProjection): readonly [Live,
   return [
     {
       ...state,
-      trail: {
-        _tag: "ready",
-        entries: [...state.trail.entries, entry],
-        tailSeq: Math.max(state.trail.tailSeq, entry.seq ?? 0),
-      },
+      trail: Trail.Success({
+        data: {
+          entries: [...state.trail.data.entries, entry],
+          tailSeq: Math.max(state.trail.data.tailSeq, entry.seq ?? 0),
+        },
+      }),
       live,
     },
     true,
@@ -107,8 +110,9 @@ const messageLive = (state: Live, text: string): Live => ({
 /**
  * Fold one session event into the active thread's view. Returns the next
  * state and whether the event grew the scrollable view (scroll command in
- * the TEA loop; update.ts maps it). The streamed live region is absorbed by
- * the trail as entries land; `settled` clears the region for the next run.
+ * the TEA loop; thread/update.ts maps it). The streamed live region is
+ * absorbed by the trail as entries land; `settled` clears the region for the
+ * next run.
  */
 export const foldLive = (state: Live, event: SessionEventProjection): readonly [Live, boolean] =>
   M.value(event).pipe(
