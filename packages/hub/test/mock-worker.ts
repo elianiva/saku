@@ -96,7 +96,7 @@ export interface ScriptedWorker {
 const canned = (
   _threadId: string,
   command: SessionCommand,
-): Effect.Effect<WorkerCommandResult, HubError, never> =>
+) =>
   Match.value(command).pipe(
     Match.withReturnType<Effect.Effect<WorkerCommandResult, HubError, never>>(),
     Match.tags({

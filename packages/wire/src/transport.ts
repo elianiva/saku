@@ -16,7 +16,7 @@ export class WireFrameError extends Schema.TaggedError<WireFrameError>()("WireFr
 }) {}
 
 /** Serialize one frame as a JSON line, ready for `ws.send`. */
-export const serializeFrame = (value: unknown): string => `${JSON.stringify(value)}\n`;
+export const serializeFrame = (value: unknown) => `${JSON.stringify(value)}\n`;
 
 const TEXT_DECODER = new TextDecoder();
 
@@ -25,7 +25,7 @@ const TEXT_DECODER = new TextDecoder();
  * text; binary frames are decoded for robustness. Blobs (a browser default
  * binary type) are rejected.
  */
-export const decodeFrame = (data: unknown): string => {
+export const decodeFrame = (data: unknown) => {
   if (typeof data === "string") return data;
   if (data instanceof ArrayBuffer) return TEXT_DECODER.decode(data);
   // Typed arrays (Node Buffers included) and DataViews: decode the exact view.
@@ -38,7 +38,7 @@ export const decodeFrame = (data: unknown): string => {
 };
 
 /** Parse one frame line; returns the decoded JSON or undefined for blank lines. */
-export const parseFrame = (line: string): unknown => {
+export const parseFrame = (line: string) => {
   const text = line.trim();
   if (text.length === 0) return undefined;
   return JSON.parse(text);

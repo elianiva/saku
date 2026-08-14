@@ -182,7 +182,7 @@ const DECODE = Schema.decodeUnknownSync(WireEvent);
  * re-schemas it — so the narrow to pi's own types happens here, by name,
  * never with a bare `as` in the method bodies.
  */
-const narrowPi = <T>(value: unknown): T => value as T;
+const narrowPi = <T>(value: unknown) => value as T;
 
 /**
  * The single boundary where a decoded response payload is narrowed to the
@@ -193,7 +193,7 @@ const narrowPi = <T>(value: unknown): T => value as T;
 const narrowResponse = <K extends ResponsePayload["_tag"]>(
   payload: ResponsePayload,
   tag: K,
-): Effect.Effect<SessionResponse<K>, WireError, never> =>
+) =>
   payload._tag === tag
     ? Effect.succeed(payload as SessionResponse<K>)
     : Effect.fail(
@@ -207,7 +207,7 @@ const narrowResponse = <K extends ResponsePayload["_tag"]>(
 const settleConnect = (
   deps: ClientDeps,
   outcome: Result.Result<HelloOk, WireError>,
-): Effect.Effect<void, never, never> =>
+) =>
   Ref.getAndSet(deps.connectRef, Option.none()).pipe(
     Effect.flatMap((pending) =>
       Option.match(pending, {
@@ -240,7 +240,7 @@ const emit = Effect.fn("emit")(function* (
 });
 
 /** Fail every in-flight request; the pending map is drained. */
-const failAllPending = (deps: ClientDeps, error: WireError): Effect.Effect<void, never, never> =>
+const failAllPending = (deps: ClientDeps, error: WireError) =>
   Ref.getAndSet(deps.pendingRef, new Map()).pipe(
     Effect.flatMap((pending) =>
       Effect.forEach(pending, ([, deferred]) => Deferred.fail(deferred, error), { discard: true }),
@@ -258,7 +258,7 @@ type ClientEventDef = (typeof ClientEvent)["_definition"];
  */
 const makeMachine = (
   deps: ClientDeps,
-): MachineType<ClientStateV, ClientEventV, never, ClientStateDef, ClientEventDef> =>
+) =>
   Machine.make({
     state: ClientState,
     event: ClientEvent,
@@ -444,7 +444,7 @@ const command = <A extends object, K extends ResponsePayload["_tag"], T>(
     readonly make: (args: A) => SessionCommand | ThreadCommand | SkillCommand | PiSessionCommand;
   },
   extract: (payload: SessionResponse<K>) => T,
-): CommandSpec<A, K, T> => ({ schema, threadScoped, tag, extract });
+) => ({ schema, threadScoped, tag, extract });
 
 /** One row per wire command; the client methods are thin derivations. */
 const COMMANDS = {
@@ -500,7 +500,7 @@ const resolveResponse = (
   deps: ClientDeps,
   id: string,
   outcome: Result.Result<ResponsePayload, WireError>,
-): Effect.Effect<void, never, never> =>
+) =>
   Ref.getAndUpdate(deps.pendingRef, (pending) => {
     const next = new Map(pending);
     next.delete(id);
@@ -689,7 +689,7 @@ export const makeWireClient = Effect.fn("makeWireClient")(function* (
     return hello;
   });
 
-  const waitForClose = (): Effect.Effect<void, WireError, never> =>
+  const waitForClose = () =>
     actor
       .waitFor((state) => !ClientState.$is("Connected")(state))
       .pipe(
@@ -698,8 +698,8 @@ export const makeWireClient = Effect.fn("makeWireClient")(function* (
         ),
       );
 
-  const start = (): Effect.Effect<void, WireError, never> => {
-    const attempt = (): Effect.Effect<void, WireError, never> =>
+  const start = () => {
+    const attempt = () =>
       connect().pipe(Effect.flatMap(() => waitForClose()));
     if (!reconnectEnabled) return attempt();
     // Handshake rejections fail through — a bad token must not spin forever.
@@ -726,7 +726,7 @@ export const makeWireClient = Effect.fn("makeWireClient")(function* (
   const on = <K extends ClientEventKind>(
     kind: K,
     listener: (payload: ClientEvents[K]) => void,
-  ): (() => void) => {
+  ) => {
     let set = listeners.get(kind);
     if (set === undefined) {
       set = new Set();
@@ -738,7 +738,7 @@ export const makeWireClient = Effect.fn("makeWireClient")(function* (
     };
   };
 
-  const nextRequestId = (): Effect.Effect<string, never, never> =>
+  const nextRequestId = () =>
     Ref.updateAndGet(seqRef, (n) => n + 1).pipe(Effect.map((n) => `req_${n}`));
 
   const request = Effect.fn("request")(function* <

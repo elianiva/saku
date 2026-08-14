@@ -22,7 +22,7 @@ type TemplatePart =
   | { readonly type: "literal"; readonly value: string }
   | { readonly type: "env"; readonly name: string };
 
-const appendLiteral = (parts: TemplatePart[], value: string): void => {
+const appendLiteral = (parts: TemplatePart[], value: string) => {
   if (value.length === 0) return;
   const previous = parts[parts.length - 1];
   if (previous !== undefined && previous.type === "literal") {
@@ -33,7 +33,7 @@ const appendLiteral = (parts: TemplatePart[], value: string): void => {
 };
 
 /** Split a value into literal/env parts, honoring `$$`/`$!` escapes. */
-const parseTemplate = (config: string): TemplatePart[] => {
+const parseTemplate = (config: string) => {
   const parts: TemplatePart[] = [];
   let index = 0;
   while (index < config.length) {
@@ -75,7 +75,7 @@ const parseTemplate = (config: string): TemplatePart[] => {
 const resolveTemplate = (
   parts: readonly TemplatePart[],
   env: Record<string, string>,
-): string | undefined => {
+) => {
   let resolved = "";
   for (const part of parts) {
     if (part.type === "literal") {
@@ -92,7 +92,7 @@ const resolveTemplate = (
 // Shell command results are cached for the process lifetime (pi's behavior).
 const commandCache = new Map<string, string | undefined>();
 
-const executeCommand = (config: string): string | undefined => {
+const executeCommand = (config: string) => {
   if (commandCache.has(config)) return commandCache.get(config);
   const output = Result.try(() =>
     execSync(config.slice(1), {
@@ -107,10 +107,10 @@ const executeCommand = (config: string): string | undefined => {
 };
 
 /** A `!command` value: executed (and cached), never treated as a literal. */
-export const isCommandConfigValue = (config: string): boolean => config.startsWith("!");
+export const isCommandConfigValue = (config: string) => config.startsWith("!");
 
 /** The environment variables a template value references, in order. */
-export const getConfigValueEnvVarNames = (config: string): string[] => {
+export const getConfigValueEnvVarNames = (config: string) => {
   if (isCommandConfigValue(config)) return [];
   const names: string[] = [];
   for (const part of parseTemplate(config)) {
@@ -123,13 +123,13 @@ export const getConfigValueEnvVarNames = (config: string): string[] => {
 export const getMissingConfigValueEnvVarNames = (
   config: string,
   env: Record<string, string>,
-): string[] => getConfigValueEnvVarNames(config).filter((name) => env[name] === undefined);
+) => getConfigValueEnvVarNames(config).filter((name) => env[name] === undefined);
 
 /** Resolve a config value to its actual value; undefined when a reference cannot be resolved. */
 export const resolveConfigValue = (
   config: string,
   env: Record<string, string>,
-): string | undefined =>
+) =>
   isCommandConfigValue(config)
     ? executeCommand(config)
     : resolveTemplate(parseTemplate(config), env);
@@ -138,7 +138,7 @@ export const resolveConfigValue = (
 export const resolveHeaders = (
   headers: Record<string, string> | undefined,
   env: Record<string, string>,
-): Record<string, string> | undefined => {
+) => {
   if (headers === undefined) return undefined;
   const resolved: Record<string, string> = {};
   for (const [key, value] of Object.entries(headers)) {

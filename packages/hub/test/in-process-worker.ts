@@ -80,7 +80,7 @@ export interface InProcessWorkerRef {
 
 const toHubError =
   (message: string) =>
-  (error: unknown): HubError =>
+  (error: unknown) =>
     new HubError({ kind: "worker", message, cause: error });
 
 /** The reads that never start a session (the hub's gate mirrors this). */
@@ -125,7 +125,7 @@ export const inProcessWorker = Effect.fn("inProcessWorker")(function* (
   const recordsRef = yield* Ref.make<ReadonlyMap<string, ThreadRecord>>(new Map());
   let sink: HubEventSink | undefined;
 
-  const report = (threadId: string, patch: WorkerReport): void => {
+  const report = (threadId: string, patch: WorkerReport) => {
     sink?.report(threadId, patch);
   };
 
@@ -214,7 +214,7 @@ export const inProcessWorker = Effect.fn("inProcessWorker")(function* (
   });
 
   /** The tailSeq after a command (the hub's registry cache input). */
-  const tailSeqOf = (host: SessionHost): Effect.Effect<number, HubError, never> =>
+  const tailSeqOf = (host: SessionHost) =>
     host.getEntries().pipe(
       Effect.map(({ tailSeq }) => tailSeq),
       Effect.mapError(toHubError("tailSeq")),

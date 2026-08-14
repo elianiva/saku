@@ -27,7 +27,7 @@ export const TEST_PROVIDER = "test-provider";
 export const TEST_MODEL = "test-model";
 
 /** A minimal pi `Model` (the shape the host's catalog lookups need). */
-export const testModel = (): Model<Api> => ({
+export const testModel = () => ({
   id: TEST_MODEL,
   name: "Test Model",
   api: "test-api",
@@ -52,7 +52,7 @@ export const testModel = (): Model<Api> => ({
 export const assistantMessage = (
   text: string,
   stopReason: AssistantMessage["stopReason"] = "stop",
-): AssistantMessage => ({
+) => ({
   role: "assistant",
   content: [{ type: "text", text }],
   api: "test-api",
@@ -75,7 +75,7 @@ class FakeError extends Schema.TaggedError<FakeError>()("FakeError", {
   message: Schema.String,
 }) {}
 
-const unimplemented = (name: string): never => {
+const unimplemented = (name: string) => {
   throw new FakeError(
     `fake models: ${name} is not implemented — the host should not call it in these tests`,
   );
@@ -85,7 +85,7 @@ const unimplemented = (name: string): never => {
  * A scripted catalog. `completions` feeds `completeSimple` (compaction,
  * auto-title); every provider/model resolves to `testModel`.
  */
-export const fakeCatalog = (options: { completions?: string[] } = {}): ModelCatalogShape => {
+export const fakeCatalog = (options: { completions?: string[] } = {}) => {
   const completions = [...(options.completions ?? [])];
   const models: MutableModels = {
     getProviders: () => [],
@@ -111,7 +111,7 @@ export const fakeCatalog = (options: { completions?: string[] } = {}): ModelCata
       _model: Model<Api>,
       _context: PiContext,
       _options?: SimpleStreamOptions,
-    ): Promise<AssistantMessage> => {
+    ) => {
       const text = completions.shift() ?? "a canned completion";
       return assistantMessage(text);
     },
@@ -150,11 +150,11 @@ export class FakeRegistry implements ThreadRegistryShape {
     this.record = record;
   }
 
-  list(): Effect.Effect<readonly ThreadRecord[], never> {
+  list() {
     return Effect.succeed([this.record]);
   }
 
-  get(threadId: string): Effect.Effect<Option.Option<ThreadRecord>, never> {
+  get(threadId: string) {
     return Effect.succeed(this.record.id === threadId ? Option.some(this.record) : Option.none());
   }
 
@@ -163,7 +163,7 @@ export class FakeRegistry implements ThreadRegistryShape {
     cwd?: string;
     mode?: ThreadMode;
     autoName?: boolean;
-  }): Effect.Effect<ThreadRecord, never> {
+  }) {
     this.record = {
       id: "fake-thread",
       name: input.name,
@@ -179,22 +179,22 @@ export class FakeRegistry implements ThreadRegistryShape {
   update(
     threadId: string,
     patch: Partial<Pick<ThreadRecord, "name" | "sessionId" | "nameAuto">>,
-  ): Effect.Effect<Option.Option<ThreadRecord>, never> {
+  ) {
     if (this.record.id !== threadId) return Effect.succeed(Option.none());
     this.record = { ...this.record, ...patch };
     return Effect.succeed(Option.some(this.record));
   }
 
-  setState(threadId: string, state: ThreadState): Effect.Effect<void, never> {
+  setState(threadId: string, state: ThreadState) {
     if (this.record.id === threadId) this.state = state;
     return Effect.void;
   }
 
-  delete(threadId: string): Effect.Effect<boolean, never> {
+  delete(threadId: string) {
     return Effect.succeed(false);
   }
 
-  toInfo(threadId: string, tailSeq: number): Effect.Effect<Option.Option<ThreadInfo>, never> {
+  toInfo(threadId: string, tailSeq: number) {
     if (this.record.id !== threadId) return Effect.succeed(Option.none());
     return Effect.succeed(
       Option.some({
@@ -211,7 +211,7 @@ export class FakeRegistry implements ThreadRegistryShape {
   }
 
   /** Current wire-visible state (test observation). */
-  currentState(): ThreadState {
+  currentState() {
     return this.state;
   }
 }

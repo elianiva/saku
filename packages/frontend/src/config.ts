@@ -41,7 +41,7 @@ const BootstrapSchema = S.Struct({
 
 const LOCALSTORAGE_KEY = "saku.config";
 
-export const defaultConfig = (): SakuEndpoint => {
+export const defaultConfig = () => {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   return { url: `${protocol}//${window.location.host}/ws`, token: "" };
 };
@@ -81,7 +81,7 @@ export const fetchBootstrap: Effect.Effect<
   ),
 );
 
-export const readSavedConfig = (): SakuEndpoint | null => {
+export const readSavedConfig = () => {
   const raw = window.localStorage.getItem(LOCALSTORAGE_KEY);
   if (raw === null) return null;
   // A corrupt saved config falls through to the next source, like a

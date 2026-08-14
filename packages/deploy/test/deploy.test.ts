@@ -130,9 +130,9 @@ const waitFor = <A>(
   predicate: (value: A) => boolean,
   what: string,
   timeoutMs = 20_000,
-): Effect.Effect<A, never, never> => {
+) => {
   const deadline = Date.now() + timeoutMs;
-  const loop = Effect.fn("loop")(function* (): Effect.fn.Return<A> {
+  const loop = Effect.fn("loop")(function* () {
     const value = yield* effect;
     if (predicate(value)) return value;
     if (Date.now() > deadline) {
@@ -149,7 +149,7 @@ const entriesOf = Effect.fn("entriesOf")(function* (client: WireClient, threadId
 });
 
 /** The human-readable text of an entry (structured pi content flattened). */
-const entryText = (entry: unknown): string => {
+const entryText = (entry: unknown) => {
   const e = entry as {
     type?: string;
     content?: unknown;

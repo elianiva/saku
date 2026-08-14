@@ -145,7 +145,7 @@ export interface SessionHostOptions {
 export const SessionHost = {
   create(
     options: SessionHostOptions,
-  ): Effect.Effect<SessionHost, SessionHostError | RegistryError, KvStore> {
+  ) {
     return Effect.fn("SessionHost.create")(function* (): Effect.fn.Return<
       SessionHost,
       SessionHostError | RegistryError,
@@ -284,14 +284,14 @@ export const SessionHost = {
       };
 
       const unsubscribeAgent = agent.subscribe(
-        (event: AgentEvent, _signal: AbortSignal): Promise<void> =>
+        (event: AgentEvent, _signal: AbortSignal) =>
           Effect.runPromise(handleAgentEvent(deps, event)),
       );
 
       const actor = yield* Machine.spawn(makeHostMachine(deps));
       yield* actor.start;
 
-      const command = (event: HostCommandEvent): Effect.Effect<ReplyOk, SessionHostError, never> =>
+      const command = (event: HostCommandEvent) =>
         actor.ask(event).pipe(
           Effect.flatMap((reply) =>
             Match.value(reply).pipe(

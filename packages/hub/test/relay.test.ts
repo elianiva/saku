@@ -72,7 +72,7 @@ describe("hub relay", () => {
   });
 
   /** Register the env daemon with the relay and wait for the registration. */
-  const register = async (): Promise<void> => {
+  const register = async () => {
     registrationScope = await Effect.runPromise(
       Effect.gen(function* () {
         const scope = yield* Scope.make();
@@ -90,7 +90,7 @@ describe("hub relay", () => {
     await waitFor(async () => (await Effect.runPromise(relay.registered())).includes(ENV_ID));
   };
 
-  const waitFor = async (fn: () => boolean | Promise<boolean>, timeoutMs = 2000): Promise<void> => {
+  const waitFor = async (fn: () => boolean | Promise<boolean>, timeoutMs = 2000) => {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       if (await fn()) return;

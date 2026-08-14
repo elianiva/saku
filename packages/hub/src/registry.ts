@@ -78,16 +78,16 @@ export interface HubRegistryShape {
   readonly toInfo: (threadId: string) => Effect.Effect<Option.Option<ThreadInfo>, HubError>;
 }
 
-const recordKey = (threadId: string): string => `threads/${threadId}/record`;
+const recordKey = (threadId: string) => `threads/${threadId}/record`;
 
-const encodeRecord = (record: HubRecord): Uint8Array =>
+const encodeRecord = (record: HubRecord) =>
   new TextEncoder().encode(`${JSON.stringify(record)}\n`);
 
-const decodeRecord = (value: Uint8Array): HubRecord =>
+const decodeRecord = (value: Uint8Array) =>
   JSON.parse(new TextDecoder().decode(value)) as HubRecord;
 
 /** Persist one record; every mutation is durable before it is visible. */
-const persist = (kv: KvStoreShape, record: HubRecord): Effect.Effect<void, never> =>
+const persist = (kv: KvStoreShape, record: HubRecord) =>
   kv.put(recordKey(record.id), encodeRecord(record));
 
 /** Load every record at build time; corrupt records are skipped. */

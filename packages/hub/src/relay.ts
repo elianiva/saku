@@ -23,7 +23,7 @@ export const makeHubRelay = Effect.fn("makeHubRelay")(function* (options: RelayS
     },
   });
   const url = wsUrlOf(server);
-  const close = (): Effect.Effect<void, never> => core.close();
+  const close = () => core.close();
   return {
     url,
     registered: core.registered,

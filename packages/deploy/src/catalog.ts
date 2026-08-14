@@ -36,7 +36,7 @@ const deploymentAuthContext = (env: DeploymentEnv): AuthContext => ({
 });
 
 /** Build the thread DO's catalog from the deployment's bindings. */
-export const deploymentCatalog = (env: DeploymentEnv): ModelCatalogShape =>
+export const deploymentCatalog = (env: DeploymentEnv) =>
   createModelCatalog({
     auth: { authContext: deploymentAuthContext(env) },
     env,

@@ -65,7 +65,7 @@ const connect = Effect.gen(function* () {
  * Print the error and exit; the only imperative boundary of the CLI. The
  * failure is always a tagged error — the process edge prints its message.
  */
-const fail = (error: unknown): never => {
+const fail = (error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);
   Effect.runSync(Effect.provide(Logger.layer([CliLogger]))(Effect.logError(`saku: ${message}`)));
   process.exit(1);
@@ -75,7 +75,7 @@ const fail = (error: unknown): never => {
 const run = <T>(
   effect: Effect.Effect<T, WireError, never>,
   label: string,
-): Effect.Effect<T, WireError, never> =>
+) =>
   effect.pipe(
     Effect.catchIf(
       (error): error is WireError => error instanceof WireError && error.code === "refused",
@@ -89,7 +89,7 @@ const run = <T>(
     ),
   );
 
-const pad = (text: string, width: number): string => text.padEnd(width).slice(0, width);
+const pad = (text: string, width: number) => text.padEnd(width).slice(0, width);
 
 const cmdList = Effect.fn("cmdList")(function* () {
   const client = yield* connect;
@@ -156,7 +156,7 @@ const cmdRm = Effect.fn("cmdRm")(function* (threadArg: string | undefined) {
   yield* client.disconnect();
 });
 
-const fmtWhen = (ms: number): string => {
+const fmtWhen = (ms: number) => {
   const date = new Date(ms);
   const now = Date.now();
   const days = Math.floor((now - ms) / 86_400_000);
@@ -337,7 +337,7 @@ const cmdEnv = Effect.fn("cmdEnv")(function* (sub: string | undefined, hubUrl: s
   );
 });
 
-const usage = (): string => `saku — local software factory
+const usage = () => `saku — local software factory
 
 usage:
   saku daemon <start|stop|status>
@@ -354,7 +354,7 @@ const main = Effect.fn("main")(function* () {
   const command = args[0];
   const rest = args.slice(1);
 
-  const flagValue = (flags: string[], fallback: string): string => {
+  const flagValue = (flags: string[], fallback: string) => {
     const index = rest.findIndex((arg) => flags.includes(arg));
     if (index === -1) return fallback;
     return rest[index + 1] ?? fallback;

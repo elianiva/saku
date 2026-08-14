@@ -113,7 +113,7 @@ export const makeWireCore = Effect.fn("makeWireCore")(function* (options: WireCo
   });
 
   /** The hub's events → wire frames (the fan-out). */
-  const onHubEvent = (event: HubEvent): void => {
+  const onHubEvent = (event: HubEvent) => {
     const frame: WireEvent =
       event.type === "thread_changed"
         ? ThreadChanged.make({ thread: event.thread })

@@ -127,7 +127,7 @@ export type HostCommandEvent = Extract<
   }
 >;
 /** The wire-visible state of a machine state (crashed and compacting look idle). */
-export const wireStateOf = (state: HostStateV): ThreadState =>
+export const wireStateOf = (state: HostStateV) =>
   Match.value(state).pipe(
     Match.withReturnType<ThreadState>(),
     Match.when({ _tag: "Working" }, () => "working"),
@@ -136,7 +136,7 @@ export const wireStateOf = (state: HostStateV): ThreadState =>
   );
 
 /** The wire-visible tag, plus the host-local `crashed` the daemon rebuilds on. */
-export const hostStateOf = (state: HostStateV): SessionHostState =>
+export const hostStateOf = (state: HostStateV) =>
   state._tag === "Crashed" ? "crashed" : wireStateOf(state);
 
 export interface HostDeps {
@@ -163,11 +163,11 @@ const AUTO_TITLE_PROVIDER = "opencode-go";
 const AUTO_TITLE_MODEL = "deepseek-v4-flash";
 
 /** The extension's title prompt, copied verbatim (auto-session-title.ts). */
-const AUTO_TITLE_PROMPT = (text: string): string =>
+const AUTO_TITLE_PROMPT = (text: string) =>
   `Generate a short but descriptive session title (5-12 words) for this conversation. Be specific enough to distinguish it from similar topics. Include key terms, file names, or project context when present. Reply ONLY with the title, no quotes, no punctuation, no extra text.\n\n${text.slice(0, 2000)}`;
 
 /** The entry portion of a session log, in sequence order. */
-export const entriesFromLog = (log: readonly LogItem[]): Entry[] =>
+export const entriesFromLog = (log: readonly LogItem[]) =>
   log
     .filter((item): item is Extract<LogItem, { kind: "entry" }> => item.kind === "entry")
     .map((item) => item.entry);
@@ -423,7 +423,7 @@ type HostMachine = Machine.Machine<HostStateV, HostEventV, never, any, any, any>
  */
 const busyReply = (
   state: Extract<HostStateV, { readonly _tag: "Working" | "Compacting" | "Crashed" }>,
-): HostReplyV =>
+) =>
   ReplyFailed.make({
     message: Match.value(state).pipe(
       Match.tagsExhaustive({
@@ -434,7 +434,7 @@ const busyReply = (
     ),
   });
 
-const makeHostMachine = (deps: HostDeps): HostMachine => {
+const makeHostMachine = (deps: HostDeps) => {
   const machine = Machine.make({ state: HostState, event: HostEvent, initial: deps.initialState });
 
   return (

@@ -73,7 +73,7 @@ export interface DaemonLifecycleConfig {
 /** The daemon's published ws url; none when the daemon has never run. */
 export const readPublishedUrl = (
   config: DaemonLifecycleConfig,
-): Effect.Effect<Option.Option<string>, never, never> =>
+) =>
   Effect.tryPromise(() => readFile(config.urlPath, "utf8")).pipe(
     Effect.map((content) =>
       Option.some(content.trim()).pipe(Option.filter((value) => value.length > 0)),
@@ -104,7 +104,7 @@ export const status = Effect.fn("status")(function* (
 
 const spawnFailure =
   (label: DaemonLifecycleConfig["label"]) =>
-  (error: unknown): CliError =>
+  (error: unknown) =>
     new CliError({
       code: "spawn_failed",
       message: `failed to spawn the ${label}: ${error instanceof Error ? error.message : String(error)}`,
@@ -151,7 +151,7 @@ export const spawn = Effect.fn("spawn")(function* (config: DaemonLifecycleConfig
  */
 export const waitForUp = (
   config: DaemonLifecycleConfig,
-): Effect.Effect<DaemonStatus & { pid: number; url: string; token: string }, undefined, never> =>
+) =>
   status(config).pipe(
     Effect.filterOrFail(
       (current): current is DaemonStatus & { pid: number; url: string; token: string } =>
@@ -189,7 +189,7 @@ export const ensure = Effect.fn("ensure")(function* (config: DaemonLifecycleConf
 });
 
 /** Probe until the daemon is gone: first probe + 49 retries, 100 ms apart. */
-export const waitForStop = (config: DaemonLifecycleConfig): Effect.Effect<void, never, never> =>
+export const waitForStop = (config: DaemonLifecycleConfig) =>
   status(config).pipe(
     Effect.filterOrFail(
       (current) => !current.running,

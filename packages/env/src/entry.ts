@@ -25,7 +25,7 @@ import { makeEnvDaemon } from "./daemon.ts";
 import { makeEnvRelayClient } from "./relay.ts";
 
 /** Minimal flag parsing: `--name value` pairs; no deps, no surprises. */
-const flags = (args: readonly string[]): Map<string, string> => {
+const flags = (args: readonly string[]) => {
   const map = new Map<string, string>();
   for (let i = 0; i < args.length; i += 2) {
     const flag = args[i];
@@ -43,7 +43,7 @@ const program = Effect.gen(function* () {
   const cwd = args.get("--cwd") ?? process.cwd();
   const port = Number(args.get("--port") ?? "0");
   const fs = yield* FileSystem.FileSystem;
-  const log = (message: string): Effect.Effect<void, never, never> =>
+  const log = (message: string) =>
     Effect.logInfo(`[saku-env] ${message}`);
 
   const daemon = yield* makeEnvDaemon({

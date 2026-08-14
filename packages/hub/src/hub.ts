@@ -111,7 +111,7 @@ export interface HubDeps {
   readonly idleStop?: IdleStopController;
 }
 
-const isReadOnly = (command: SessionCommand): boolean => READ_ONLY_COMMANDS.has(command._tag);
+const isReadOnly = (command: SessionCommand) => READ_ONLY_COMMANDS.has(command._tag);
 
 /** Structural equality over the wire's thread view (not JSON.stringify). */
 const threadInfoEq = Schema.toEquivalence(ThreadInfo);
@@ -147,7 +147,7 @@ export const makeHub = Effect.fn("makeHub")(function* (deps: HubDeps) {
     }
   });
 
-  const emitThreadChanged = (thread: ThreadInfo): Effect.Effect<void, never, never> =>
+  const emitThreadChanged = (thread: ThreadInfo) =>
     notify({ type: "thread_changed", thread });
 
   const infoOf = Effect.fn("infoOf")(function* (threadId: string) {

@@ -18,7 +18,7 @@ const fs = await Effect.runPromise(Effect.provide(NodeFileSystem.layer)(Effect.g
 })));
 
 /** A temp dir acting as pi's agent dir; the layout comes from `PathsTest`. */
-const withPiAgentDir = async <T>(run: (root: string, paths: PathsShape) => Promise<T>): Promise<T> =>
+const withPiAgentDir = async <T>(run: (root: string, paths: PathsShape) => Promise<T>) =>
   Effect.runPromise(
     Effect.gen(function* () {
       const paths = yield* Paths;
@@ -26,7 +26,12 @@ const withPiAgentDir = async <T>(run: (root: string, paths: PathsShape) => Promi
     }).pipe(Effect.provide(PathsTest()), Effect.provide(NodeFileSystem.layer)),
   );
 
-const writeSession = (root: string, cwdSlug: string, fileName: string, content: string): Promise<string> =>
+const writeSession = (
+  root: string,
+  cwdSlug: string,
+  fileName: string,
+  content: string,
+) =>
   Effect.runPromise(
     Effect.gen(function* () {
       const dir = `${root}/sessions/${cwdSlug}`;

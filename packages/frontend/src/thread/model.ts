@@ -46,7 +46,7 @@ export const Model = S.Struct({
 });
 export type Model = S.Schema.Type<typeof Model>;
 
-export const initialModel = (): Model => ({
+export const initialModel = () => ({
   id: null,
   info: null,
   trail: Trail.Idle(),

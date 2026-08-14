@@ -15,10 +15,10 @@ import type {
 } from "@earendil-works/pi-agent-core";
 import { FileError, err, ok } from "@earendil-works/pi-agent-core";
 
-const notFound = (path: string): FileError =>
+const notFound = (path: string) =>
   new FileError("not_found", `no such file or directory: ${path}`, path);
 
-const norm = (path: string, cwd: string): string => (isAbsolute(path) ? path : resolve(cwd, path));
+const norm = (path: string, cwd: string) => (isAbsolute(path) ? path : resolve(cwd, path));
 
 export class StubEnv implements ExecutionEnv {
   readonly cwd: string;
@@ -34,7 +34,7 @@ export class StubEnv implements ExecutionEnv {
     this.dirs.add(cwd);
   }
 
-  writeFileSync(path: string, content: string | Uint8Array): void {
+  writeFileSync(path: string, content: string | Uint8Array) {
     const target = norm(path, this.cwd);
     this.files.set(
       target,
@@ -42,7 +42,7 @@ export class StubEnv implements ExecutionEnv {
     );
   }
 
-  private fileInfoFor(path: string): FileInfo | undefined {
+  private fileInfoFor(path: string) {
     const target = norm(path, this.cwd);
     const value = this.files.get(target);
     if (value === undefined) return undefined;
@@ -55,15 +55,15 @@ export class StubEnv implements ExecutionEnv {
     };
   }
 
-  absolutePath(path: string): Promise<PiResult<string, FileError>> {
+  absolutePath(path: string) {
     return Promise.resolve(ok(norm(path, this.cwd)));
   }
 
-  joinPath(parts: string[]): Promise<PiResult<string, FileError>> {
+  joinPath(parts: string[]) {
     return Promise.resolve(ok(join(...parts)));
   }
 
-  async readTextFile(path: string): Promise<PiResult<string, FileError>> {
+  async readTextFile(path: string) {
     const info = this.fileInfoFor(path);
     if (info === undefined) return err(notFound(path));
     return ok(new TextDecoder().decode(this.files.get(info.path)));
@@ -72,25 +72,25 @@ export class StubEnv implements ExecutionEnv {
   async readTextLines(
     path: string,
     options?: { maxLines?: number; abortSignal?: AbortSignal },
-  ): Promise<PiResult<string[], FileError>> {
+  ) {
     const content = await this.readTextFile(path);
     if (!content.ok) return content;
     const lines = content.value.split("\n");
     return ok(options?.maxLines === undefined ? lines : lines.slice(0, options.maxLines));
   }
 
-  async readBinaryFile(path: string): Promise<PiResult<Uint8Array, FileError>> {
+  async readBinaryFile(path: string) {
     const info = this.fileInfoFor(path);
     if (info === undefined) return err(notFound(path));
     return ok(this.files.get(info.path) ?? new Uint8Array());
   }
 
-  writeFile(path: string, content: string | Uint8Array): Promise<PiResult<void, FileError>> {
+  writeFile(path: string, content: string | Uint8Array) {
     this.writeFileSync(path, content);
     return Promise.resolve(ok(undefined));
   }
 
-  appendFile(path: string, content: string | Uint8Array): Promise<PiResult<void, FileError>> {
+  appendFile(path: string, content: string | Uint8Array) {
     const target = norm(path, this.cwd);
     const existing = this.files.get(target);
     const bytes = typeof content === "string" ? new TextEncoder().encode(content) : content;
@@ -99,7 +99,7 @@ export class StubEnv implements ExecutionEnv {
     return Promise.resolve(ok(undefined));
   }
 
-  renameFile(sourcePath: string, destinationPath: string): Promise<PiResult<void, FileError>> {
+  renameFile(sourcePath: string, destinationPath: string) {
     const source = norm(sourcePath, this.cwd);
     const value = this.files.get(source);
     if (value === undefined) return Promise.resolve(err(notFound(sourcePath)));
@@ -108,12 +108,12 @@ export class StubEnv implements ExecutionEnv {
     return Promise.resolve(ok(undefined));
   }
 
-  fileInfo(path: string): Promise<PiResult<FileInfo, FileError>> {
+  fileInfo(path: string) {
     const info = this.fileInfoFor(path);
     return Promise.resolve(info === undefined ? err(notFound(path)) : ok(info));
   }
 
-  listDir(path: string): Promise<PiResult<FileInfo[], FileError>> {
+  listDir(path: string) {
     const target = norm(path, this.cwd);
     const entries: FileInfo[] = [];
     for (const filePath of this.files.keys()) {
@@ -135,16 +135,16 @@ export class StubEnv implements ExecutionEnv {
     return Promise.resolve(ok(entries));
   }
 
-  canonicalPath(path: string): Promise<PiResult<string, FileError>> {
+  canonicalPath(path: string) {
     return Promise.resolve(ok(norm(path, this.cwd)));
   }
 
-  async exists(path: string): Promise<PiResult<boolean, FileError>> {
+  async exists(path: string) {
     const target = norm(path, this.cwd);
     return ok(this.files.has(target) || this.dirs.has(target));
   }
 
-  createDir(path: string, options?: { recursive?: boolean }): Promise<PiResult<void, FileError>> {
+  createDir(path: string, options?: { recursive?: boolean }) {
     const target = norm(path, this.cwd);
     this.dirs.add(target);
     if (options?.recursive !== false) {
@@ -160,7 +160,7 @@ export class StubEnv implements ExecutionEnv {
   async remove(
     path: string,
     options?: { recursive?: boolean; force?: boolean },
-  ): Promise<PiResult<void, FileError>> {
+  ) {
     const target = norm(path, this.cwd);
     let removed = this.files.delete(target);
     if (options?.recursive) {
@@ -182,7 +182,7 @@ export class StubEnv implements ExecutionEnv {
     return removed || options?.force ? ok(undefined) : err(notFound(path));
   }
 
-  createTempDir(prefix?: string): Promise<PiResult<string, FileError>> {
+  createTempDir(prefix?: string) {
     const path = `${this.cwd}/${prefix ?? "tmp-"}`;
     this.dirs.add(path);
     return Promise.resolve(ok(path));
@@ -191,20 +191,20 @@ export class StubEnv implements ExecutionEnv {
   createTempFile(options?: {
     prefix?: string;
     suffix?: string;
-  }): Promise<PiResult<string, FileError>> {
+  }) {
     const path = `${this.cwd}/${options?.prefix ?? ""}${Math.random().toString(36).slice(2)}${options?.suffix ?? ""}`;
     this.files.set(path, new Uint8Array());
     return Promise.resolve(ok(path));
   }
 
-  cleanup(): Promise<void> {
+  cleanup() {
     return Promise.resolve();
   }
 
   exec(
     command: string,
     options?: ShellExecOptions,
-  ): Promise<PiResult<{ stdout: string; stderr: string; exitCode: number }, never>> {
+  ) {
     this.commands.push({ command, cwd: options?.cwd ?? this.cwd });
     return Promise.resolve(ok({ stdout: this.bashStdout, stderr: "", exitCode: 0 }));
   }

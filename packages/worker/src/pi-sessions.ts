@@ -89,9 +89,9 @@ export interface PiSessionData {
 }
 
 /** The sessions root under pi's agent dir (from the caller's layout). */
-const sessionsRootOf = (paths: PathsShape): string => join(paths.agentDir, "sessions");
+const sessionsRootOf = (paths: PathsShape) => join(paths.agentDir, "sessions");
 
-const parseLine = (line: string): Record<string, unknown> | undefined => {
+const parseLine = (line: string) => {
   const trimmed = line.trim();
   if (trimmed.length === 0) return undefined;
   try {
@@ -105,7 +105,7 @@ const parseLine = (line: string): Record<string, unknown> | undefined => {
 };
 
 /** v3 timestamps are ISO strings; v4 are epoch ms. NaN → 0 (pi falls back to file times). */
-const toEpochMs = (value: unknown): number => {
+const toEpochMs = (value: unknown) => {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string") {
     const ms = Date.parse(value);
@@ -115,7 +115,7 @@ const toEpochMs = (value: unknown): number => {
 };
 
 /** The text content of a message (pi's extractTextContent). */
-const textContent = (content: unknown): string => {
+const textContent = (content: unknown) => {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
     return content
@@ -132,7 +132,7 @@ const textContent = (content: unknown): string => {
 };
 
 /** Whether an object is a message entry with user/assistant text content. */
-const firstMessageOf = (obj: Record<string, unknown>): string | undefined => {
+const firstMessageOf = (obj: Record<string, unknown>) => {
   const message = obj.message;
   if (typeof message !== "object" || message === null) return undefined;
   const role = (message as { role?: unknown }).role;
@@ -148,7 +148,7 @@ interface V3Header {
 }
 
 /** Classify the header line; undefined when the file is not a v3 session. */
-const parseV3Header = (obj: Record<string, unknown>): V3Header | undefined => {
+const parseV3Header = (obj: Record<string, unknown>) => {
   if (obj.type !== "session" || typeof obj.id !== "string") return undefined;
   return {
     id: obj.id,
@@ -157,7 +157,7 @@ const parseV3Header = (obj: Record<string, unknown>): V3Header | undefined => {
   };
 };
 
-const invalid = (path: string, line: number, message: string): PiSessionsError =>
+const invalid = (path: string, line: number, message: string) =>
   new PiSessionsError({
     kind: "invalid",
     message: `invalid pi session ${path}: line ${line}: ${message}`,
@@ -178,7 +178,7 @@ const V3_ENTRY_TYPES = new Set([
 const scanV3Lines = (
   path: string,
   lines: readonly string[],
-): Omit<PiSessionSummary, "modifiedAt" | "path"> | undefined => {
+) => {
   const header = parseV3Header(parseLine(lines[0] ?? "") ?? {});
   if (header === undefined) return undefined;
   let name: string | undefined;
@@ -216,7 +216,7 @@ const scanV3Lines = (
 const parseV3 = (
   path: string,
   lines: readonly string[],
-): Result.Result<PiSessionData, PiSessionsError> =>
+) =>
   Result.try({
     try: () => {
       const header = parseV3Header(parseLine(lines[0] ?? "") ?? {});
@@ -236,7 +236,7 @@ const parseV3 = (
         if (obj === undefined || typeof obj.type !== "string") continue;
         raw.push({ line: index + 1, obj });
       }
-      const resolveParent = (id: string): string => {
+      const resolveParent = (id: string) => {
         let current = id;
         const visited = new Set<string>();
         while (factParent.has(current) && !visited.has(current)) {
@@ -263,7 +263,7 @@ const parseV3 = (
         line: number,
         type: string,
         build: (resolvedParent: string | null, timestamp: number, seq: number) => Entry,
-      ): void => {
+      ) => {
         const id = obj.id;
         if (typeof id !== "string" || id.length === 0) {
           throw invalid(path, line, "entry has no id");
@@ -430,7 +430,7 @@ const parseV3 = (
  * service (the same adapter shape as LocalEnv). Failures are conduits for
  * the repo's own error reporting — the errno taxonomy is not needed here. */
 const jsonlFsOf = (fs: FileSystem.FileSystem): JsonlSessionRepoFileSystem => {
-  const fail = (path: string, error: unknown): FileError =>
+  const fail = (path: string, error: unknown) =>
     new FileError(
       "unknown",
       `filesystem error: ${error instanceof Error ? error.message : String(error)}`,
@@ -452,7 +452,7 @@ const jsonlFsOf = (fs: FileSystem.FileSystem): JsonlSessionRepoFileSystem => {
             typeof content === "string" ? content : Buffer.from(content).toString(),
           )
           .pipe(Effect.result),
-      ).then((outcome): PiResult<void, FileError> =>
+      ).then((outcome) =>
         Result.isSuccess(outcome) ? ok(undefined) : err(fail(path, outcome.failure)),
       ),
     appendFile: (path, content) =>
@@ -464,12 +464,12 @@ const jsonlFsOf = (fs: FileSystem.FileSystem): JsonlSessionRepoFileSystem => {
             { flag: "a" },
           )
           .pipe(Effect.result),
-      ).then((outcome): PiResult<void, FileError> =>
+      ).then((outcome) =>
         Result.isSuccess(outcome) ? ok(undefined) : err(fail(path, outcome.failure)),
       ),
     renameFile: (sourcePath, destinationPath) =>
       Effect.runPromise(fs.rename(sourcePath, destinationPath).pipe(Effect.result)).then(
-        (outcome): PiResult<void, FileError> =>
+        (outcome) =>
           Result.isSuccess(outcome) ? ok(undefined) : err(fail(sourcePath, outcome.failure)),
       ),
     fileInfo: (path) =>
@@ -484,12 +484,12 @@ const jsonlFsOf = (fs: FileSystem.FileSystem): JsonlSessionRepoFileSystem => {
           })),
           Effect.result,
         ),
-      ).then((outcome): PiResult<FileInfo, FileError> =>
+      ).then((outcome) =>
         Result.isSuccess(outcome) ? ok(outcome.success) : err(fail(path, outcome.failure)),
       ),
     listDir: (path) =>
       Effect.runPromise(fs.readDirectory(path).pipe(Effect.result)).then(
-        (outcome): PiResult<FileInfo[], FileError> =>
+        (outcome) =>
           Result.isSuccess(outcome)
             ? ok(
                 outcome.success.map((name) => ({
@@ -504,13 +504,13 @@ const jsonlFsOf = (fs: FileSystem.FileSystem): JsonlSessionRepoFileSystem => {
       ),
     exists: (path) =>
       Effect.runPromise(fs.exists(path).pipe(Effect.result)).then(
-        (outcome): PiResult<boolean, FileError> =>
+        (outcome) =>
           Result.isSuccess(outcome) ? ok(outcome.success) : err(fail(path, outcome.failure)),
       ),
     createDir: (path, options) =>
       Effect.runPromise(
         fs.makeDirectory(path, { recursive: options?.recursive ?? true }).pipe(Effect.result),
-      ).then((outcome): PiResult<void, FileError> =>
+      ).then((outcome) =>
         Result.isSuccess(outcome) ? ok(undefined) : err(fail(path, outcome.failure)),
       ),
     remove: (path, options) =>
@@ -521,7 +521,7 @@ const jsonlFsOf = (fs: FileSystem.FileSystem): JsonlSessionRepoFileSystem => {
             force: options?.force ?? false,
           })
           .pipe(Effect.result),
-      ).then((outcome): PiResult<void, FileError> =>
+      ).then((outcome) =>
         Result.isSuccess(outcome) ? ok(undefined) : err(fail(path, outcome.failure)),
       ),
   };
@@ -547,7 +547,7 @@ const logItemToMutation = (item: {
 const scanV4Lines = (
   header: Record<string, unknown>,
   lines: readonly string[],
-): Omit<PiSessionSummary, "modifiedAt" | "path"> | undefined => {
+) => {
   if (typeof header.id !== "string" || typeof header.cwd !== "string") return undefined;
   let name: string | undefined;
   let messageCount = 0;
@@ -669,7 +669,7 @@ const readV4 = (
   paths: PathsShape,
   path: string,
   header: Record<string, unknown>,
-): Effect.Effect<PiSessionData, PiSessionsError, never> =>
+) =>
   Effect.tryPromise({
     try: async () => {
       // The header is already decoded here; build the metadata directly —

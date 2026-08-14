@@ -1,1 +1,2 @@
 - Always use Jujutsu (`jj` cli) instead of Git
+- Never annotate function return types — let TypeScript infer them. This includes Effect-specific annotations (`Effect.Effect<...>`, `Effect.fn.Return<...>`, `Layer<...>`, ...), `Promise<...>`, and primitives. Exceptions: type predicates (`x is T`), declaration signatures (interface/abstract/overload), and the rare case where inference genuinely fails (recursive self-reference, or an annotation providing the sole contextual type for object-literal parameters) — prefer annotating the parameters over the return type when possible

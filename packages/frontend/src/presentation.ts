@@ -10,7 +10,7 @@
 import type { ThreadEnvState, ThreadMode, ThreadState } from "@saku/wire";
 
 /** The rail's mode glyph: the hands-policy initial (CONTEXT.md: Mode). */
-export const modeChar = (mode: ThreadMode): "L" | "S" | "A" =>
+export const modeChar = (mode: ThreadMode) =>
   mode === "sandbox" ? "S" : mode === "any" ? "A" : "L";
 
 /** How the rail draws a thread state: glyph char, tone, title. */
@@ -20,7 +20,7 @@ export interface StatePresentation {
   readonly title: string;
 }
 
-export const statePresentation = (state: ThreadState): StatePresentation =>
+export const statePresentation = (state: ThreadState) =>
   state === "idle"
     ? { glyph: "○", tone: "text-muted", title: "idle" }
     : state === "working"
@@ -34,7 +34,7 @@ export interface EnvPresentation {
   readonly title: string;
 }
 
-export const envPresentation = (env: ThreadEnvState): EnvPresentation =>
+export const envPresentation = (env: ThreadEnvState) =>
   env === "ready"
     ? { glyph: "▸", tone: "text-foam", title: "env ready" }
     : env === "provisioning"
@@ -47,7 +47,7 @@ export const envPresentation = (env: ThreadEnvState): EnvPresentation =>
 export const headerState = (
   state: ThreadState | undefined,
   env: ThreadEnvState | undefined,
-): { readonly text: string; readonly tone: string } => {
+) => {
   const pieces: string[] = [];
   if (state !== undefined) pieces.push(state);
   if (env !== undefined) pieces.push(`env ${env}`);

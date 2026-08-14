@@ -89,7 +89,7 @@ const stepConn = (model: Model, message: RootMessage): UpdateReturn => {
   ];
 };
 
-export const update = (model: Model, message: RootMessage): UpdateReturn =>
+export const update = (model: Model, message: RootMessage) =>
   M.value(message).pipe(
     M.withReturnType<UpdateReturn>(),
     M.tagsExhaustive({

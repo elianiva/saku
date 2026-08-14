@@ -70,7 +70,7 @@ export class KvStore extends Context.Service<KvStore, KvStoreShape>()("KvStore")
    * In-memory backend (tests, in-process daemons). Each build is a fresh
    * store; two provides never share state.
    */
-  static memory(): Layer.Layer<KvStore> {
+  static memory() {
     return Layer.sync(KvStore, () => {
       const map = new Map<string, Uint8Array>();
       return {
@@ -98,7 +98,7 @@ export class KvStore extends Context.Service<KvStore, KvStoreShape>()("KvStore")
    * Writes go to `key + ".tmp"` and rename over the destination, so a crash
    * mid-write leaves either the old or the new value, never a partial one.
    */
-  static file(fs: FileSystem.FileSystem, root: string): Layer.Layer<KvStore> {
+  static file(fs: FileSystem.FileSystem, root: string) {
     return Layer.sync(KvStore, () => ({
       get: (key) =>
         fs.readFileString(keyPath(root, key)).pipe(
@@ -144,7 +144,7 @@ export class KvStore extends Context.Service<KvStore, KvStoreShape>()("KvStore")
    * channel is `never`, so a rejected DO promise is a defect that kills
    * the caller, which is exactly what DO storage does unadapted.
    */
-  static doStorage(storage: DoStorageLike): Layer.Layer<KvStore> {
+  static doStorage(storage: DoStorageLike) {
     return Layer.sync(KvStore, () => ({
       get: (key) =>
         Effect.tryPromise(async () => {
@@ -169,11 +169,11 @@ export class KvStore extends Context.Service<KvStore, KvStoreShape>()("KvStore")
   }
 }
 
-const encode = (value: string | Uint8Array): Uint8Array =>
+const encode = (value: string | Uint8Array) =>
   typeof value === "string" ? new TextEncoder().encode(value) : value;
 
 /** Keys are stored verbatim under the root; nested keys get directories. */
-const keyPath = (root: string, key: string): string => `${root}/${key}`;
+const keyPath = (root: string, key: string) => `${root}/${key}`;
 
 /**
  * Walk a directory tree and return every file as a `{ key, path }` pair,
@@ -212,4 +212,4 @@ const listFiles = (
     Effect.map(Array.flatten),
   );
 
-const dirname = (path: string): string => path.slice(0, path.lastIndexOf("/")) || path;
+const dirname = (path: string) => path.slice(0, path.lastIndexOf("/")) || path;

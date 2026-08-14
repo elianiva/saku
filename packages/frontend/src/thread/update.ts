@@ -58,7 +58,7 @@ const resetViewFields = {
   focused: (_: boolean) => false,
 };
 
-export const update = (model: Model, message: ThreadMessage): UpdateReturn =>
+export const update = (model: Model, message: ThreadMessage) =>
   M.value(message).pipe(
     M.withReturnType<UpdateReturn>(),
     M.tagsExhaustive({

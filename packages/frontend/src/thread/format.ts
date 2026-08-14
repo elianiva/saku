@@ -15,16 +15,16 @@ import { Result } from "effect";
 
 import type { MessageProjection } from "./projection.ts";
 
-export const asString = (value: unknown): string => (typeof value === "string" ? value : "");
+export const asString = (value: unknown) => (typeof value === "string" ? value : "");
 
-export const messageRole = (message: MessageProjection): string => asString(message.role);
+export const messageRole = (message: MessageProjection) => asString(message.role);
 
 /** An assistant message that failed: `stop: error` with the provider's error. */
-export const messageError = (message: MessageProjection): string =>
+export const messageError = (message: MessageProjection) =>
   message.stopReason === "error" ? asString(message.errorMessage) : "";
 
 /** The joined text content of a message (all text blocks / raw strings). */
-export const messageText = (message: MessageProjection): string => {
+export const messageText = (message: MessageProjection) => {
   const content = message.content;
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
@@ -37,7 +37,7 @@ export const messageText = (message: MessageProjection): string => {
 };
 
 /** The joined thinking content of a message. */
-export const messageThinking = (message: MessageProjection): string => {
+export const messageThinking = (message: MessageProjection) => {
   const content = message.content;
   if (!Array.isArray(content)) return "";
   return content
@@ -53,7 +53,7 @@ export interface ToolCallRow {
 }
 
 /** The tool calls an assistant message asks for. */
-export const messageToolCalls = (message: MessageProjection): ToolCallRow[] => {
+export const messageToolCalls = (message: MessageProjection) => {
   const content = message.content;
   if (!Array.isArray(content)) return [];
   const rows: ToolCallRow[] = [];
@@ -75,7 +75,7 @@ export interface ToolResultRow {
 }
 
 /** A toolResult message's payload. */
-export const messageToolResult = (message: MessageProjection): ToolResultRow | null => {
+export const messageToolResult = (message: MessageProjection) => {
   if (message.role !== "toolResult") return null;
   return {
     name: asString(message.toolName),
@@ -89,24 +89,24 @@ export const messageToolResult = (message: MessageProjection): ToolResultRow | n
  * it cannot be stringified (circular refs). `Result.try` at the sync
  * stringify point (house style: no try/catch).
  */
-const jsonLine = (value: unknown): string => {
+const jsonLine = (value: unknown) => {
   const raw = Result.try(() => (typeof value === "string" ? value : JSON.stringify(value)));
   return Result.isSuccess(raw) ? raw.success : String(value);
 };
 
 /** A one-line JSON preview of tool arguments, truncated to the head. */
-export const argsPreview = (value: unknown): string => {
+export const argsPreview = (value: unknown) => {
   if (value === undefined) return "";
   const raw = jsonLine(value);
   return raw.length > 240 ? `${raw.slice(0, 240)}…` : raw;
 };
 
 /** Streamed tool output grows; render its tail. */
-export const tail = (text: string, limit: number): string =>
+export const tail = (text: string, limit: number) =>
   text.length > limit ? `…${text.slice(text.length - limit)}` : text;
 
 /** Streamed tool partials/results: strings as-is, everything else as JSON. */
-export const stringifyLive = (value: unknown): string => {
+export const stringifyLive = (value: unknown) => {
   if (value === undefined) return "";
   if (typeof value === "string") return tail(value, 1200);
   const raw = jsonLine(value);
@@ -114,7 +114,7 @@ export const stringifyLive = (value: unknown): string => {
 };
 
 /** First line of a summary (compaction, branch), truncated. */
-export const summaryLine = (summary: unknown): string => {
+export const summaryLine = (summary: unknown) => {
   const text = asString(summary);
   const first = text.split("\n", 1)[0] ?? "";
   return first.length > 160 ? `${first.slice(0, 160)}…` : first;

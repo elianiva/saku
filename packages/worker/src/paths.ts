@@ -98,7 +98,7 @@ export const PathsLive: Layer.Layer<Paths, never> = Layer.effect(
  * an explicit layout (the caller owns its lifecycle — the registry
  * round-trip test reuses one home across two boots).
  */
-export const PathsTest = (home?: string): Layer.Layer<Paths, never, FileSystem.FileSystem> =>
+export const PathsTest = (home?: string) =>
   Layer.effect(
     Paths,
     Effect.gen(function* () {

@@ -112,7 +112,7 @@ export const startHubFixture = Effect.fn("startHubFixture")(function* () {
   const sockets = new Set<WebSocket>();
   const calls: string[] = [];
 
-  const record = (tag: string): Effect.Effect<void, never> => Effect.sync(() => calls.push(tag));
+  const record = (tag: string) => Effect.sync(() => calls.push(tag));
 
   const core = yield* makeWireServer({
     token: () => Effect.succeed(TEST_TOKEN),
@@ -124,7 +124,7 @@ export const startHubFixture = Effect.fn("startHubFixture")(function* () {
     },
   });
 
-  const threadInfo = (thread: ScriptedThread): ThreadInfo => ({
+  const threadInfo = (thread: ScriptedThread) => ({
     id: thread.id,
     name: thread.name,
     cwd: thread.cwd,
@@ -135,10 +135,10 @@ export const startHubFixture = Effect.fn("startHubFixture")(function* () {
     tailSeq: thread.nextSeq - 1,
   });
 
-  const threadChanged = (thread: ScriptedThread): Effect.Effect<void, never> =>
+  const threadChanged = (thread: ScriptedThread) =>
     core.broadcast(ThreadChanged.make({ thread: threadInfo(thread) }));
 
-  const findThread = (threadId: string): ScriptedThread | undefined => {
+  const findThread = (threadId: string) => {
     // Exact id first, then an unambiguous prefix (the real hub's contract).
     const exact = threads.get(threadId);
     if (exact !== undefined) return exact;
@@ -151,7 +151,7 @@ export const startHubFixture = Effect.fn("startHubFixture")(function* () {
     cwd?: string | undefined;
     mode?: ThreadMode | undefined;
     autoName?: boolean | undefined;
-  }): ScriptedThread => {
+  }) => {
     const thread: ScriptedThread = {
       id: randomUUID().replaceAll("-", ""),
       name: input.name,
@@ -184,7 +184,7 @@ export const startHubFixture = Effect.fn("startHubFixture")(function* () {
 
   const runHubCommand = (
     command: ThreadCommand | SkillCommand | PiSessionCommand,
-  ): Effect.Effect<ResponsePayload, FixtureError, never> =>
+  ) =>
     Match.value(command).pipe(
       Match.withReturnType<Effect.Effect<ResponsePayload, FixtureError, never>>(),
       Match.tagsExhaustive({
@@ -438,14 +438,14 @@ export const startHubFixture = Effect.fn("startHubFixture")(function* () {
     onError: (error) => error,
   });
 
-  const sendRaw = (text: string): Effect.Effect<void, never> =>
+  const sendRaw = (text: string) =>
     Effect.sync(() => {
       for (const socket of sockets) {
         if (socket.readyState === socket.OPEN) socket.send(text);
       }
     });
 
-  const dropAll = (): Effect.Effect<void, never> =>
+  const dropAll = () =>
     Effect.sync(() => {
       for (const socket of sockets) socket.close();
     });

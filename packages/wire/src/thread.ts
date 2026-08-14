@@ -113,7 +113,7 @@ export const ThreadChanged = S.TaggedStruct("thread_changed", {
 export type ThreadChanged = S.Schema.Type<typeof ThreadChanged>;
 
 /** First N characters of the thread id — the human-facing short id. */
-export const shortThreadId = (id: string, length = 8): string => id.slice(0, length);
+export const shortThreadId = (id: string, length = 8) => id.slice(0, length);
 
 /**
  * Resolve a user-supplied prefix/name against a thread list (git-style).
@@ -122,7 +122,7 @@ export const shortThreadId = (id: string, length = 8): string => id.slice(0, len
 export const resolveThread = <T extends { readonly id: string; readonly name: string }>(
   threads: readonly T[],
   input: string,
-): Result.Result<T, string> => {
+) => {
   const exactName = threads.find((t) => t.name === input);
   if (exactName !== undefined) return Result.succeed(exactName);
   const matches = threads.filter((t) => t.id.startsWith(input));

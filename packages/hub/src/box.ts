@@ -88,7 +88,7 @@ export const pollUntilReady = (
     timeoutMs?: number;
     log?: (message: string) => Effect.Effect<void, never, never>;
   } = {},
-): Effect.Effect<BoxInfo, BoxError, never> => {
+) => {
   const intervalMs = options.intervalMs ?? 1000;
   const timeoutMs = options.timeoutMs ?? 5 * 60 * 1000;
   const attempt = Effect.gen(function* () {
@@ -118,7 +118,7 @@ export const pollUntilReady = (
 };
 
 /** The client: one request function, thin typed wrappers over it. */
-export const makeBoxApi = (deps: BoxApiDeps): BoxApi => {
+export const makeBoxApi = (deps: BoxApiDeps) => {
   const baseUrl = deps.baseUrl ?? "https://ascii.dev/api/box/v1";
   const fetchImpl = deps.fetch ?? ((...args: Parameters<typeof fetch>) => fetch(...args));
 

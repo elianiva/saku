@@ -29,13 +29,13 @@ export interface RpcEnvelope {
   readonly error?: { readonly kind: string; readonly message: string };
 }
 
-export const jsonOk = (payload: unknown): Response => Response.json({ ok: true, payload });
+export const jsonOk = (payload: unknown) => Response.json({ ok: true, payload });
 
-export const jsonError = (kind: string, message: string): Response =>
+export const jsonError = (kind: string, message: string) =>
   Response.json({ ok: false, error: { kind, message } }, { status: 400 });
 
 /** The error's discriminator for the envelope: tagged errors keep their kind. */
-const errorKindOf = (error: unknown): string => {
+const errorKindOf = (error: unknown) => {
   if (error instanceof SessionHostError) return error.kind;
   if (error instanceof RegistryError) return error.op ?? "registry";
   if (error instanceof HubError) return error.kind;
@@ -45,7 +45,7 @@ const errorKindOf = (error: unknown): string => {
 /** The envelope's error for any failure crossing the fetch boundary. */
 export const rpcErrorOf = (
   error: unknown,
-): { readonly kind: string; readonly message: string } => ({
+) => ({
   kind: errorKindOf(error),
   message: error instanceof Error ? error.message : String(error),
 });
@@ -106,7 +106,7 @@ export const decodeCommandPayload = Schema.decodeUnknownOption(CommandPayload);
 export const readBody = <A>(
   request: Request,
   decode: (body: unknown) => Option.Option<A>,
-): Promise<Option.Option<A>> =>
+) =>
   Effect.runPromise(
     Effect.tryPromise({
       try: () => request.json() as Promise<unknown>,

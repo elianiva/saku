@@ -40,17 +40,17 @@ export type SessionMutation =
   | { kind: "fact"; seq: number; fact: "name"; name: string }
   | { kind: "fact"; seq: number; fact: "label"; targetId: string; label: string | undefined };
 
-const invalidMutation = (message: string): never => {
+const invalidMutation = (message: string) => {
   throw new SessionError("invalid_entry", `Invalid session mutation: ${message}`);
 };
 
-const assertValidLimit = (limit: number | undefined): void => {
+const assertValidLimit = (limit: number | undefined) => {
   if (limit !== undefined && (!Number.isInteger(limit) || limit <= 0)) {
     throw new SessionError("invalid_query", "limit must be a positive integer");
   }
 };
 
-const assertValidCursor = (afterSeq: number | undefined): void => {
+const assertValidCursor = (afterSeq: number | undefined) => {
   if (afterSeq !== undefined && (!Number.isInteger(afterSeq) || afterSeq < 0)) {
     throw new SessionError("invalid_query", "cursor sequence must be a non-negative integer");
   }
@@ -59,7 +59,7 @@ const assertValidCursor = (afterSeq: number | undefined): void => {
 function* ordered<T>(
   items: readonly T[],
   order: "newestFirst" | "oldestFirst" | undefined,
-): Generator<T> {
+) {
   if (order === "oldestFirst") {
     for (const item of items) yield item;
     return;
@@ -89,15 +89,15 @@ export class SessionState {
   private name: string | undefined;
   private readonly labels = new Map<string, string>();
 
-  get nextSequence(): number {
+  get nextSequence() {
     return this.sequence + 1;
   }
 
-  getLanes(): LanePointer[] {
+  getLanes() {
     return [...this.lanes].map(([lane, leafId]) => ({ lane, leafId }));
   }
 
-  requireLane(lane: string): string | null {
+  requireLane(lane: string) {
     const leafId = this.lanes.get(lane);
     if (leafId === undefined) {
       throw new SessionError("invalid_lane", `Lane not found: ${lane}`);
@@ -105,25 +105,25 @@ export class SessionState {
     return leafId;
   }
 
-  validateNewLane(lane: string): void {
+  validateNewLane(lane: string) {
     if (this.lanes.has(lane)) {
       throw new SessionError("already_exists", `Lane already exists: ${lane}`);
     }
   }
 
-  validateTarget(targetId: string | null): void {
+  validateTarget(targetId: string | null) {
     if (targetId !== null && !this.entriesById.has(targetId)) {
       throw new SessionError("not_found", `Entry not found: ${targetId}`);
     }
   }
 
-  validateUnusedId(id: string): void {
+  validateUnusedId(id: string) {
     if (this.usedIds.has(id)) {
       throw new SessionError("already_exists", `Session id already exists: ${id}`);
     }
   }
 
-  applyMutation(mutation: SessionMutation): void {
+  applyMutation(mutation: SessionMutation) {
     const seq =
       mutation.kind === "entry"
         ? mutation.entry.seq
@@ -211,11 +211,11 @@ export class SessionState {
     );
   }
 
-  getEntry(id: string): Entry | undefined {
+  getEntry(id: string) {
     return this.entriesById.get(id);
   }
 
-  findEntries(query: EntryQuery = {}): Entry[] {
+  findEntries(query: EntryQuery = {}) {
     assertValidLimit(query.limit);
     assertValidCursor(query.cursor?.afterSeq);
     const results: Entry[] = [];
@@ -227,7 +227,7 @@ export class SessionState {
     return results;
   }
 
-  findEntriesOnBranch(query: EntryQuery & BranchBounds & { start: string }): Entry[] {
+  findEntriesOnBranch(query: EntryQuery & BranchBounds & { start: string }) {
     assertValidLimit(query.limit);
     assertValidCursor(query.cursor?.afterSeq);
     const results: Entry[] = [];
@@ -246,7 +246,7 @@ export class SessionState {
     return results;
   }
 
-  findRecords(query: RecordQuery = {}): LaneRecord[] {
+  findRecords(query: RecordQuery = {}) {
     assertValidLimit(query.limit);
     assertValidCursor(query.afterSeq);
     const results: LaneRecord[] = [];
@@ -258,14 +258,14 @@ export class SessionState {
     return results;
   }
 
-  findOpenOperations(lane: string, options?: { limit?: number }): OperationStartedRecord[] {
+  findOpenOperations(lane: string, options?: { limit?: number }) {
     assertValidLimit(options?.limit);
     const openOperationsById = this.openOperationsByLane.get(lane);
     const openOperations = openOperationsById ? [...openOperationsById.values()].reverse() : [];
     return options?.limit === undefined ? openOperations : openOperations.slice(0, options.limit);
   }
 
-  getLog(options: LogOptions = {}): LogItem[] {
+  getLog(options: LogOptions = {}) {
     assertValidLimit(options.limit);
     assertValidCursor(options.afterSeq);
     const results: LogItem[] = [];
@@ -277,20 +277,20 @@ export class SessionState {
     return results;
   }
 
-  getName(): string | undefined {
+  getName() {
     return this.name;
   }
 
-  getLabel(id: string): string | undefined {
+  getLabel(id: string) {
     return this.labels.get(id);
   }
 
-  getStats(): SessionStats {
+  getStats() {
     return this.stats;
   }
 
   /** The mutations that copy entries/lanes/facts into a forked session. */
-  createForkMutations(options: ForkOptions): SessionMutation[] {
+  createForkMutations(options: ForkOptions) {
     let copiedEntries: Entry[];
     let forkLanes: LanePointer[];
     if (options.scope === "tree") {
@@ -339,7 +339,7 @@ export class SessionState {
     return mutations;
   }
 
-  private *walkToRoot(start: string, bounds?: BranchBounds): Generator<Entry> {
+  private *walkToRoot(start: string, bounds?: BranchBounds) {
     if (start === null) return;
     const visited = new Set<string>();
     let current = this.entriesById.get(start);
@@ -366,7 +366,7 @@ export class SessionState {
     }
   }
 
-  private matchesEntryQuery(entry: Entry, query: EntryQuery): boolean {
+  private matchesEntryQuery(entry: Entry, query: EntryQuery) {
     return (
       (query.type === undefined || entry.type === query.type) &&
       (query.customType === undefined ||
@@ -378,7 +378,7 @@ export class SessionState {
     );
   }
 
-  private matchesRecordQuery(record: LaneRecord, query: RecordQuery): boolean {
+  private matchesRecordQuery(record: LaneRecord, query: RecordQuery) {
     return (
       (query.lane === undefined || record.lane === query.lane) &&
       (query.type === undefined || record.type === query.type) &&

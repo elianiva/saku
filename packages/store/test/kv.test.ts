@@ -8,14 +8,14 @@ import { Effect, FileSystem, Layer, Option } from "effect";
 
 import { KvStore } from "../src/index.ts";
 
-const encode = (text: string): Uint8Array => new TextEncoder().encode(text);
-const decode = (value: Uint8Array): string => new TextDecoder().decode(value);
+const encode = (text: string) => new TextEncoder().encode(text);
+const decode = (value: Uint8Array) => new TextDecoder().decode(value);
 
 /** Run an effect that needs a KvStore against a backend layer. */
 const run = <A>(
   layer: Layer.Layer<KvStore>,
   effect: Effect.Effect<A, never, KvStore>,
-): Promise<A> => Effect.runPromise(effect.pipe(Effect.provide(layer)));
+) => Effect.runPromise(effect.pipe(Effect.provide(layer)));
 
 describe("KvStore.memory()", () => {
   it("round-trips put/get/list/delete", async () => {
@@ -62,7 +62,7 @@ describe("KvStore.file()", () => {
       ),
     );
     const root = await fs.makeTempDirectory({ prefix: "saku-kv-" }).pipe(Effect.runPromise);
-    const runFile = <A>(effect: Effect.Effect<A, never, KvStore>): Promise<A> =>
+    const runFile = <A>(effect: Effect.Effect<A, never, KvStore>) =>
       run(KvStore.file(fs, root), effect);
     await runFile(
       Effect.gen(function* () {

@@ -35,7 +35,7 @@ import type { Model } from "./model.ts";
 const RETRY_INTERVAL = "2 seconds";
 
 /** One bridged wire event, projected into the root's message vocabulary. */
-const bridgeToMessage = (event: BridgeEvent): RootMessage =>
+const bridgeToMessage = (event: BridgeEvent) =>
   Match.value(event).pipe(
     Match.tagsExhaustive({
       event: (event) =>

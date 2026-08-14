@@ -23,7 +23,7 @@ import {
 } from "../src/index.ts";
 import { scriptedProvisioner, scriptedWorker, type ScriptedWorker } from "./mock-worker.ts";
 
-const run = <A, E extends Error>(effect: Effect.Effect<A, E, never>): Promise<A> =>
+const run = <A, E extends Error>(effect: Effect.Effect<A, E, never>) =>
   Effect.runPromise(effect);
 
 /** A polling assertion that gave up (the async fork hadn't landed in time). */
@@ -32,7 +32,7 @@ class TestError extends Schema.TaggedError<TestError>()("TestError", {
 }) {}
 
 /** Poll until the condition holds (worker-event forks land asynchronously). */
-const waitFor = async (fn: () => boolean | Promise<boolean>, timeoutMs = 2000): Promise<void> => {
+const waitFor = async (fn: () => boolean | Promise<boolean>, timeoutMs = 2000) => {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (fn()) return;
@@ -48,7 +48,7 @@ interface World {
   readonly events: HubEvent[];
 }
 
-const makeWorld = (provisioner: EnvProvisioner = scriptedProvisioner()): Promise<World> =>
+const makeWorld = (provisioner: EnvProvisioner = scriptedProvisioner()) =>
   Effect.runPromise(
     Effect.gen(function* () {
       const registry = yield* makeHubRegistry().pipe(Effect.provide(KvStore.memory()));
@@ -63,11 +63,11 @@ const makeWorld = (provisioner: EnvProvisioner = scriptedProvisioner()): Promise
   );
 
 /** The thread_changed events' thread list, in order. */
-const changedIds = (events: HubEvent[]): string[] =>
+const changedIds = (events: HubEvent[]) =>
   events.filter((event) => event.type === "thread_changed").map((event) => event.thread.id);
 
 /** A scripted run: prompt settles, emits entry + settled, reports state. */
-const scriptPrompt = (world: World, text: string, tailSeq = 1): void => {
+const scriptPrompt = (world: World, text: string, tailSeq = 1) => {
   world.worker.onCommand((threadId, command) => {
     if (command._tag !== "prompt") {
       return Effect.fail(makeHubError("command", `unscripted command: ${command._tag}`));

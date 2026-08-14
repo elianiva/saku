@@ -86,7 +86,7 @@ const unhandled = (event: unknown): SessionEventProjection => ({ _tag: "unhandle
  * decodes becomes its typed variant; anything else — unknown tags,
  * malformed payloads, non-records — becomes `unhandled`. Never throws.
  */
-export const decodeSessionEvent = (event: unknown): SessionEventProjection => {
+export const decodeSessionEvent = (event: unknown) => {
   const tagged = DECODE_TAG(event);
   if (Option.isNone(tagged) || typeof event !== "object" || event === null) {
     return unhandled(event);

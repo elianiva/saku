@@ -12,7 +12,7 @@ import { Effect, FileSystem, Option } from "effect";
 import { KvStore } from "@saku/store";
 import { makeHubRegistry, type HubRegistryShape } from "../src/index.ts";
 
-const run = <A, E extends Error>(effect: Effect.Effect<A, E, never>): Promise<A> =>
+const run = <A, E extends Error>(effect: Effect.Effect<A, E, never>) =>
   Effect.runPromise(effect);
 
 let registry: HubRegistryShape;
@@ -105,7 +105,7 @@ describe("makeHubRegistry", () => {
       ),
     );
     home = dir;
-    const runFile = <A, E>(effect: Effect.Effect<A, E, KvStore>): Promise<A> =>
+    const runFile = <A, E>(effect: Effect.Effect<A, E, KvStore>) =>
       run(effect.pipe(Effect.provide(KvStore.file(fs, home))));
     const first = await runFile(makeHubRegistry());
     const record = await run(first.create({ name: "durable", cwd: "/work", autoName: true }));

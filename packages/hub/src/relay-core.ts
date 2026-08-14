@@ -43,13 +43,13 @@ export interface HubRelayShape {
 }
 
 /** Pipe one socket's frames onto the other; both die together. */
-const pipeSockets = (from: SocketLike, to: SocketLike, cleanup: () => void): (() => void) => {
-  const onMessage = (data: unknown): void => {
+const pipeSockets = (from: SocketLike, to: SocketLike, cleanup: () => void) => {
+  const onMessage = (data: unknown) => {
     // A dead peer between the check and the send is a no-op; the close
     // handler tears both sides down.
     Result.try(() => to.send(data as string));
   };
-  const onClose = (): void => {
+  const onClose = () => {
     cleanup();
     Result.try(() => to.close());
   };
@@ -79,13 +79,13 @@ export const makeHubRelayCore = Effect.fn("makeHubRelayCore")(function* (
   const waitingRef = yield* Ref.make<Map<string, Set<SocketLike>>>(new Map());
   const closedRef = yield* Ref.make(false);
 
-  const failSocket = (socket: SocketLike, message: string): void => {
+  const failSocket = (socket: SocketLike, message: string) => {
     Result.try(() => socket.send(serializeFrame(EnvErrorFrame.make({ message }))));
     socket.close();
   };
 
   /** Remove the env's registration (its socket closed). */
-  const unregister = (envId: string, socket: SocketLike): void => {
+  const unregister = (envId: string, socket: SocketLike) => {
     void Effect.runFork(
       Ref.update(envsRef, (envs) => {
         if (envs.get(envId) !== socket) return envs;
@@ -100,7 +100,7 @@ export const makeHubRelayCore = Effect.fn("makeHubRelayCore")(function* (
   const buffers = new Map<SocketLike, unknown[]>();
 
   /** Pair a worker socket with its env's daemon socket; pipe both ways. */
-  const attach = (envId: string, socket: SocketLike): void => {
+  const attach = (envId: string, socket: SocketLike) => {
     const envs = Effect.runSync(Ref.get(envsRef));
     const daemon = envs.get(envId);
     if (daemon === undefined) {
@@ -109,7 +109,7 @@ export const makeHubRelayCore = Effect.fn("makeHubRelayCore")(function* (
       // answers only when it arrives).
       const buffered: unknown[] = [];
       buffers.set(socket, buffered);
-      const onMessage = (data: unknown): void => {
+      const onMessage = (data: unknown) => {
         buffered.push(data);
       };
       socket.on("message", onMessage);
@@ -120,7 +120,7 @@ export const makeHubRelayCore = Effect.fn("makeHubRelayCore")(function* (
           return new Map(waiting).set(envId, set);
         }),
       );
-      const drop = (message: string): void => {
+      const drop = (message: string) => {
         buffers.delete(socket);
         socket.off("message", onMessage);
         void Effect.runFork(
@@ -147,7 +147,7 @@ export const makeHubRelayCore = Effect.fn("makeHubRelayCore")(function* (
   };
 
   /** Pipe worker ⇄ daemon; either side dropping closes the other. */
-  const pipeBoth = (envId: string, worker: SocketLike, daemon: SocketLike): void => {
+  const pipeBoth = (envId: string, worker: SocketLike, daemon: SocketLike) => {
     // Flush anything the worker sent while it was waiting for this daemon.
     const buffered = buffers.get(worker);
     if (buffered !== undefined) {
@@ -166,7 +166,7 @@ export const makeHubRelayCore = Effect.fn("makeHubRelayCore")(function* (
     });
   };
 
-  const detachFromWorker = (envId: string, socket: SocketLike): void => {
+  const detachFromWorker = (envId: string, socket: SocketLike) => {
     void Effect.runFork(
       Ref.update(waitingRef, (waiting) => {
         const set = waiting.get(envId);
@@ -178,7 +178,7 @@ export const makeHubRelayCore = Effect.fn("makeHubRelayCore")(function* (
     );
   };
 
-  const register = (envId: string, socket: SocketLike): void => {
+  const register = (envId: string, socket: SocketLike) => {
     // A replacement registration takes over (the old socket is dead).
     void Effect.runFork(
       Ref.update(envsRef, (envs) => {
@@ -202,9 +202,9 @@ export const makeHubRelayCore = Effect.fn("makeHubRelayCore")(function* (
     }
   };
 
-  const handleConnection = (socket: SocketLike): void => {
+  const handleConnection = (socket: SocketLike) => {
     // The first frame decides: relay_hello (env daemon) or relay_attach.
-    const onFirst = (data: unknown): void => {
+    const onFirst = (data: unknown) => {
       const parsed = Result.try(() => parseFrame(decodeFrame(data)));
       if (Result.isFailure(parsed)) return;
       if (typeof parsed.success !== "object" || parsed.success === null) return;

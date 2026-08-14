@@ -41,12 +41,12 @@ class TestError extends Schema.TaggedError<TestError>()("TestError", {
   message: Schema.String,
 }) {}
 
-const run = <A, E extends Error>(effect: Effect.Effect<A, E, never>): Promise<A> =>
+const run = <A, E extends Error>(effect: Effect.Effect<A, E, never>) =>
   Effect.runPromise(effect);
 
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const waitFor = async (fn: () => boolean, timeoutMs = 2000): Promise<void> => {
+const waitFor = async (fn: () => boolean, timeoutMs = 2000) => {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (fn()) return;
@@ -62,7 +62,7 @@ interface World {
   readonly events: HubEvent[];
 }
 
-const makeWorld = async (): Promise<World> => {
+const makeWorld = async () => {
   const world = await Effect.runPromise(
     Effect.gen(function* () {
       const registry = yield* makeHubRegistry().pipe(Effect.provide(KvStore.memory()));
@@ -86,7 +86,7 @@ const makeWorld = async (): Promise<World> => {
 };
 
 /** Script a prompt that reports working → idle (the mock worker's habit). */
-const scriptPrompt = (world: World, _text: string): void => {
+const scriptPrompt = (world: World, _text: string) => {
   world.worker.onCommand((threadId, command) => {
     if (command._tag !== "prompt") {
       return Effect.fail(makeHubError("command", `unscripted command: ${command._tag}`));
@@ -185,7 +185,7 @@ describe("makeIdleStop — the policy directly", () => {
     state?: ThreadState;
     controller?: IdleStopController;
     idleStopMs?: number;
-  }): Promise<PolicyWorld> => {
+  }) => {
     const record: HubRecord = {
       id: THREAD,
       name: "boxed",

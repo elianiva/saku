@@ -59,7 +59,7 @@ export interface SocketLike {
 /** The listener registry behind both adapters. */
 const makeRegistry = () => {
   const listeners = new Map<string, Set<ListenerEntry>>();
-  const on = (event: string, listener: (data: unknown) => void): void => {
+  const on = (event: string, listener: (data: unknown) => void) => {
     let set = listeners.get(event);
     if (set === undefined) {
       set = new Set();
@@ -67,7 +67,7 @@ const makeRegistry = () => {
     }
     set.add({ listener, once: false });
   };
-  const once = (event: string, listener: (data: unknown) => void): void => {
+  const once = (event: string, listener: (data: unknown) => void) => {
     let set = listeners.get(event);
     if (set === undefined) {
       set = new Set();
@@ -76,7 +76,7 @@ const makeRegistry = () => {
     set.add({ listener, once: true });
   };
   /** Remove one listener; true when the event has no listeners left. */
-  const off = (event: string, listener: (data: unknown) => void): boolean => {
+  const off = (event: string, listener: (data: unknown) => void) => {
     const set = listeners.get(event);
     if (set === undefined) return true;
     for (const entry of set) {
@@ -88,7 +88,7 @@ const makeRegistry = () => {
     }
     return false;
   };
-  const dispatch = (event: string, data: unknown): void => {
+  const dispatch = (event: string, data: unknown) => {
     const set = listeners.get(event);
     if (set === undefined) return;
     for (const entry of set) {
@@ -100,7 +100,7 @@ const makeRegistry = () => {
 };
 
 /** An event's payload: MessageEvent.data, ErrorEvent.error, else the event. */
-const eventPayload = (ev: unknown): unknown => {
+const eventPayload = (ev: unknown) => {
   if (ev === null || typeof ev !== "object") return ev;
   const record = ev as { data?: unknown; error?: unknown };
   if ("data" in record) return record.data;
@@ -119,13 +119,13 @@ const eventPayload = (ev: unknown): unknown => {
 export const workerdSocket = (ws: WorkerdWebSocketLike): SocketLike => {
   const registry = makeRegistry();
   const handlers = new Map<string, (ev: unknown) => void>();
-  const register = (event: string): void => {
+  const register = (event: string) => {
     if (handlers.has(event)) return;
-    const handler = (ev: unknown): void => registry.dispatch(event, eventPayload(ev));
+    const handler = (ev: unknown) => registry.dispatch(event, eventPayload(ev));
     handlers.set(event, handler);
     ws.addEventListener(event, handler);
   };
-  const unregister = (event: string): void => {
+  const unregister = (event: string) => {
     const handler = handlers.get(event);
     if (handler === undefined) return;
     handlers.delete(event);

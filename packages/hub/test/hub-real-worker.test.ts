@@ -30,11 +30,11 @@ import {
 
 const TEST_TOKEN = "hub-test-secret";
 
-const run = <A, E extends Error>(effect: Effect.Effect<A, E, never>): Promise<A> =>
+const run = <A, E extends Error>(effect: Effect.Effect<A, E, never>) =>
   Effect.runPromise(effect);
 
 /** A scripted stream that emits one assistant message immediately. */
-const oneShotStream = (text: string): StreamFn => {
+const oneShotStream = (text: string) => {
   const message = assistantMessage(text);
   return () => {
     const stream = createAssistantMessageEventStream();
@@ -96,7 +96,7 @@ afterEach(async () => {
   await Effect.runPromise(Scope.close(world.scope, Exit.void));
 });
 
-const connect = (): Promise<WireClient> =>
+const connect = () =>
   run(makeWireClient({ url: world.url, token: TEST_TOKEN, role: "cli" }));
 
 /** A polling assertion that gave up (the async fork hadn't landed in time). */
@@ -105,7 +105,7 @@ class TestError extends Schema.TaggedError<TestError>()("TestError", {
 }) {}
 
 /** Poll until `fn` holds (hub event forks + agent stream land asynchronously). */
-const waitFor = async (fn: () => boolean | Promise<boolean>, timeoutMs = 3000): Promise<void> => {
+const waitFor = async (fn: () => boolean | Promise<boolean>, timeoutMs = 3000) => {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (fn()) return;

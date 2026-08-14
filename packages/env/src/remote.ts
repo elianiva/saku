@@ -133,7 +133,7 @@ const isSuccess = <T, E>(
 ): outcome is Extract<PiResult<T, E>, { readonly ok: true }> => outcome.ok;
 
 /** The FileError boundary: after `isSuccess`, the failure is a FileError. */
-const asFile = <T>(outcome: PiResult<T, FileError | ExecutionError>): PiResult<T, FileError> =>
+const asFile = <T>(outcome: PiResult<T, FileError | ExecutionError>) =>
   outcome as PiResult<T, FileError>;
 
 /** The op's response payload type, read from the payload table (protocol.ts). */
@@ -172,7 +172,7 @@ export class RemoteEnv implements ExecutionEnv {
   }
 
   /** Open the connection, attach through the relay if configured, hello. */
-  connect(): Promise<EnvHelloOk> {
+  connect() {
     if (this.socket !== null) {
       return Promise.reject(
         new EnvConnectionError({ kind: "already_connected", message: "already connected" }),
@@ -180,7 +180,7 @@ export class RemoteEnv implements ExecutionEnv {
     }
     return new Promise<EnvHelloOk>((resolve, reject) => {
       let settled = false;
-      const fail = (error: EnvConnectionError): void => {
+      const fail = (error: EnvConnectionError) => {
         if (settled) return;
         settled = true;
         if (this.onceHelloTimer !== undefined) clearTimeout(this.onceHelloTimer);
@@ -255,7 +255,7 @@ export class RemoteEnv implements ExecutionEnv {
 
   private connected = false;
 
-  private onMessage(data: unknown): void {
+  private onMessage(data: unknown) {
     const parsed = parseFrame(decodeFrame(data));
     if (typeof parsed !== "object" || parsed === null) return;
     const frame = parsed as { _tag?: string };
@@ -297,7 +297,7 @@ export class RemoteEnv implements ExecutionEnv {
   }
 
   /** Reject every in-flight request; used on close. */
-  private failAll(error: Error): void {
+  private failAll(error: Error) {
     for (const pending of this.pending.values()) {
       if (pending.timer !== undefined) clearTimeout(pending.timer);
       pending.resolve({ ok: false, error: { kind: "unknown", message: error.message } });
@@ -337,7 +337,7 @@ export class RemoteEnv implements ExecutionEnv {
           this.socket?.send(serializeFrame(EnvAbort.make({ id })));
         }, effective);
       }
-      const onAbort = (): void => {
+      const onAbort = () => {
         this.socket?.send(serializeFrame(EnvAbort.make({ id })));
       };
       options.abortSignal?.addEventListener("abort", onAbort, { once: true });
@@ -358,7 +358,7 @@ export class RemoteEnv implements ExecutionEnv {
       timeoutMs?: number;
       abortSignal?: AbortSignal;
     } = {},
-  ): Promise<PiResult<PayloadOf<O>, FileError | ExecutionError>> {
+  ) {
     const outcome = await this.request(op, options);
     if (!outcome.ok) {
       return err(toPiError(outcome.error));
@@ -376,33 +376,33 @@ export class RemoteEnv implements ExecutionEnv {
   }
 
   /** Close the connection; in-flight requests fail with "env connection closed". */
-  close(): void {
+  close() {
     this.socket?.close();
     this.socket = null;
     this.connected = false;
   }
 
   /** File-channel ops: failures are FileErrors, the payload is the raw value. */
-  private fileOp<O extends EnvOpType>(op: O): Promise<PiResult<PayloadOf<O>, FileError>> {
+  private fileOp<O extends EnvOpType>(op: O) {
     return this.op(op) as Promise<PiResult<PayloadOf<O>, FileError>>;
   }
 
-  async absolutePath(path: string): Promise<PiResult<string, FileError>> {
+  async absolutePath(path: string) {
     return this.fileOp({ _tag: "absolute_path", path });
   }
 
-  async joinPath(parts: string[]): Promise<PiResult<string, FileError>> {
+  async joinPath(parts: string[]) {
     return this.fileOp({ _tag: "join_path", parts });
   }
 
-  async readTextFile(path: string): Promise<PiResult<string, FileError>> {
+  async readTextFile(path: string) {
     return this.fileOp({ _tag: "read_text_file", path });
   }
 
   async readTextLines(
     path: string,
     options?: { maxLines?: number; abortSignal?: AbortSignal },
-  ): Promise<PiResult<string[], FileError>> {
+  ) {
     return this.fileOp({
       _tag: "read_text_lines",
       path,
@@ -418,7 +418,7 @@ export class RemoteEnv implements ExecutionEnv {
     return isSuccess(outcome) ? ok(base64ToBytes(outcome.value)) : asFile(outcome);
   }
 
-  async writeFile(path: string, content: string | Uint8Array): Promise<PiResult<void, FileError>> {
+  async writeFile(path: string, content: string | Uint8Array) {
     const binary = typeof content !== "string";
     return this.fileOp({
       _tag: "write_file",
@@ -428,7 +428,7 @@ export class RemoteEnv implements ExecutionEnv {
     });
   }
 
-  async appendFile(path: string, content: string | Uint8Array): Promise<PiResult<void, FileError>> {
+  async appendFile(path: string, content: string | Uint8Array) {
     const binary = typeof content !== "string";
     return this.fileOp({
       _tag: "append_file",
@@ -441,30 +441,30 @@ export class RemoteEnv implements ExecutionEnv {
   async renameFile(
     sourcePath: string,
     destinationPath: string,
-  ): Promise<PiResult<void, FileError>> {
+  ) {
     return this.fileOp({ _tag: "rename_file", sourcePath, destinationPath });
   }
 
-  async fileInfo(path: string): Promise<PiResult<FileInfo, FileError>> {
+  async fileInfo(path: string) {
     return this.fileOp({ _tag: "file_info", path });
   }
 
-  async listDir(path: string, _signal?: AbortSignal): Promise<PiResult<FileInfo[], FileError>> {
+  async listDir(path: string, _signal?: AbortSignal) {
     return this.fileOp({ _tag: "list_dir", path });
   }
 
-  async canonicalPath(path: string): Promise<PiResult<string, FileError>> {
+  async canonicalPath(path: string) {
     return this.fileOp({ _tag: "canonical_path", path });
   }
 
-  async exists(path: string): Promise<PiResult<boolean, FileError>> {
+  async exists(path: string) {
     return this.fileOp({ _tag: "exists", path });
   }
 
   async createDir(
     path: string,
     options?: { recursive?: boolean; abortSignal?: AbortSignal },
-  ): Promise<PiResult<void, FileError>> {
+  ) {
     return this.fileOp({
       _tag: "create_dir",
       path,
@@ -475,7 +475,7 @@ export class RemoteEnv implements ExecutionEnv {
   async remove(
     path: string,
     options?: { recursive?: boolean; force?: boolean; abortSignal?: AbortSignal },
-  ): Promise<PiResult<void, FileError>> {
+  ) {
     return this.fileOp({
       _tag: "remove",
       path,
@@ -484,7 +484,7 @@ export class RemoteEnv implements ExecutionEnv {
     });
   }
 
-  async createTempDir(prefix = "tmp-"): Promise<PiResult<string, FileError>> {
+  async createTempDir(prefix = "tmp-") {
     return this.fileOp({
       _tag: "create_temp_dir",
       ...(prefix === "tmp-" ? {} : { prefix }),
@@ -494,7 +494,7 @@ export class RemoteEnv implements ExecutionEnv {
   async createTempFile(options?: {
     prefix?: string;
     suffix?: string;
-  }): Promise<PiResult<string, FileError>> {
+  }) {
     return this.fileOp({
       _tag: "create_temp_file",
       ...(options?.prefix === undefined ? {} : { prefix: options.prefix }),
@@ -502,14 +502,14 @@ export class RemoteEnv implements ExecutionEnv {
     });
   }
 
-  async cleanup(): Promise<void> {
+  async cleanup() {
     // The connection outlives individual ops; close() releases it.
   }
 
   async exec(
     command: string,
     options?: ShellExecOptions,
-  ): Promise<PiResult<{ stdout: string; stderr: string; exitCode: number }, ExecutionError>> {
+  ) {
     const outcome = await this.op(
       {
         _tag: "exec",
@@ -537,14 +537,14 @@ export class RemoteEnv implements ExecutionEnv {
   }
 
   /** The env's health payload: workspace, pid, protocol version. */
-  async health(): Promise<PiResult<{ cwd: string; pid: number; version: string }, ExecutionError>> {
+  async health() {
     const outcome = await this.op({ _tag: "health" });
     return outcome as PiResult<{ cwd: string; pid: number; version: string }, ExecutionError>;
   }
 }
 
 /** Binary ↔ base64 without node's Buffer (workerd has atob/btoa). */
-const bytesToBase64 = (bytes: Uint8Array): string => {
+const bytesToBase64 = (bytes: Uint8Array) => {
   let binary = "";
   const chunk = 0x8000;
   for (let i = 0; i < bytes.length; i += chunk) {
@@ -553,7 +553,7 @@ const bytesToBase64 = (bytes: Uint8Array): string => {
   return btoa(binary);
 };
 
-const base64ToBytes = (encoded: string): Uint8Array => {
+const base64ToBytes = (encoded: string) => {
   const binary = atob(encoded);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) {

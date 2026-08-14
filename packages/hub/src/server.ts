@@ -28,7 +28,7 @@ import { makeHubRelay, type HubRelayShape } from "./relay.ts";
 import type { SocketLike } from "./socket.ts";
 
 /** A node `ws` socket satisfies the hub's `SocketLike` surface directly. */
-const asSocketLike = (socket: WebSocket): SocketLike => socket as unknown as SocketLike;
+const asSocketLike = (socket: WebSocket) => socket as unknown as SocketLike;
 
 export interface HubServerOptions {
   readonly hub: HubShape;
@@ -78,7 +78,7 @@ export const makeHubServer = Effect.fn("makeHubServer")(function* (options: HubS
   const closedRef = yield* Ref.make(false);
   const serverRef = yield* Ref.make<Option.Option<WebSocketServer>>(Option.none());
 
-  const log = (message: string): Effect.Effect<void, never, never> =>
+  const log = (message: string) =>
     Effect.logError(`[saku-hub] ${message}`);
 
   const close = Effect.fn("close")(function* () {

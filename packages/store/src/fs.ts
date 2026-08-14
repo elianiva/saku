@@ -9,7 +9,7 @@
  */
 
 /** Whether `error` is a missing-path failure (PlatformError "NotFound" / ENOENT). */
-export const isNotFound = (error: unknown): boolean => {
+export const isNotFound = (error: unknown) => {
   if (typeof error !== "object" || error === null) return false;
   const e = error as { _tag?: unknown; reason?: { _tag?: unknown }; cause?: unknown };
   if (e._tag === "NotFound") return true;

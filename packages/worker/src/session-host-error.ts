@@ -29,7 +29,7 @@ export class SessionHostError extends Schema.TaggedError<SessionHostError>()("Se
 }) {}
 
 /** Map any pi-boundary failure onto the host's error type. */
-export const toSessionHostError = (error: unknown): SessionHostError =>
+export const toSessionHostError = (error: unknown) =>
   error instanceof SessionHostError
     ? error
     : new SessionHostError({
@@ -39,5 +39,5 @@ export const toSessionHostError = (error: unknown): SessionHostError =>
       });
 
 /** The human-readable failure text of any thrown value. */
-export const messageOf = (error: unknown): string =>
+export const messageOf = (error: unknown) =>
   error instanceof Error ? error.message : String(error);

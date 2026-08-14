@@ -35,7 +35,7 @@ import type { HubRecord } from "./registry.ts";
 import { pollUntilReady, type BoxApi, type BoxInfo } from "./box.ts";
 
 /** A fresh env protocol token (the daemon's credential). */
-const randomToken = (): string => {
+const randomToken = () => {
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
   return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -51,7 +51,7 @@ export const BOX_DAEMON_PORT = 4311;
 export const BOX_ENV_DIR = "/home/user/.saku-env";
 
 /** The systemd unit: wrapper (host + daemon), enabled for resume survival. */
-export const boxSystemdUnit = (envToken: string): string => `[Unit]
+export const boxSystemdUnit = (envToken: string) => `[Unit]
 Description=Saku env daemon
 After=network.target
 
@@ -71,7 +71,7 @@ WantedBy=multi-user.target
 `;
 
 /** The wrapper: start `host --private` (URL → host.url), then the daemon. */
-export const boxRunScript = (): string => `#!/usr/bin/env bash
+export const boxRunScript = () => `#!/usr/bin/env bash
 set -e
 # The host proxy gives the daemon its stable HTTPS URL; its output carries
 # the URL, so the hub reads host.url to learn where the env answers.
@@ -80,7 +80,7 @@ exec node ${BOX_ENV_DIR}/entry.bundle.js --port ${BOX_DAEMON_PORT} --token "$SAK
 `;
 
 /** Ensure node ≥ 26 in the box (the daemon needs type-stripping-era node). */
-export const boxEnsureNodeCommand = (): string =>
+export const boxEnsureNodeCommand = () =>
   [
     "command -v node >/dev/null 2>&1 && node --version | grep -qE '^v(2[3-9]|[3-9][0-9])\\.'",
     "|| (mkdir -p /home/user/.local",
@@ -90,7 +90,7 @@ export const boxEnsureNodeCommand = (): string =>
   ].join("\n");
 
 /** Install the unit and start the daemon. */
-export const boxInstallCommand = (): string =>
+export const boxInstallCommand = () =>
   [
     "sudo install -m 644",
     `${BOX_ENV_DIR}/saku-env.service /etc/systemd/system/saku-env.service`,
@@ -126,14 +126,12 @@ export interface EnvProvisioner {
 }
 
 /** Poll options with the provisioner's log when set (exactOptional-safe). */
-const pollOptions = (
-  deps: ProvisionerDeps,
-): { log?: (message: string) => Effect.Effect<void, never, never> } =>
+const pollOptions = (deps: ProvisionerDeps) =>
   deps.log === undefined ? {} : { log: deps.log };
 
 const toHubError =
   (context: string) =>
-  (error: unknown): HubError =>
+  (error: unknown) =>
     makeHubError(
       "provisioner",
       `${context}: ${error instanceof Error ? error.message : String(error)}`,
@@ -251,7 +249,7 @@ const resumeBox = Effect.fn("resumeBox")(function* (
   return { ...handle, url };
 });
 
-export const makeProvisioner = (deps: ProvisionerDeps): EnvProvisioner => {
+export const makeProvisioner = (deps: ProvisionerDeps) => {
   const ensure: EnvProvisioner["ensure"] = Effect.fn("ensure")(function* (thread, handle) {
     if (thread.mode !== "sandbox") {
       // Local threads are served by the local env daemon (M3: the

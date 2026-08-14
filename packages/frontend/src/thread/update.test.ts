@@ -36,7 +36,7 @@ import {
   TrailLoaded,
 } from "./message.ts";
 
-const modelWith = (id: string | null = "a"): Model => ({ ...initialModel(), id });
+const modelWith = (id: string | null = "a") => ({ ...initialModel(), id });
 
 const threadInfo = (id: string, name = id): ThreadInfo => ({
   id,
@@ -49,7 +49,7 @@ const threadInfo = (id: string, name = id): ThreadInfo => ({
   tailSeq: 0,
 });
 
-const piSession = (id: string): PiSessionInfo => ({
+const piSession = (id: string) => ({
   id,
   cwd: "/tmp/work",
   name: "adopt me",

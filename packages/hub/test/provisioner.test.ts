@@ -48,7 +48,7 @@ const fakeBox = (deps: {
   let next = 0;
   let hostUrlReads = 0;
 
-  const boxOf = (id: string): BoxInfo => ({ id, status: "ready" });
+  const boxOf = (id: string) => ({ id, status: "ready" });
   return {
     createBox: () =>
       Effect.succeed({

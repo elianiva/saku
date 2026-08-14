@@ -34,10 +34,10 @@ class TestError extends Schema.TaggedError<TestError>()("TestError", {
   message: Schema.String,
 }) {}
 
-const run = <T, E extends WireError>(effect: Effect.Effect<T, E, never>): Promise<T> =>
+const run = <T, E extends WireError>(effect: Effect.Effect<T, E, never>) =>
   Effect.runPromise(effect);
 
-const wait = (ms = 50): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+const wait = (ms = 50) => new Promise((resolve) => setTimeout(resolve, ms));
 
 let hub: HubFixture;
 let seq = 0;
@@ -51,16 +51,16 @@ afterEach(async () => {
   await Effect.runPromise(hub.close());
 });
 
-const connect = (options?: Partial<WorkerClientOptions>): Promise<WireClient> =>
+const connect = (options?: Partial<WorkerClientOptions>) =>
   run(makeWireClient({ url: hub.url, token: TEST_TOKEN, role: "cli", ...options }));
 
-const newThread = async (client: WireClient, name = `thread ${++seq}`): Promise<string> => {
+const newThread = async (client: WireClient, name = `thread ${++seq}`) => {
   const thread = await run(client.createThread(name, { cwd: "/tmp/work" }));
   return thread.id;
 };
 
 /** A raw (non-wire-client) WebSocket for the server-robustness tests. */
-const rawClient = async (): Promise<WebSocket> => {
+const rawClient = async () => {
   const socket = new WebSocket(hub.url);
   await new Promise<void>((resolve, reject) => {
     socket.onopen = () => resolve();
@@ -71,7 +71,7 @@ const rawClient = async (): Promise<WebSocket> => {
 };
 
 /** Collect the frames a raw socket receives, decoded. */
-const collectFrames = (socket: WebSocket): unknown[] => {
+const collectFrames = (socket: WebSocket) => {
   const frames: unknown[] = [];
   socket.onmessage = (message) => frames.push(parseFrame(decodeFrame(message.data)));
   return frames;
@@ -82,7 +82,7 @@ const isTaggedFrame = (frame: unknown): frame is { readonly _tag: string } =>
   typeof frame === "object" && frame !== null && "_tag" in frame;
 
 /** The `_tag` of a decoded frame, for order-insensitive assertions. */
-const tagOf = (frame: unknown): string | undefined =>
+const tagOf = (frame: unknown) =>
   isTaggedFrame(frame) ? frame._tag : undefined;
 
 describe("handshake", () => {

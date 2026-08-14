@@ -62,7 +62,7 @@ class AuthJsonCredentialStore implements CredentialStore {
   static load(
     path: string,
     fs: FileSystem.FileSystem,
-  ): Effect.Effect<AuthJsonCredentialStore, never> {
+  ) {
     return Effect.fn("load")(function* () {
       // Any read failure lands in the Result: missing auth.json is the default
       // install, an unreadable file is worth knowing — both yield an empty store.
@@ -91,11 +91,11 @@ class AuthJsonCredentialStore implements CredentialStore {
     })();
   }
 
-  async read(providerId: string): Promise<Credential | undefined> {
+  async read(providerId: string) {
     return this.data[providerId];
   }
 
-  async list(): Promise<readonly CredentialInfo[]> {
+  async list() {
     return Object.entries(this.data).map(([providerId, credential]) => ({
       providerId,
       type: credential.type,
@@ -105,7 +105,7 @@ class AuthJsonCredentialStore implements CredentialStore {
   async modify(
     providerId: string,
     fn: (current: Credential | undefined) => Promise<Credential | undefined>,
-  ): Promise<Credential | undefined> {
+  ) {
     const next = await fn(this.data[providerId]);
     if (next === undefined) return this.data[providerId];
     this.data[providerId] = next;
@@ -115,12 +115,12 @@ class AuthJsonCredentialStore implements CredentialStore {
     return next;
   }
 
-  async delete(providerId: string): Promise<void> {
+  async delete(providerId: string) {
     delete this.data[providerId];
     void this.persist().catch(() => undefined);
   }
 
-  private async persist(): Promise<void> {
+  private async persist() {
     await Effect.runPromise(
       this.fs
         .makeDirectory(dirname(this.path), { recursive: true })
@@ -317,7 +317,7 @@ export class ModelCatalog extends Context.Service<ModelCatalog, ModelCatalogShap
 /** Build the catalog from auth.json, models.json, and pi's builtin providers. */
 export const ModelCatalogLive = (
   options: CatalogOptions = {},
-): Layer.Layer<ModelCatalog, never, FileSystem.FileSystem | Paths> =>
+) =>
   Layer.effect(
     ModelCatalog,
     Effect.gen(function* () {
@@ -366,7 +366,7 @@ export const ModelCatalogLive = (
  */
 export const ModelCatalogTest = (
   home?: string,
-): Layer.Layer<ModelCatalog, never, FileSystem.FileSystem> =>
+) =>
   ModelCatalogLive().pipe(Layer.provide(PathsTest(home)));
 
 const loadModelsJsonFrom = Effect.fn("loadModelsJsonFrom")(function* (

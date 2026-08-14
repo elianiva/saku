@@ -234,7 +234,7 @@ export const EnvHandle = S.Struct({
 export type EnvHandle = S.Schema.Type<typeof EnvHandle>;
 
 /** Reconstruct pi's FileError/ExecutionError classes from a wire error. */
-export const toPiError = (error: EnvError): FileError | ExecutionError => {
+export const toPiError = (error: EnvError) => {
   if (error.path !== undefined) {
     return new FileError(error.kind as FileErrorCode, error.message, error.path);
   }

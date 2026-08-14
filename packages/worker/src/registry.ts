@@ -64,7 +64,7 @@ const THREAD_DIR_RE = /^[0-9a-f]{32}$/u;
 
 const toRegistryError =
   (message: string, op: "list" | "persist") =>
-  (error: unknown): RegistryError =>
+  (error: unknown) =>
     new RegistryError({ message, op, cause: error });
 
 /** Write one record atomically (temp file + rename). */
@@ -102,7 +102,7 @@ const loadRecords = Effect.fn("loadRecords")(function* (
   );
   return yield* Effect.forEach(
     names,
-    (name): Effect.Effect<ThreadRecord | undefined, RegistryError> => {
+    (name) => {
       if (!THREAD_DIR_RE.test(name)) return Effect.succeed(undefined);
       return Effect.gen(function* () {
         const content = yield* fs
@@ -120,10 +120,7 @@ const loadRecords = Effect.fn("loadRecords")(function* (
 /** Index loaded records; every thread starts idle (hosts derive the rest on touch). */
 const indexLoaded = (
   loaded: readonly (ThreadRecord | undefined)[],
-): {
-  records: Map<string, ThreadRecord>;
-  states: Map<string, ThreadState>;
-} => {
+) => {
   const records = new Map<string, ThreadRecord>();
   const states = new Map<string, ThreadState>();
   for (const record of loaded) {
@@ -248,5 +245,5 @@ export const ThreadRegistryLive: Layer.Layer<
  */
 export const ThreadRegistryTest = (
   home?: string,
-): Layer.Layer<ThreadRegistry, RegistryError, FileSystem.FileSystem> =>
+) =>
   ThreadRegistryLive.pipe(Layer.provide(PathsTest(home)));

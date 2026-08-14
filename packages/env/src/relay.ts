@@ -58,17 +58,17 @@ const runRegistration = Effect.fn("runRegistration")(function* (
   // handler) or a worker's piped env_hello (serve it).
   const outcome = yield* Effect.callback<Result.Result<void, string>>((resume) => {
     let settled = false;
-    const finish = (result: Result.Result<void, string>): void => {
+    const finish = (result: Result.Result<void, string>) => {
       if (settled) return;
       settled = true;
       socket.off("error", onError);
       socket.off("close", onClose);
       resume(Effect.succeed(result));
     };
-    const onError = (error: Error): void => {
+    const onError = (error: Error) => {
       finish(Result.fail(error.message));
     };
-    const onClose = (): void => {
+    const onClose = () => {
       finish(Result.fail("relay closed before the registration"));
     };
     socket.on("error", onError);

@@ -55,7 +55,7 @@ export const view = Submodel.defineView<Model, ThreadMessage>((model, h) =>
   ),
 );
 
-const threadHeader = (model: Model, h: HtmlBuilder<ThreadMessage>): Html => {
+const threadHeader = (model: Model, h: HtmlBuilder<ThreadMessage>) => {
   const info = model.info;
   return h.div(
     [
@@ -81,12 +81,12 @@ const headerStateLine = (
   state: ThreadState | undefined,
   env: ThreadEnvState | undefined,
   h: HtmlBuilder<ThreadMessage>,
-): Html => {
+) => {
   const { text, tone } = headerState(state, env);
   return h.span([h.Class(`${tone} text-[11px] uppercase tracking-[0.18em] shrink-0`)], [text]);
 };
 
-const abortButton = (h: HtmlBuilder<ThreadMessage>): Html =>
+const abortButton = (h: HtmlBuilder<ThreadMessage>) =>
   h.button(
     [
       h.Class(
@@ -97,7 +97,7 @@ const abortButton = (h: HtmlBuilder<ThreadMessage>): Html =>
     ["■ abort"],
   );
 
-const trailArea = (model: Model, h: HtmlBuilder<ThreadMessage>): Html =>
+const trailArea = (model: Model, h: HtmlBuilder<ThreadMessage>) =>
   AsyncData.match(model.trail, {
     onIdle: () => trailStatus(h, "loading trail…"),
     onLoading: () => trailStatus(h, "loading trail…"),
@@ -111,13 +111,13 @@ const trailArea = (model: Model, h: HtmlBuilder<ThreadMessage>): Html =>
       ),
   });
 
-const trailStatus = (h: HtmlBuilder<ThreadMessage>, text: string): Html =>
+const trailStatus = (h: HtmlBuilder<ThreadMessage>, text: string) =>
   h.div(
     [h.Class("flex-1 min-h-0 flex items-center justify-center text-muted text-[12px]")],
     [text],
   );
 
-const renderEntry = (entry: EntryProjection, h: HtmlBuilder<ThreadMessage>): Html =>
+const renderEntry = (entry: EntryProjection, h: HtmlBuilder<ThreadMessage>) =>
   Match.value(entry.type).pipe(
     Match.when("message", () => renderMessageEntry(entry.message ?? {}, h)),
     Match.when("compaction", () => metaRow(h, `▚ compacted — ${summaryLine(entry.summary)}`)),
@@ -137,10 +137,10 @@ const renderEntry = (entry: EntryProjection, h: HtmlBuilder<ThreadMessage>): Htm
     Match.orElse((type) => metaRow(h, `· ${asString(type) || "entry"}`)),
   );
 
-const metaRow = (h: HtmlBuilder<ThreadMessage>, text: string): Html =>
+const metaRow = (h: HtmlBuilder<ThreadMessage>, text: string) =>
   h.div([h.Class("px-4 py-1 border-b border-line text-[11px] text-subtle italic")], [text]);
 
-const renderMessageEntry = (message: MessageProjection, h: HtmlBuilder<ThreadMessage>): Html => {
+const renderMessageEntry = (message: MessageProjection, h: HtmlBuilder<ThreadMessage>) => {
   const role = messageRole(message);
   if (role === "user") {
     return h.div(
@@ -246,10 +246,10 @@ const renderMessageEntry = (message: MessageProjection, h: HtmlBuilder<ThreadMes
   return metaRow(h, `· ${role || "message"}${text === "" ? "" : ` — ${summaryLine(text)}`}`);
 };
 
-const roleLabel = (h: HtmlBuilder<ThreadMessage>, label: string, tone: string): Html =>
+const roleLabel = (h: HtmlBuilder<ThreadMessage>, label: string, tone: string) =>
   h.div([h.Class(`text-[10px] uppercase tracking-[0.18em] ${tone}`)], [label]);
 
-const liveRegion = (model: Model, h: HtmlBuilder<ThreadMessage>): Html => {
+const liveRegion = (model: Model, h: HtmlBuilder<ThreadMessage>) => {
   const { live } = model;
   const hasMessage = live.message !== undefined && live.message !== "";
   const hasTools = live.tools.length > 0;
@@ -293,7 +293,7 @@ const liveRegion = (model: Model, h: HtmlBuilder<ThreadMessage>): Html => {
   );
 };
 
-const liveToolRow = (tool: LiveTool, h: HtmlBuilder<ThreadMessage>): Html => {
+const liveToolRow = (tool: LiveTool, h: HtmlBuilder<ThreadMessage>) => {
   const glyph = tool.state === "running" ? "◌" : tool.state === "done" ? "✓" : "✗";
   const tone =
     tool.state === "running" ? "text-gold" : tool.state === "done" ? "text-foam" : "text-love";
@@ -323,7 +323,7 @@ const liveToolRow = (tool: LiveTool, h: HtmlBuilder<ThreadMessage>): Html => {
 };
 
 /** The docked composer area under a pinned thread's trail. */
-const composerArea = (model: Model, h: HtmlBuilder<ThreadMessage>): Html =>
+const composerArea = (model: Model, h: HtmlBuilder<ThreadMessage>) =>
   h.div(
     [h.Class("shrink-0 border-t border-line bg-surface p-3")],
     [composerBox(model, h, "thread")],
@@ -343,7 +343,7 @@ const composerBox = (
   model: Model,
   h: HtmlBuilder<ThreadMessage>,
   kind: "thread" | "welcome",
-): Html => {
+) => {
   const working = model.info?.state === "working";
   const busy = kind === "thread" ? working : model.starting;
   const placeholder =
@@ -410,7 +410,7 @@ const composerBox = (
 
 /** The root route's surface: wordmark, greeting, and the quick-start
  *  composer in a centered chat-app column (CONTEXT.md: Quick start). */
-const welcome = (model: Model, h: HtmlBuilder<ThreadMessage>): Html =>
+const welcome = (model: Model, h: HtmlBuilder<ThreadMessage>) =>
   h.div(
     [h.Class("flex-1 min-h-0 flex flex-col items-center justify-center gap-2 px-6")],
     [
@@ -422,7 +422,7 @@ const welcome = (model: Model, h: HtmlBuilder<ThreadMessage>): Html =>
   );
 
 /** The welcome's "from pi…" affordance: pick a pi session to adopt. */
-const piPicker = (model: Model, h: HtmlBuilder<ThreadMessage>): Html =>
+const piPicker = (model: Model, h: HtmlBuilder<ThreadMessage>) =>
   h.div([h.Class("flex flex-col")], [
     model.piPicker._tag === "Idle"
       ? h.button(
@@ -436,7 +436,7 @@ const piPicker = (model: Model, h: HtmlBuilder<ThreadMessage>): Html =>
   ]);
 
 /** The open picker: pi's sessions on this machine, newest first. */
-const piPickerPanel = (model: Model, h: HtmlBuilder<ThreadMessage>): Html =>
+const piPickerPanel = (model: Model, h: HtmlBuilder<ThreadMessage>) =>
   h.div(
     [h.Class("border border-line bg-base")],
     [
@@ -467,14 +467,14 @@ const piPickerPanel = (model: Model, h: HtmlBuilder<ThreadMessage>): Html =>
     ],
   );
 
-const piPickerStatus = (h: HtmlBuilder<ThreadMessage>, text: string): Html =>
+const piPickerStatus = (h: HtmlBuilder<ThreadMessage>, text: string) =>
   h.div([h.Class("px-3 py-2 text-[12px] text-muted")], [text]);
 
 const piSessionRow = (
   session: PiSessionInfo,
   importing: string | null,
   h: HtmlBuilder<ThreadMessage>,
-): Html => {
+) => {
   const busy = importing === session.path;
   const title = session.name ?? (session.firstMessage === "(no messages)" ? session.id : session.firstMessage);
   return h.button(

@@ -24,7 +24,7 @@ export const Model = S.Struct({
 });
 export type Model = S.Schema.Type<typeof Model>;
 
-export const initialModel = (): Model => ({
+export const initialModel = () => ({
   list: ThreadList.Idle(),
   selectedId: null,
   notice: null,

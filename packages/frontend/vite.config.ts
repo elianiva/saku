@@ -24,7 +24,7 @@ import { foldkit } from "@foldkit/vite-plugin";
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig, type Plugin } from "vite";
 
-const readMaybe = (path: string): Promise<string | null> =>
+const readMaybe = (path: string) =>
   readFile(path, "utf8")
     .then((content) => content.trim())
     .catch(() => null);
@@ -34,7 +34,7 @@ const readMaybe = (path: string): Promise<string | null> =>
  * probe the CLI's lifecycle uses: hello_ok proves the URL and token are
  * both current). Refused or timed out means offline.
  */
-const probeDaemon = (url: string, token: string): Promise<boolean> =>
+const probeDaemon = (url: string, token: string) =>
   Effect.runPromise(
     Effect.gen(function* () {
       const client = yield* makeWireClient({
@@ -54,7 +54,7 @@ const probeDaemon = (url: string, token: string): Promise<boolean> =>
     }),
   );
 
-const sakuDevBootstrap = (): Plugin => ({
+const sakuDevBootstrap = () => ({
   name: "saku-dev-bootstrap",
   configureServer(server) {
     server.middlewares.use("/__saku", (_request, response) => {

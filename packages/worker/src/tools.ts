@@ -29,7 +29,7 @@ const adapt = <TContext extends { env: ExecutionEnv }, TDetails>(
 });
 
 /** The standard hand toolset for a thread: read, bash, edit, write. */
-export const buildTools = (env: ExecutionEnv): AgentTool[] => [
+export const buildTools = (env: ExecutionEnv) => [
   adapt(createReadTool(), env),
   adapt(createBashTool(), env),
   adapt(createEditTool(), env),

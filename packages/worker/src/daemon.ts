@@ -161,19 +161,19 @@ export const makeSakuDaemon = Effect.fn("makeSakuDaemon")(function* (options: {
   // not build two live hosts for one thread.
   const hostSemaphore = yield* Semaphore.make(1);
 
-  const log = (message: string): Effect.Effect<void, never, never> =>
+  const log = (message: string) =>
     Effect.logInfo(`[saku-worker] ${message}`);
 
   /** All consoles see every session event (stateless routing). */
   const emitSessionEvent = (
     threadId: string,
     event: SessionWireEvent,
-  ): Effect.Effect<void, never> => core.broadcast(EventFrame.make({ threadId, event }));
+  ) => core.broadcast(EventFrame.make({ threadId, event }));
 
-  const emitThreadChanged = (thread: ThreadInfo): Effect.Effect<void, never> =>
+  const emitThreadChanged = (thread: ThreadInfo) =>
     core.broadcast(ThreadChanged.make({ thread }));
 
-  const tailSeqOf = (threadId: string): Effect.Effect<number, SessionHostError, never> =>
+  const tailSeqOf = (threadId: string) =>
     Ref.get(hostsRef).pipe(
       Effect.flatMap((hosts) => {
         const host = hosts.get(threadId);
@@ -208,7 +208,7 @@ export const makeSakuDaemon = Effect.fn("makeSakuDaemon")(function* (options: {
   ) {
     // The skills store is hub-hosted (ADR 0007); the local daemon
     // deliberately does not implement it.
-    const skillsNotServed = (): Effect.Effect<ResponsePayload, CommandError, never> =>
+    const skillsNotServed = () =>
       Effect.fail(
         new DaemonError({
           code: "skills_not_served",
@@ -376,7 +376,7 @@ export const makeSakuDaemon = Effect.fn("makeSakuDaemon")(function* (options: {
   });
 
   /** `catalog.available()` already projected to wire info. */
-  const availableModels = (): Effect.Effect<readonly WireModelInfo[], never, never> =>
+  const availableModels = () =>
     catalog
       .available()
       .pipe(Effect.map((models) => models.map((model) => catalog.toWireInfo(model))));
@@ -394,7 +394,7 @@ export const makeSakuDaemon = Effect.fn("makeSakuDaemon")(function* (options: {
   });
 
   /** Lazy host: constructed on first command; crashed hosts rebuild. */
-  const hostFor = (threadId: string): Effect.Effect<SessionHost, CommandError, never> =>
+  const hostFor = (threadId: string) =>
     hostSemaphore.withPermit(
       Effect.gen(function* () {
         const hosts = yield* Ref.get(hostsRef);
@@ -423,7 +423,7 @@ export const makeSakuDaemon = Effect.fn("makeSakuDaemon")(function* (options: {
         // state push fans a thread_changed out (CONTEXT.md: Thread — state
         // is a channel every console reads). The host view is the narrow
         // seam (get/update/setState) adapted over the full registry.
-        const broadcastState = (threadId: string, state: ThreadState): Effect.Effect<void, never> =>
+        const broadcastState = (threadId: string, state: ThreadState) =>
           registry.setState(threadId, state).pipe(
             Effect.flatMap(() => infoOf(threadId)),
             Effect.flatMap((info) => emitThreadChanged(info)),
@@ -495,7 +495,7 @@ export const makeSakuDaemon = Effect.fn("makeSakuDaemon")(function* (options: {
   /** The daemon's startup phase failures (dirs/token/listen), all tagged. */
   const startup =
     (message: string) =>
-    (error: unknown): DaemonError =>
+    (error: unknown) =>
       new DaemonError({
         code: "startup",
         message: `${message}: ${error instanceof Error ? error.message : String(error)}`,
@@ -537,11 +537,7 @@ export const makeSakuDaemon = Effect.fn("makeSakuDaemon")(function* (options: {
  */
 export const SakuDaemonLive = (
   options: DaemonOptions = {},
-): Layer.Layer<
-  SakuDaemon,
-  DaemonError,
-  ThreadRegistry | ModelCatalog | FileSystem.FileSystem | Paths
-> =>
+) =>
   Layer.effect(
     SakuDaemon,
     Effect.gen(function* () {
@@ -570,7 +566,7 @@ export const SakuDaemonLive = (
  */
 export const SakuDaemonTest = (
   home?: string,
-): Layer.Layer<SakuDaemon, DaemonError | RegistryError, FileSystem.FileSystem> =>
+) =>
   SakuDaemonLive().pipe(
     Layer.provide(ThreadRegistryTest(home)),
     Layer.provide(ModelCatalogTest(home)),

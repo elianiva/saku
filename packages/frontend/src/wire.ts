@@ -53,7 +53,7 @@ export interface WireShape {
 export class Wire extends Context.Service<Wire, WireShape>()("saku/Wire") {}
 
 /** Every connect attempt fails with this while the bootstrap reports no daemon. */
-const daemonOffline = (): WireError =>
+const daemonOffline = () =>
   new WireError({
     code: "refused",
     message: "the local daemon is offline — start it with: saku daemon start",
@@ -77,7 +77,7 @@ export const WireLive = Layer.effect(
     // `attach` replaces the listener set; the layer is its only caller.
     const pubsub = yield* PubSub.unbounded<BridgeEvent>();
     let detach: () => void = () => {};
-    const attach = (client: WireClient): Effect.Effect<void, never, never> =>
+    const attach = (client: WireClient) =>
       Effect.sync(() => {
         detach();
         const offs = [
@@ -128,7 +128,7 @@ export const WireLive = Layer.effect(
     });
 
     return {
-      get client(): WireClient {
+      get client() {
         return current;
       },
       connect,

@@ -33,7 +33,7 @@ import {
 } from "@earendil-works/pi-agent-core";
 
 /** Dig a node errno code out of a PlatformError (or a raw ErrnoException). */
-const errnoCode = (error: unknown): string | undefined => {
+const errnoCode = (error: unknown) => {
   if (typeof error !== "object" || error === null) return undefined;
   const e = error as {
     _tag?: string;
@@ -59,7 +59,7 @@ const errnoCode = (error: unknown): string | undefined => {
   );
 };
 
-const mapFileError = (path: string, error: unknown): FileError => {
+const mapFileError = (path: string, error: unknown) => {
   const code = errnoCode(error);
   return Match.value(code).pipe(
     Match.withReturnType<FileError>(),
@@ -84,7 +84,7 @@ const mapFileError = (path: string, error: unknown): FileError => {
   );
 };
 
-const asError = (error: unknown): Error | undefined =>
+const asError = (error: unknown) =>
   error instanceof Error
     ? error
     : error === undefined
@@ -95,9 +95,9 @@ const asError = (error: unknown): Error | undefined =>
  * Resolve a path against the workspace root: absolute paths pass through
  * (node's `resolve` handles them), relative ones anchor at the workspace.
  */
-const absolute = (cwd: string, path: string): string => resolve(cwd, path);
+const absolute = (cwd: string, path: string) => resolve(cwd, path);
 
-const toBytes = (content: string | Uint8Array): Uint8Array =>
+const toBytes = (content: string | Uint8Array) =>
   typeof content === "string" ? new TextEncoder().encode(content) : content;
 
 /**
@@ -105,7 +105,7 @@ const toBytes = (content: string | Uint8Array): Uint8Array =>
  * themselves effect-fallbacks, so callers never see a throw. One
  * composed effect — the promise boundary is crossed once per call.
  */
-const describeEntry = (fs: FileSystem.FileSystem, path: string): Promise<FileInfo> =>
+const describeEntry = (fs: FileSystem.FileSystem, path: string) =>
   Effect.runPromise(
     Effect.gen(function* () {
       const isLink = yield* Effect.isSuccess(fs.readLink(path));
@@ -352,23 +352,14 @@ export class LocalEnv implements ExecutionEnv {
       : err(new FileError("unknown", `failed to create temp file: ${String(outcome.failure)}`));
   }
 
-  async cleanup(): Promise<void> {
+  async cleanup() {
     // Nothing to release.
   }
 
   async exec(
     command: string,
     options?: ShellExecOptions,
-  ): Promise<
-    PiResult<
-      {
-        stdout: string;
-        stderr: string;
-        exitCode: number;
-      },
-      ExecutionError
-    >
-  > {
+  ) {
     const cwd =
       options?.cwd === undefined
         ? this.cwd
@@ -398,12 +389,12 @@ export class LocalEnv implements ExecutionEnv {
               timedOut = true;
               child.kill("SIGTERM");
             }, timeoutMs);
-      const onAbort = (): void => {
+      const onAbort = () => {
         child.kill("SIGTERM");
       };
       options?.abortSignal?.addEventListener("abort", onAbort, { once: true });
 
-      const fail = (error: ExecutionError): void => {
+      const fail = (error: ExecutionError) => {
         if (timer !== undefined) clearTimeout(timer);
         options?.abortSignal?.removeEventListener("abort", onAbort);
         resolveResult(err(error));

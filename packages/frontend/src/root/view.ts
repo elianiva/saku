@@ -22,7 +22,7 @@ import {
 } from "./message.ts";
 import type { Model } from "./model.ts";
 
-export const view = (model: Model, h: HtmlBuilder<RootMessage>): Document => ({
+export const view = (model: Model, h: HtmlBuilder<RootMessage>) => ({
   title: "saku",
   body: h.div(
     [h.Class("h-screen flex flex-col bg-base text-text")],
@@ -50,7 +50,7 @@ export const view = (model: Model, h: HtmlBuilder<RootMessage>): Document => ({
   ),
 });
 
-const topBar = (model: Model, h: HtmlBuilder<RootMessage>): Html =>
+const topBar = (model: Model, h: HtmlBuilder<RootMessage>) =>
   h.div(
     [
       h.Class(
@@ -65,7 +65,7 @@ const topBar = (model: Model, h: HtmlBuilder<RootMessage>): Html =>
     ],
   );
 
-const connStatus = (model: Model, h: HtmlBuilder<RootMessage>): Html =>
+const connStatus = (model: Model, h: HtmlBuilder<RootMessage>) =>
   Match.value(model.conn).pipe(
     Match.tagsExhaustive({
       Connecting: () => h.span([h.Class("text-muted")], ["◇ connecting"]),
@@ -94,7 +94,7 @@ const connStatus = (model: Model, h: HtmlBuilder<RootMessage>): Html =>
     }),
   );
 
-const banner = (model: Model, h: HtmlBuilder<RootMessage>): Html =>
+const banner = (model: Model, h: HtmlBuilder<RootMessage>) =>
   model.banner === null
     ? null
     : h.div(

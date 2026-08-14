@@ -33,7 +33,7 @@ export class WsServerError extends Schema.TaggedError<WsServerError>()("WsServer
 export const listenWs = <E>(options: {
   readonly onConnection: (socket: WebSocket) => void;
   readonly onError: (error: Error) => E;
-}): Effect.Effect<WebSocketServer, E, never> =>
+}) =>
   Effect.callback<WebSocketServer, E>((resume) => {
     const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
     server.on("connection", options.onConnection);
@@ -67,7 +67,7 @@ export const listenWs = <E>(options: {
   });
 
 /** "ws://127.0.0.1:PORT" for a listening server ("" when unavailable). */
-export const wsUrlOf = (server: WebSocketServer): string => {
+export const wsUrlOf = (server: WebSocketServer) => {
   const address = server.address();
   return address !== null && typeof address !== "string" ? `ws://127.0.0.1:${address.port}` : "";
 };

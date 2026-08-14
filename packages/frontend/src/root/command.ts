@@ -21,7 +21,7 @@ import { GotRailMessage, NavigatedTo } from "./message.ts";
 export const catchWireError = <A, R, M>(
   effect: Effect.Effect<A, WireError, R>,
   failed: (error: WireError) => M,
-): Effect.Effect<A | M, never, R> =>
+) =>
   effect.pipe(Effect.catchTag("WireError", (error) => Effect.succeed(failed(error))));
 
 /** Connect (or reconnect). The service re-resolves the bootstrap and swaps

@@ -14,7 +14,7 @@ export { SakuHubDO } from "./hub-do.ts";
 export { SakuThreadDO } from "./thread-do.ts";
 
 export default {
-  async fetch(request: Request, env: DeploymentEnv): Promise<Response> {
+  async fetch(request: Request, env: DeploymentEnv) {
     const path = new URL(request.url).pathname;
     if (path === "/ws" || path === "/relay") {
       // The upgrade lands in the hub DO, which accepts the socket and

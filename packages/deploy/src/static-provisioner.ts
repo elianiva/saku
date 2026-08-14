@@ -18,7 +18,7 @@ import type { EnvHandle } from "@saku/env";
 
 import type { DeploymentEnv } from "./env.ts";
 
-export const staticProvisioner = (env: DeploymentEnv): EnvProvisioner => ({
+export const staticProvisioner = (env: DeploymentEnv) => ({
   ensure: Effect.fn("ensure")(function* (_thread, _handle) {
     const url = env.SAKU_ENV_URL;
     const token = env.SAKU_ENV_TOKEN;

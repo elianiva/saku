@@ -68,7 +68,7 @@ export const fakeToolCall = (): AssistantMessage => ({
   timestamp: Date.now(),
 });
 
-export const fakeApiKeyAuth = (): ApiKeyAuth => ({
+export const fakeApiKeyAuth = () => ({
   name: "API key",
   login: async () => ({ type: "api_key" as const, key: "fake" }),
   check: async () => ({ type: "api_key" as const, source: "configured API key" }),
@@ -77,7 +77,7 @@ export const fakeApiKeyAuth = (): ApiKeyAuth => ({
 
 /** The scripted provider: a canned stream, no network. First stream call of
  * a turn carries the tool call, later calls answer with text. */
-export const fakeProvider = (): Provider => {
+export const fakeProvider = () => {
   const model: Model<Api> = {
     id: FAKE_MODEL,
     name: "test",

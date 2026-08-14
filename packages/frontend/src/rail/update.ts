@@ -27,7 +27,7 @@ export type UpdateReturn = readonly [Model, Commands, Option.Option<RailOutMessa
 const none: Commands = [];
 
 /** Upsert a thread into the list (broadcast order is registry order). */
-const upsertThread = (model: Model, thread: ThreadInfo): Model => {
+const upsertThread = (model: Model, thread: ThreadInfo) => {
   if (model.list._tag !== "Success") return model;
   const threads = model.list.data.some((existing) => existing.id === thread.id)
     ? model.list.data.map((existing) => (existing.id === thread.id ? thread : existing))
@@ -36,13 +36,13 @@ const upsertThread = (model: Model, thread: ThreadInfo): Model => {
 };
 
 /** Drop a thread from the list. */
-const removeThread = (model: Model, id: string): Model => {
+const removeThread = (model: Model, id: string) => {
   if (model.list._tag !== "Success") return model;
   const threads = model.list.data.filter((thread) => thread.id !== id);
   return evo(model, { list: (_) => threadList.Success({ data: threads }) });
 };
 
-export const update = (model: Model, message: RailMessage): UpdateReturn =>
+export const update = (model: Model, message: RailMessage) =>
   M.value(message).pipe(
     M.withReturnType<UpdateReturn>(),
     M.tagsExhaustive({
@@ -81,5 +81,5 @@ export const update = (model: Model, message: RailMessage): UpdateReturn =>
 
 /** The root's hook for a route change: the rail's only route-derived field
  *  is the selection highlight (the pinned thread's id). */
-export const informRouteChanged = (model: Model, route: AppRoute): Model =>
+export const informRouteChanged = (model: Model, route: AppRoute) =>
   evo(model, { selectedId: (_) => (route._tag === "Thread" ? route.id : null) });

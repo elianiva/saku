@@ -63,7 +63,7 @@ export interface Live {
 }
 
 /** The live region before anything streamed. */
-export const emptyLiveRegion = (): LiveRegion => ({ tools: [] });
+export const emptyLiveRegion = () => ({ tools: [] });
 
 /** `entry_appended` on the active thread: grow the trail, dedupe by id. */
 const foldEntryAppended = (state: Live, entry: EntryProjection): readonly [Live, boolean] => {
@@ -95,10 +95,10 @@ const foldLiveTool = (
   tools: readonly LiveTool[],
   callId: string,
   next: Partial<LiveTool>,
-): LiveTool[] => tools.map((tool) => (tool.callId === callId ? { ...tool, ...next } : tool));
+) => tools.map((tool) => (tool.callId === callId ? { ...tool, ...next } : tool));
 
 /** The streaming message body shared by `message_start`/`message_end`. */
-const messageLive = (state: Live, text: string): Live => ({
+const messageLive = (state: Live, text: string) => ({
   ...state,
   live: { ...state.live, message: text },
 });

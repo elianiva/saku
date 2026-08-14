@@ -34,7 +34,7 @@ export class RpcError extends Schema.TaggedError<RpcError>()("RpcError", {
 
 const toHubError =
   (context: string) =>
-  (error: unknown): HubError =>
+  (error: unknown) =>
     new HubError({
       kind: "worker",
       message: `${context}: ${error instanceof Error ? error.message : String(error)}`,
@@ -42,7 +42,7 @@ const toHubError =
     });
 
 /** Call one endpoint on the hub DO. */
-export const hubRpc = (env: DeploymentEnv, path: string, body: unknown): Promise<RpcEnvelope> => {
+export const hubRpc = (env: DeploymentEnv, path: string, body: unknown) => {
   const stub = env.HUB.get(env.HUB.idFromName(HUB_INSTANCE));
   return stub
     .fetch(`https://hub.internal${path}`, {
@@ -71,7 +71,7 @@ export const threadRpc = (
   threadId: string,
   path: string,
   body: unknown,
-): Promise<RpcEnvelope> => {
+) => {
   const stub = env.THREAD.get(env.THREAD.idFromName(threadId));
   return stub
     .fetch(`https://thread.internal${path}`, {
@@ -100,7 +100,7 @@ export const threadRpc = (
  * decodes `/create` against `ThreadRecordSchema`). The hub's cwd is null
  * for sandbox threads; the worker's is a path.
  */
-const workerRecordOf = (record: HubRecord): ThreadRecord => ({
+const workerRecordOf = (record: HubRecord) => ({
   id: record.id,
   name: record.name,
   cwd: record.cwd ?? "/",
@@ -143,7 +143,7 @@ export const setThreadEnvHandle = (
   env: DeploymentEnv,
   threadId: string,
   handle: EnvHandle | null,
-): Effect.Effect<void, HubError, never> =>
+) =>
   Effect.tryPromise({
     try: () => threadRpc(env, threadId, "/set-env-handle", { handle }),
     catch: toHubError("set env handle"),
@@ -169,7 +169,7 @@ export const threadIdleStop = (
 });
 
 /** Push a report/event/idle-stop firing to the hub (best-effort). */
-export const pushToHub = (env: DeploymentEnv, push: HubPush): void => {
+export const pushToHub = (env: DeploymentEnv, push: HubPush) => {
   void hubRpc(env, "/push", push).catch((error: unknown) => {
     // The push is a plain promise boundary: fork the log.
     void Effect.runFork(Effect.logError(`[thread-do] hub push failed: ${String(error)}`));

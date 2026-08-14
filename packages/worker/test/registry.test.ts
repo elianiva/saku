@@ -19,7 +19,7 @@ import { Paths } from "../src/paths.ts";
 import { ThreadRecord, ThreadRecordSchema, DECODE_THREAD_RECORD } from "../src/registry-record.ts";
 import { ThreadRegistry, ThreadRegistryTest } from "../src/registry.ts";
 
-const recordOf = (id: string): ThreadRecord => ({
+const recordOf = (id: string) => ({
   id,
   name: "round trip",
   cwd: "/tmp",
@@ -44,7 +44,7 @@ const writeRecordFile = Effect.fn("writeRecordFile")(function* (record: ThreadRe
 const runRegistry = <A, E, R>(
   body: Effect.Effect<A, E, R>,
   home?: string,
-): Promise<A> =>
+) =>
   Effect.runPromise(
     Effect.provide(NodeFileSystem.layer)(
       Effect.provide(ThreadRegistryTest(home))(body),

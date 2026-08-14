@@ -24,26 +24,22 @@ export interface SkillsStoreShape {
   readonly delete: (id: string) => Effect.Effect<boolean, HubError>;
 }
 
-const skillKey = (id: string): string => `skills/${id}`;
+const skillKey = (id: string) => `skills/${id}`;
 
-const encodeSkill = (skill: SkillInfo): Uint8Array =>
+const encodeSkill = (skill: SkillInfo) =>
   new TextEncoder().encode(`${JSON.stringify(skill)}\n`);
 
-const decodeSkill = (value: Uint8Array): SkillInfo =>
+const decodeSkill = (value: Uint8Array) =>
   JSON.parse(new TextDecoder().decode(value)) as SkillInfo;
 
 /** The default name for an imported repo: `owner/repo` → `repo`. */
-export const skillNameFromSource = (source: string): string =>
+export const skillNameFromSource = (source: string) =>
   source
     .split("/")
     .pop()
     ?.replace(/\.git$/u, "") ?? "skill";
 
-export const makeSkillsStore = Effect.fn("makeSkillsStore")(function* (): Effect.fn.Return<
-  SkillsStoreShape,
-  HubError,
-  KvStore
-> {
+export const makeSkillsStore = Effect.fn("makeSkillsStore")(function* () {
   const kv = yield* KvStore;
   const entries = yield* kv.list({ prefix: "skills/" });
   const loaded = yield* Effect.forEach(entries, (entry) =>

@@ -63,7 +63,7 @@ export const runSessionCommand = <E>(
   deps: SessionCommandDeps<E>,
   threadId: string,
   command: SessionCommand,
-): Effect.Effect<ResponsePayload, E | SessionHostError, never> =>
+) =>
   Match.value(command).pipe(
     Match.withReturnType<Effect.Effect<ResponsePayload, E | SessionHostError, never>>(),
     Match.tagsExhaustive({

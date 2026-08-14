@@ -36,7 +36,7 @@ const thread = (id: string, name = id): ThreadInfo => ({
   tailSeq: 0,
 });
 
-const wireError = (message: string): WireError =>
+const wireError = (message: string) =>
   new WireError({ code: "command_failed", message });
 
 describe("rail update", () => {

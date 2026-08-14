@@ -12,16 +12,16 @@ import { emptyLiveRegion, foldLive, Trail, type Live } from "./live.ts";
 import type { EntryProjection, MessageProjection, SessionEventProjection } from "./projection.ts";
 
 /** The fold's initial state: trail idle, nothing streamed. */
-const initial = (): Live => ({ trail: Trail.Idle(), live: emptyLiveRegion() });
+const initial = () => ({ trail: Trail.Idle(), live: emptyLiveRegion() });
 
 /** A ready trail with the given entries already loaded. */
-const ready = (entries: EntryProjection[] = [], tailSeq = 0): Live => ({
+const ready = (entries: EntryProjection[] = [], tailSeq = 0) => ({
   trail: Trail.Success({ data: { entries, tailSeq } }),
   live: emptyLiveRegion(),
 });
 
 /** Fold a stream of events, keeping the final state. */
-const fold = (state: Live, ...events: SessionEventProjection[]): Live =>
+const fold = (state: Live, ...events: SessionEventProjection[]) =>
   events.reduce((current, event) => foldLive(current, event)[0], state);
 
 const textBlock = (text: string) => ({ type: "text", text });
@@ -57,7 +57,7 @@ const toolEnd = (callId: string, result: unknown, isError = false): SessionEvent
   result,
 });
 
-const entry = (id: string, type = "message", seq?: number): EntryProjection => ({
+const entry = (id: string, type = "message", seq?: number) => ({
   id,
   type,
   ...(seq === undefined ? {} : { seq }),

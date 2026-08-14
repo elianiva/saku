@@ -27,7 +27,7 @@ export const view = Submodel.defineView<Model, RailMessage>((model, h) =>
 );
 
 /** A transient failure notice (delete failures), null when clean. */
-const notice = (model: Model, h: HtmlBuilder<RailMessage>): Html | null =>
+const notice = (model: Model, h: HtmlBuilder<RailMessage>) =>
   model.notice === null
     ? null
     : h.div(
@@ -35,7 +35,7 @@ const notice = (model: Model, h: HtmlBuilder<RailMessage>): Html | null =>
         [model.notice],
       );
 
-const railHeader = (model: Model, h: HtmlBuilder<RailMessage>): Html => {
+const railHeader = (model: Model, h: HtmlBuilder<RailMessage>) => {
   const count = model.list._tag === "Success" ? model.list.data.length : 0;
   return h.div(
     [
@@ -58,7 +58,7 @@ const railHeader = (model: Model, h: HtmlBuilder<RailMessage>): Html => {
   );
 };
 
-const railList = (model: Model, h: HtmlBuilder<RailMessage>): Html =>
+const railList = (model: Model, h: HtmlBuilder<RailMessage>) =>
   AsyncData.match(model.list, {
     onIdle: () => railStatus(h, "loading…"),
     onLoading: () => railStatus(h, "loading…"),
@@ -72,14 +72,14 @@ const railList = (model: Model, h: HtmlBuilder<RailMessage>): Html =>
       ),
   });
 
-const railStatus = (h: HtmlBuilder<RailMessage>, text: string): Html =>
+const railStatus = (h: HtmlBuilder<RailMessage>, text: string) =>
   h.div([h.Class("p-4 text-muted text-[12px]")], [text]);
 
 const threadRow = (
   thread: ThreadInfo,
   selectedId: string | null,
   h: HtmlBuilder<RailMessage>,
-): Html => {
+) => {
   const selected = thread.id === selectedId;
   return h.div(
     [
@@ -108,17 +108,17 @@ const threadRow = (
   );
 };
 
-const stateGlyph = (thread: ThreadInfo, h: HtmlBuilder<RailMessage>): Html => {
+const stateGlyph = (thread: ThreadInfo, h: HtmlBuilder<RailMessage>) => {
   const { glyph, tone, title } = statePresentation(thread.state);
   return h.span([h.Class(tone), h.Title(title)], [glyph]);
 };
 
-const envGlyph = (thread: ThreadInfo, h: HtmlBuilder<RailMessage>): Html => {
+const envGlyph = (thread: ThreadInfo, h: HtmlBuilder<RailMessage>) => {
   const { glyph, tone, title } = envPresentation(thread.env);
   return h.span([h.Class(tone), h.Title(title)], [glyph]);
 };
 
-const modeGlyph = (thread: ThreadInfo, h: HtmlBuilder<RailMessage>): Html =>
+const modeGlyph = (thread: ThreadInfo, h: HtmlBuilder<RailMessage>) =>
   h.span(
     [
       h.Class("border border-line px-1 text-[10px] text-subtle uppercase"),

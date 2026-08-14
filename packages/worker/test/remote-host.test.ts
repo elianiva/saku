@@ -47,7 +47,7 @@ const record = () => ({
  * toolCall (pi's content vocabulary), then a final message once the agent
  * runtime has executed the tool and fed the result back.
  */
-const toolThenDoneStream = (doneText: string): StreamFn => {
+const toolThenDoneStream = (doneText: string) => {
   let phase = 0;
   return () => {
     const stream = createAssistantMessageEventStream();
@@ -149,7 +149,7 @@ class TestError extends Schema.TaggedError<TestError>()("TestError", {
 }) {}
 
 /** Wait for the host's lifecycle tag (the machine moves asynchronously). */
-const waitForState = async (host: SessionHost, state: string, timeoutMs = 5000): Promise<void> => {
+const waitForState = async (host: SessionHost, state: string, timeoutMs = 5000) => {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (host.threadState === state) return;

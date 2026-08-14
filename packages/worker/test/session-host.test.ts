@@ -26,7 +26,7 @@ import { StubEnv } from "./stub-env.ts";
 
 const THREAD_ID = "0123456789abcdef0123456789abcdef";
 
-const record = (): ThreadRecord => ({
+const record = () => ({
   id: THREAD_ID,
   name: "quick thread",
   cwd: "/work",
@@ -46,7 +46,7 @@ const waitForState = async (
   host: SessionHost,
   state: HostState,
   timeoutMs = 3000,
-): Promise<void> => {
+) => {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (host.threadState === state) return;
@@ -59,7 +59,7 @@ const waitForState = async (
 const oneShotStream = (
   text: string,
   stopReason: AssistantMessage["stopReason"] = "stop",
-): StreamFn => {
+) => {
   const message = assistantMessage(text, stopReason);
   return () => {
     const stream = createAssistantMessageEventStream();
@@ -69,7 +69,7 @@ const oneShotStream = (
 };
 
 /** A stream that ends only when the run's abort signal fires. */
-const abortableStream = (): StreamFn => {
+const abortableStream = () => {
   const message = assistantMessage("aborted run", "aborted");
   return (_model, _context, options) => {
     const stream = createAssistantMessageEventStream();
@@ -86,7 +86,7 @@ const abortableStream = (): StreamFn => {
 };
 
 /** A stream that waits for an external gate before ending. */
-const gated = (): { streamFn: StreamFn; release: () => void } => {
+const gated = () => {
   let release!: () => void;
   const gate = new Promise<void>((resolve) => {
     release = resolve;
@@ -100,7 +100,7 @@ const gated = (): { streamFn: StreamFn; release: () => void } => {
 };
 
 /** Build a KvStore value from a backend layer (the pi seam is value-shaped). */
-const buildKv = (layer: Layer.Layer<KvStore>): Promise<KvStoreShape> =>
+const buildKv = (layer: Layer.Layer<KvStore>) =>
   Effect.runPromise(
     Effect.gen(function* () {
       return yield* KvStore;
@@ -150,10 +150,10 @@ const makeHost = Effect.fn("makeHost")(function* (options: HostOptions = {}) {
 });
 
 /** The host's trail layout: a fresh scoped temp home (no env mutation). */
-const testPaths = (): Layer.Layer<Paths, never, FileSystem.FileSystem> => PathsTest();
+const testPaths = () => PathsTest();
 
 /** Run one test against a fresh host; the host is disposed on the way out. */
-const scoped = <A>(run: (world: HostWorld) => Promise<A>, options: HostOptions = {}): Promise<A> =>
+const scoped = <A>(run: (world: HostWorld) => Promise<A>, options: HostOptions = {}) =>
   Effect.runPromise(
     Effect.gen(function* () {
       const world = yield* makeHost(options);

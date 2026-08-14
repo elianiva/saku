@@ -35,7 +35,7 @@ const waitFor = async (
   predicate: () => boolean,
   what: string,
   timeoutMs = 20000,
-): Promise<void> => {
+) => {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (predicate()) return;

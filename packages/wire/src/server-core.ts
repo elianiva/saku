@@ -41,7 +41,7 @@ import {
 } from "./index.ts";
 
 /** The user-facing message of any failure the wire produces (the canonical copy). */
-export const messageOf = (error: unknown): string =>
+export const messageOf = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
 
 /** A protocol violation detected by the server core (a malformed command frame). */
@@ -106,7 +106,7 @@ export const makeWireServer = Effect.fn("makeWireServer")(function* (options: Wi
   const pid = options.pid ?? (typeof process !== "undefined" ? process.pid : 0);
   const clientsRef = yield* Ref.make<ReadonlySet<Client>>(new Set());
 
-  const log = (message: string): Effect.Effect<void, never, never> =>
+  const log = (message: string) =>
     options.log === undefined ? Effect.void : options.log(message);
 
   const send = Effect.fn("send")(function* (client: Client, event: WireEvent) {
@@ -118,7 +118,7 @@ export const makeWireServer = Effect.fn("makeWireServer")(function* (options: Wi
     }
   });
 
-  const broadcast = (event: WireEvent): Effect.Effect<void, never> =>
+  const broadcast = (event: WireEvent) =>
     Ref.get(clientsRef).pipe(
       Effect.flatMap((clients) =>
         Effect.forEach(
@@ -155,7 +155,7 @@ export const makeWireServer = Effect.fn("makeWireServer")(function* (options: Wi
     client: Client,
     id: string | undefined,
     payload: ResponsePayload,
-  ): Effect.Effect<void, never> => {
+  ) => {
     if (id === undefined) return Effect.void;
     return send(client, ResponseOk.make({ id, ok: true, payload }));
   };
@@ -164,7 +164,7 @@ export const makeWireServer = Effect.fn("makeWireServer")(function* (options: Wi
     client: Client,
     id: string | undefined,
     error: unknown,
-  ): Effect.Effect<void, never> => {
+  ) => {
     const message = messageOf(error);
     if (id === undefined) return send(client, ErrorEvent.make({ message }));
     return send(client, ResponseError.make({ id, ok: false, error: message }));
@@ -217,7 +217,7 @@ export const makeWireServer = Effect.fn("makeWireServer")(function* (options: Wi
         return next;
       }),
     );
-    const onMessage = (data: unknown): void => {
+    const onMessage = (data: unknown) => {
       const value = Result.try(() => parseFrame(decodeFrame(data)));
       if (Result.isFailure(value)) {
         void Effect.runFork(send(client, ErrorEvent.make({ message: "malformed JSON frame" })));
@@ -234,7 +234,7 @@ export const makeWireServer = Effect.fn("makeWireServer")(function* (options: Wi
         void Effect.runFork(handleCommand(client, decoded.success));
       }
     };
-    const onError = (error: unknown): void => {
+    const onError = (error: unknown) => {
       // The socket callback is outside the Effect runtime: fork the log.
       void Effect.runFork(
         log(`socket error: ${error instanceof Error ? error.message : String(error)}`),
@@ -244,7 +244,7 @@ export const makeWireServer = Effect.fn("makeWireServer")(function* (options: Wi
     socket.on("error", onError);
     // Resolve when the socket closes; the scope's finalizer then drops the client.
     yield* Effect.callback<void>((resume) => {
-      const onClose = (): void => {
+      const onClose = () => {
         resume(Effect.void);
       };
       socket.once("close", onClose);

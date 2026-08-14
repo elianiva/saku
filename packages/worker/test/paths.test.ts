@@ -14,7 +14,7 @@ import { describe, expect, it } from "vitest";
 
 import { Paths, PathsLive, type PathsShape } from "../src/paths.ts";
 
-const resolve = (env: Record<string, string>): PathsShape =>
+const resolve = (env: Record<string, string>) =>
   Effect.runSync(
     Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env })))(
       Effect.provide(PathsLive)(Paths),

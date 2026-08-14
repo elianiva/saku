@@ -16,7 +16,7 @@ import { DoSessionRepo, DoSessionStorage } from "../src/do-session.ts";
 import { KvStore, type KvStoreShape } from "@saku/store";
 
 /** Build a KvStore value from a backend layer (the pi seam is value-shaped). */
-const buildKv = (layer: Layer.Layer<KvStore>): Promise<KvStoreShape> =>
+const buildKv = (layer: Layer.Layer<KvStore>) =>
   Effect.runPromise(
     Effect.gen(function* () {
       return yield* KvStore;
@@ -24,7 +24,7 @@ const buildKv = (layer: Layer.Layer<KvStore>): Promise<KvStoreShape> =>
   );
 
 /** Run pi's conformance cases as vitest cases. */
-const runConformance = (label: string, factory: () => Promise<SessionBackendFixture>): void => {
+const runConformance = (label: string, factory: () => Promise<SessionBackendFixture>) => {
   describe(`${label} conformance`, () => {
     for (const testCase of createSessionBackendConformance(factory)) {
       it(`${testCase.group}: ${testCase.name}`, async () => {
@@ -34,7 +34,7 @@ const runConformance = (label: string, factory: () => Promise<SessionBackendFixt
   });
 };
 
-const memoryFixture = async (): Promise<SessionBackendFixture> => ({
+const memoryFixture = async () => ({
   repository: new DoSessionRepo(await buildKv(KvStore.memory())),
   [Symbol.asyncDispose]: async () => {},
 });
@@ -46,7 +46,7 @@ runConformance("memoryKv", memoryFixture);
 const fileFixtureFactory = await Effect.runPromise(
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    return async (): Promise<SessionBackendFixture> => {
+    return async () => {
       const root = await Effect.runPromise(fs.makeTempDirectory({ prefix: "saku-trail-" }));
       const kv = await buildKv(KvStore.file(fs, root));
       return {
@@ -66,7 +66,7 @@ runConformance("fileKv", fileFixtureFactory);
 describe("durability", () => {
   const withFileKv = <A>(
     run: (kv: KvStoreShape, fs: FileSystem.FileSystem) => Promise<A>,
-  ): Promise<A> =>
+  ) =>
     Effect.runPromise(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -137,7 +137,7 @@ describe("durability", () => {
       // lists keys arbitrarily (the file backend's readdir) must not
       // scramble the replay: the sequence numbers are the only order.
       const id = "scrambled";
-      const put = (seq: number, mutation: unknown): Promise<void> =>
+      const put = (seq: number, mutation: unknown) =>
         Effect.runPromise(
           kv.put(`session/${id}/log/${String(seq).padStart(12, "0")}`, new TextEncoder().encode(JSON.stringify(mutation))),
         );

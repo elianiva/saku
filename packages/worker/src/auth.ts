@@ -21,14 +21,14 @@ import type { PathsShape } from "./paths.ts";
 export const ensureSakuDirs = (
   fs: FileSystem.FileSystem,
   paths: PathsShape,
-): Effect.Effect<void, PlatformError.PlatformError, never> =>
+) =>
   fs.makeDirectory(paths.sakuDir, { recursive: true, mode: 0o700 });
 
 /** Read the token without creating anything. Absent/unreadable/empty → undefined. */
 export const readAuthToken = (
   fs: FileSystem.FileSystem,
   paths: PathsShape,
-): Effect.Effect<string | undefined, never, never> =>
+) =>
   fs.readFileString(paths.authPath).pipe(
     Effect.map((content) => {
       const token = content.trim();

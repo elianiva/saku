@@ -72,7 +72,7 @@ const boxProvisioner = (env: DeploymentEnv) =>
  * fails loudly at hub build rather than silently falling back; anything
  * else is the Box (incomplete, ADR 0008).
  */
-const provisionerFor = (env: DeploymentEnv): Effect.Effect<EnvProvisioner, HubError, never> =>
+const provisionerFor = (env: DeploymentEnv) =>
   Match.value(varOrDefault(env, "SAKU_ENV_PROVISIONER", "box")).pipe(
     Match.when("static", () => Effect.succeed(staticProvisioner(env))),
     Match.when("freestyle", () =>
@@ -108,18 +108,18 @@ export class SakuHubDO {
    * (not event listeners): forward them into the socket adapters, whose
    * listeners the wire/relay cores drive.
    */
-  webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): void {
+  webSocketMessage(ws: WebSocket, message: string | ArrayBuffer) {
     this.sockets.get(ws)?.receive?.(message);
   }
 
-  webSocketClose(ws: WebSocket, code: number, reason: string): void {
+  webSocketClose(ws: WebSocket, code: number, reason: string) {
     const socket = this.sockets.get(ws);
     this.sockets.delete(ws);
     socket?.receiveClose?.(code, reason);
   }
   /** The hub core over DO storage, built once per activation (async: the
    * registry and skills store read DO storage at construction). */
-  private buildHubShape(): Effect.Effect<HubShape, HubError, never> {
+  private buildHubShape() {
     const state = this.state;
     const env = this.env;
     const idleStop = threadIdleStop(env);
@@ -149,14 +149,14 @@ export class SakuHubDO {
    * seam (plain workerd, no alchemy runtime), so `Effect.runPromise`
    * happens here, at the edge, like the CLI's `Effect.runPromise(main())`.
    */
-  private hubShape(): Promise<HubShape> {
+  private hubShape() {
     if (this.hubPromise === undefined) {
       this.hubPromise = Effect.runPromise(this.buildHubShape());
     }
     return this.hubPromise;
   }
 
-  private async wireCore(): Promise<WireCoreShape> {
+  private async wireCore() {
     if (this.wire === undefined) {
       // A DO has no process: the hello_ok pid is 0. The runSync is safe
       // because makeWireCore performs no blocking async work (its
@@ -169,14 +169,14 @@ export class SakuHubDO {
     return this.wire;
   }
 
-  private relayCore(): HubRelayCoreShape {
+  private relayCore() {
     if (this.relay === undefined) {
       this.relay = Effect.runSync(makeHubRelayCore({ token: this.env.DEPLOYMENT_SECRET }));
     }
     return this.relay;
   }
 
-  async fetch(request: Request): Promise<Response> {
+  async fetch(request: Request) {
     const url = new URL(request.url);
     const path = url.pathname;
 
@@ -212,7 +212,7 @@ export class SakuHubDO {
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  private async handlePush(request: Request): Promise<Response> {
+  private async handlePush(request: Request) {
     // Malformed JSON (the tryPromise catch) and out-of-contract shapes
     // (decodeUnknownOption) both land on `none`: one error response.
     const parsed = await readBody(request, decodeHubPush);

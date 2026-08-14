@@ -14,11 +14,11 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
 /** Saku's home directory. Tests override with SAKU_HOME. */
-export const getSakuDir = (): string =>
+export const getSakuDir = () =>
   process.env.SAKU_HOME !== undefined ? resolve(process.env.SAKU_HOME) : join(homedir(), ".saku");
 
 /** Where the env daemon publishes its WebSocket URL (127.0.0.1:port). */
-export const getEnvUrlPath = (): string => join(getSakuDir(), "env.url");
-export const getEnvLogPath = (): string => join(getSakuDir(), "env.log");
+export const getEnvUrlPath = () => join(getSakuDir(), "env.url");
+export const getEnvLogPath = () => join(getSakuDir(), "env.log");
 /** The daemon's identity: envId + env token (+ the hub the CLI registered with). */
-export const getEnvConfigPath = (): string => join(getSakuDir(), "env.json");
+export const getEnvConfigPath = () => join(getSakuDir(), "env.json");

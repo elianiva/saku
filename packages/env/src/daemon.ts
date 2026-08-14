@@ -52,7 +52,7 @@ import {
 import { LocalEnv } from "./local-env.ts";
 
 /** The failures a connection can produce; everything maps to an EnvError. */
-const serializePiError = (error: FileError | ExecutionError): EnvError => ({
+const serializePiError = (error: FileError | ExecutionError) => ({
   kind: error.code,
   message: error.message,
   ...("path" in error && error.path !== undefined ? { path: error.path } : {}),
@@ -90,7 +90,7 @@ export interface EnvConnectionContext {
   readonly log: (message: string) => Effect.Effect<void, never, never>;
 }
 
-const decodeOp = (value: unknown): Result.Result<EnvOpType, string> =>
+const decodeOp = (value: unknown) =>
   Result.try(() => DECODE_OP(value)).pipe(Result.mapError(String));
 
 /**
@@ -99,7 +99,7 @@ const decodeOp = (value: unknown): Result.Result<EnvOpType, string> =>
  * table the client decodes with, so a payload that drifts from the
  * contract fails here, at the boundary, instead of at a client's cast.
  */
-const encodePayload = (op: EnvOpType, payload: unknown): unknown =>
+const encodePayload = (op: EnvOpType, payload: unknown) =>
   Schema.encodeUnknownSync(EnvPayloadSchema[op._tag])(payload);
 
 /**
@@ -117,7 +117,7 @@ const runOp = (
     readonly aborters: Map<string, () => void>;
     readonly send: (frame: unknown) => void;
   },
-): Promise<{ ok: true; payload: unknown } | { ok: false; error: EnvError }> => {
+) => {
   const fail = (error: FileError | ExecutionError): { ok: false; error: EnvError } => ({
     ok: false,
     error: serializePiError(error),
@@ -212,10 +212,10 @@ export const handleEnvConnection = Effect.fn("handleEnvConnection")(function* (
   ctx: EnvConnectionContext,
 ) {
   const aborters = new Map<string, () => void>();
-  const send = (frame: unknown): void => {
+  const send = (frame: unknown) => {
     Result.try(() => socket.send(serializeFrame(frame)));
   };
-  const drop = (message: string): void => {
+  const drop = (message: string) => {
     send(EnvErrorFrame.make({ message }));
     socket.close();
   };
@@ -223,14 +223,14 @@ export const handleEnvConnection = Effect.fn("handleEnvConnection")(function* (
   // The first frame must be env_hello.
   const helloOutcome = yield* Effect.callback<Result.Result<EnvHello, string>>((resume) => {
     let done = false;
-    const finish = (outcome: Result.Result<EnvHello, string>): void => {
+    const finish = (outcome: Result.Result<EnvHello, string>) => {
       if (done) return;
       done = true;
       socket.off("message", onMessage);
       socket.off("close", onClose);
       resume(Effect.succeed(outcome));
     };
-    const onMessage = (data: unknown): void => {
+    const onMessage = (data: unknown) => {
       const parsed = Result.try(() => parseFrame(decodeFrame(data)));
       if (Result.isFailure(parsed)) return; // keep waiting for a frame
       if (typeof parsed.success !== "object" || parsed.success === null) return;
@@ -248,7 +248,7 @@ export const handleEnvConnection = Effect.fn("handleEnvConnection")(function* (
       }
       finish(Result.succeed(decoded.success));
     };
-    const onClose = (): void => {
+    const onClose = () => {
       finish(Result.fail("connection closed before env_hello"));
     };
     socket.on("message", onMessage);
@@ -276,7 +276,7 @@ export const handleEnvConnection = Effect.fn("handleEnvConnection")(function* (
   const env = new LocalEnv(cwd, ctx.fs);
   send(EnvHelloOk.make({ pid: process.pid, version: ENV_VERSION, cwd }));
 
-  const onMessage = (data: unknown): void => {
+  const onMessage = (data: unknown) => {
     const parsed = Result.try(() => parseFrame(decodeFrame(data)));
     if (Result.isFailure(parsed) || parsed.success === undefined) return;
     if (typeof parsed.success !== "object" || parsed.success === null) return;
@@ -339,7 +339,7 @@ export const handleEnvConnection = Effect.fn("handleEnvConnection")(function* (
   socket.on("message", onMessage);
 
   yield* Effect.callback<void>((resume) => {
-    const onClose = (): void => {
+    const onClose = () => {
       resume(Effect.void);
     };
     socket.once("close", onClose);
@@ -382,7 +382,7 @@ export const makeEnvDaemon = Effect.fn("makeEnvDaemon")(function* (options: EnvD
     address !== null && typeof address !== "string"
       ? `ws://${address.address}:${address.port}`
       : "";
-  const close = (): Effect.Effect<void, never> =>
+  const close = () =>
     Effect.callback<void>((resume) => {
       server.close(() => resume(Effect.void));
       return Effect.void;

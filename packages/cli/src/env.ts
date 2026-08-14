@@ -23,7 +23,7 @@ import { Paths, type PathsShape } from "@saku/worker";
 
 import { type DaemonLifecycleConfig } from "./lifecycle.ts";
 
-export const resolveEnvEntry = (): string => fileURLToPath(import.meta.resolve("@saku/env/entry"));
+export const resolveEnvEntry = () => fileURLToPath(import.meta.resolve("@saku/env/entry"));
 
 const EnvConfigSchema = Schema.Struct({
   envId: Schema.String.check(Schema.isMinLength(1)),
@@ -44,7 +44,7 @@ export const readEnvConfig = (): Effect.Effect<Option.Option<EnvConfig>, never, 
 /** Read ~/.saku/auth, creating it (0600) when absent — the deployment secret. */
 const ensureHubToken = Effect.fn("ensureHubToken")(function* (
   paths: PathsShape,
-): Effect.fn.Return<string, Error, never> {
+) {
   const existing = yield* Effect.tryPromise(() => readFile(paths.authPath, "utf8")).pipe(
     Effect.map((content) => content.trim()),
     Effect.catch(() => Effect.succeed("")),
@@ -59,7 +59,7 @@ const ensureHubToken = Effect.fn("ensureHubToken")(function* (
 /** Read or create the env identity (random envId + protocol token). */
 export const ensureEnvConfig = Effect.fn("ensureEnvConfig")(function* (
   hubUrl?: string,
-): Effect.fn.Return<EnvConfig, Error, never> {
+) {
   const existing = yield* readEnvConfig();
   if (Option.isSome(existing)) {
     // A hub switch is honored on start; identity is stable.

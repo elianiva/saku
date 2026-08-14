@@ -14,7 +14,7 @@ const LIVE_BOOTSTRAP = { url: "ws://127.0.0.1:57851", token: "tok" };
 const OFFLINE_BOOTSTRAP = { url: null, token: null };
 
 /** Stub `fetch` to answer `/__saku` with the given body (null = network failure). */
-const stubFetch = (body: unknown): void => {
+const stubFetch = (body: unknown) => {
   vi.stubGlobal(
     "fetch",
     vi.fn(() =>
@@ -25,7 +25,7 @@ const stubFetch = (body: unknown): void => {
   );
 };
 
-const stubWindow = (saved: string | null): void => {
+const stubWindow = (saved: string | null) => {
   vi.stubGlobal("window", {
     location: { host: "localhost:5173", protocol: "http:" },
     localStorage: { getItem: () => saved },
@@ -38,7 +38,7 @@ afterEach(() => {
 
 /** Run a config effect in a test. The timeout guard keeps a hung resolution
  *  from hanging the runner (the .pipe carve-out the wrapper rule allows). */
-const run = <A>(effect: Effect.Effect<A, never, never>): Promise<A> =>
+const run = <A>(effect: Effect.Effect<A, never, never>) =>
   Effect.runPromise(effect.pipe(Effect.timeout("2 seconds")));
 
 describe("fetchBootstrap", () => {

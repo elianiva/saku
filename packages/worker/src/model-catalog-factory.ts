@@ -41,7 +41,7 @@ export type ModelCatalogAuthSource =
   | { readonly authContext: AuthContext };
 
 /** Whether the scripted provider is on: `SAKU_FAKE_MODEL` set and non-empty (the one check). */
-const fakeModelEnabled = (env: Readonly<{ SAKU_FAKE_MODEL?: string }>): boolean =>
+const fakeModelEnabled = (env: Readonly<{ SAKU_FAKE_MODEL?: string }>) =>
   env.SAKU_FAKE_MODEL !== undefined && env.SAKU_FAKE_MODEL !== "";
 
 /**

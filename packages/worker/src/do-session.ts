@@ -54,7 +54,7 @@ export interface DoSessionMetadata extends SessionMetadata {
 
 const SESSION_ID_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
 
-const validateSessionId = (id: string): void => {
+const validateSessionId = (id: string) => {
   if (!SESSION_ID_PATTERN.test(id)) {
     throw new SessionError(
       "invalid_payload",
@@ -63,18 +63,18 @@ const validateSessionId = (id: string): void => {
   }
 };
 
-const encode = (value: string | Uint8Array): Uint8Array =>
+const encode = (value: string | Uint8Array) =>
   typeof value === "string" ? new TextEncoder().encode(value) : value;
 
-const decode = (value: Uint8Array): string => new TextDecoder().decode(value);
+const decode = (value: Uint8Array) => new TextDecoder().decode(value);
 
 /** The key prefix that owns one session's keys. */
-const sessionPrefix = (id: string): string => `session/${id}/`;
+const sessionPrefix = (id: string) => `session/${id}/`;
 
 /** Zero-padded so `list` ordering and manual inspection agree with seq order. */
-const logKey = (seq: number): string => `log/${String(seq).padStart(12, "0")}`;
+const logKey = (seq: number) => `log/${String(seq).padStart(12, "0")}`;
 
-const parseMutation = (key: string, value: Uint8Array): SessionMutation => {
+const parseMutation = (key: string, value: Uint8Array) => {
   try {
     const parsed: unknown = JSON.parse(decode(value));
     return parsed as SessionMutation;
@@ -115,13 +115,13 @@ export class DoSessionStorage implements SessionStorage<DoSessionMetadata> {
   }
 
   /** Create a fresh session: metadata first, then an empty log. */
-  static async create(kv: KvStoreShape, metadata: DoSessionMetadata): Promise<DoSessionStorage> {
+  static async create(kv: KvStoreShape, metadata: DoSessionMetadata) {
     await Effect.runPromise(kv.put("meta", encode(JSON.stringify(metadata))));
     return new DoSessionStorage(kv, metadata, new SessionState());
   }
 
   /** Load a session by replaying its log. */
-  static async load(kv: KvStoreShape, id: string): Promise<DoSessionStorage> {
+  static async load(kv: KvStoreShape, id: string) {
     const metaValue = await Effect.runPromise(kv.get("meta"));
     if (Option.isNone(metaValue)) {
       throw new SessionError("not_found", `Session not found: ${id}`);
@@ -144,15 +144,15 @@ export class DoSessionStorage implements SessionStorage<DoSessionMetadata> {
     return new DoSessionStorage(kv, metadata, state);
   }
 
-  async getMetadata(): Promise<DoSessionMetadata> {
+  async getMetadata() {
     return structuredClone(this.metadata);
   }
 
-  getLanes(): Promise<LanePointer[]> {
+  getLanes() {
     return Promise.resolve(this.state.getLanes());
   }
 
-  createLane(lane: string, at: string | null): Promise<void> {
+  createLane(lane: string, at: string | null) {
     return this.enqueue(async () => {
       this.state.validateNewLane(lane);
       this.state.validateTarget(at);
@@ -167,7 +167,7 @@ export class DoSessionStorage implements SessionStorage<DoSessionMetadata> {
     });
   }
 
-  moveLane(lane: string, to: string | null): Promise<void> {
+  moveLane(lane: string, to: string | null) {
     return this.enqueue(async () => {
       this.state.requireLane(lane);
       this.state.validateTarget(to);
@@ -185,7 +185,7 @@ export class DoSessionStorage implements SessionStorage<DoSessionMetadata> {
   appendEntry<TEntry extends Entry>(
     newEntry: ProvisionedEntry<TEntry>,
     lane: string,
-  ): Promise<TEntry> {
+  ) {
     return this.enqueue(async () => {
       const parentId = this.state.requireLane(lane);
       this.state.validateUnusedId(newEntry.id);
@@ -202,7 +202,7 @@ export class DoSessionStorage implements SessionStorage<DoSessionMetadata> {
     });
   }
 
-  appendRecord<TRecord extends LaneRecord>(newRecord: NewRecord<TRecord>): Promise<TRecord> {
+  appendRecord<TRecord extends LaneRecord>(newRecord: NewRecord<TRecord>) {
     return this.enqueue(async () => {
       this.state.requireLane(newRecord.lane);
       this.state.validateUnusedId(newRecord.id);
@@ -226,18 +226,18 @@ export class DoSessionStorage implements SessionStorage<DoSessionMetadata> {
     });
   }
 
-  async getEntry(id: string): Promise<Entry | undefined> {
+  async getEntry(id: string) {
     const entry = this.state.getEntry(id);
     return entry === undefined ? undefined : structuredClone(entry);
   }
 
-  async findEntries(query: EntryQuery = {}): Promise<Entry[]> {
+  async findEntries(query: EntryQuery = {}) {
     return structuredClone(this.state.findEntries(query));
   }
 
   async findEntriesOnBranch(
     query: EntryQuery & BranchBounds & { start: string },
-  ): Promise<Entry[]> {
+  ) {
     return structuredClone(this.state.findEntriesOnBranch(query));
   }
 
@@ -245,26 +245,26 @@ export class DoSessionStorage implements SessionStorage<DoSessionMetadata> {
     query: RecordQuery & { type: K },
   ): Promise<Extract<LaneRecord, { type: K }>[]>;
   async findRecords(query?: RecordQuery): Promise<LaneRecord[]>;
-  async findRecords(query: RecordQuery = {}): Promise<LaneRecord[]> {
+  async findRecords(query: RecordQuery = {}) {
     return structuredClone(this.state.findRecords(query));
   }
 
   async findOpenOperations(
     lane: string,
     options?: { limit?: number },
-  ): Promise<OperationStartedRecord[]> {
+  ) {
     return structuredClone(this.state.findOpenOperations(lane, options));
   }
 
-  async getLog(options: LogOptions = {}): Promise<LogItem[]> {
+  async getLog(options: LogOptions = {}) {
     return structuredClone(this.state.getLog(options));
   }
 
-  async getName(): Promise<string | undefined> {
+  async getName() {
     return this.state.getName();
   }
 
-  setName(name: string): Promise<void> {
+  setName(name: string) {
     return this.enqueue(async () => {
       const mutation: SessionMutation = {
         kind: "fact",
@@ -277,11 +277,11 @@ export class DoSessionStorage implements SessionStorage<DoSessionMetadata> {
     });
   }
 
-  async getLabel(id: string): Promise<string | undefined> {
+  async getLabel(id: string) {
     return this.state.getLabel(id);
   }
 
-  setLabel(id: string, label: string | undefined): Promise<void> {
+  setLabel(id: string, label: string | undefined) {
     return this.enqueue(async () => {
       this.state.validateTarget(id);
       const mutation: SessionMutation = {
@@ -296,23 +296,23 @@ export class DoSessionStorage implements SessionStorage<DoSessionMetadata> {
     });
   }
 
-  async getStats(): Promise<SessionStats> {
+  async getStats() {
     return structuredClone(this.state.getStats());
   }
 
   /** Fork mutations for this session (repo-level `fork`). */
-  forkMutations(options: ForkOptions): SessionMutation[] {
+  forkMutations(options: ForkOptions) {
     return this.state.createForkMutations(options);
   }
 
   /** Replay pre-built mutations (fork children). */
-  applyMutations(mutations: readonly SessionMutation[]): void {
+  applyMutations(mutations: readonly SessionMutation[]) {
     for (const mutation of mutations) {
       this.state.applyMutation(mutation);
     }
   }
 
-  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+  private enqueue<T>(operation: () => Promise<T>) {
     const result = this.tail.then(operation);
     this.tail = result.then(
       () => undefined,
@@ -322,14 +322,14 @@ export class DoSessionStorage implements SessionStorage<DoSessionMetadata> {
   }
 
   /** Serialize one mutation to the log (ordered through the tail). */
-  async appendMutation(mutation: SessionMutation): Promise<void> {
+  async appendMutation(mutation: SessionMutation) {
     await Effect.runPromise(
       this.kv.put(logKey(mutationSeq(mutation)), encode(JSON.stringify(mutation))),
     );
   }
 }
 
-const mutationSeq = (mutation: SessionMutation): number =>
+const mutationSeq = (mutation: SessionMutation) =>
   mutation.kind === "entry"
     ? mutation.entry.seq
     : mutation.kind === "record"
@@ -348,7 +348,7 @@ export class DoSessionRepo implements SessionRepo<DoSessionMetadata> {
     this.kv = kv;
   }
 
-  async create(options: SessionCreateOptions = {}): Promise<Session<DoSessionMetadata>> {
+  async create(options: SessionCreateOptions = {}) {
     const id = options.id ?? crypto.randomUUID().replaceAll("-", "");
     validateSessionId(id);
     const prefix = sessionPrefix(id);
@@ -378,7 +378,7 @@ export class DoSessionRepo implements SessionRepo<DoSessionMetadata> {
   async import(
     id: string,
     data: { readonly cwd: string; readonly createdAt: number; readonly mutations: readonly SessionMutation[] },
-  ): Promise<Session<DoSessionMetadata>> {
+  ) {
     validateSessionId(id);
     const prefix = sessionPrefix(id);
     if (Option.isSome(await Effect.runPromise(this.kv.get(`${prefix}meta`)))) {
@@ -394,13 +394,13 @@ export class DoSessionRepo implements SessionRepo<DoSessionMetadata> {
     return this.open(metadata);
   }
 
-  async open(metadata: DoSessionMetadata): Promise<Session<DoSessionMetadata>> {
+  async open(metadata: DoSessionMetadata) {
     return new Session(
       await DoSessionStorage.load(prefixedKv(this.kv, sessionPrefix(metadata.id)), metadata.id),
     );
   }
 
-  async list(): Promise<DoSessionMetadata[]> {
+  async list() {
     const entries = await Effect.runPromise(this.kv.list({ prefix: "session/" }));
     const all: DoSessionMetadata[] = [];
     for (const entry of entries) {
@@ -411,7 +411,7 @@ export class DoSessionRepo implements SessionRepo<DoSessionMetadata> {
     return all.sort((a, b) => b.createdAt - a.createdAt);
   }
 
-  async delete(metadata: DoSessionMetadata): Promise<void> {
+  async delete(metadata: DoSessionMetadata) {
     const prefix = sessionPrefix(metadata.id);
     const keys = await Effect.runPromise(this.kv.list({ prefix }));
     for (const entry of keys) {
@@ -422,7 +422,7 @@ export class DoSessionRepo implements SessionRepo<DoSessionMetadata> {
   async fork(
     source: DoSessionMetadata,
     options: ForkOptions & SessionCreateOptions,
-  ): Promise<Session<DoSessionMetadata>> {
+  ) {
     const sourceStorage = await DoSessionStorage.load(
       prefixedKv(this.kv, sessionPrefix(source.id)),
       source.id,

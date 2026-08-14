@@ -70,7 +70,7 @@ export const handleAgentEvent = Effect.fn("handleAgentEvent")(function* (
  * Project a pi AgentEvent onto the wire: `agent_end` is replaced by saku's
  * `settled`; `message_update` drops the cumulative `partial` snapshot.
  */
-const projectAgentEvent = (event: AgentEvent): SessionWireEvent | null => {
+const projectAgentEvent = (event: AgentEvent) => {
   if (event.type === "agent_end") return null;
   if (event.type === "message_update") {
     const assistantMessageEvent = event.assistantMessageEvent;

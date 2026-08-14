@@ -36,7 +36,7 @@ import { scriptedProvisioner, scriptedWorker, type ScriptedWorker } from "./mock
 
 const TEST_TOKEN = "hub-test-secret";
 
-const run = <A, E extends Error>(effect: Effect.Effect<A, E, never>): Promise<A> =>
+const run = <A, E extends Error>(effect: Effect.Effect<A, E, never>) =>
   Effect.runPromise(effect);
 
 interface World {
@@ -75,10 +75,10 @@ afterEach(async () => {
   await Effect.runPromise(Scope.close(world.scope, Exit.void));
 });
 
-const connect = (options?: Partial<WorkerClientOptions>): Promise<WireClient> =>
+const connect = (options?: Partial<WorkerClientOptions>) =>
   run(makeWireClient({ url: world.url, token: TEST_TOKEN, role: "cli", ...options }));
 
-const newThread = async (client: WireClient, name = `thread ${++seq}`): Promise<ThreadInfo> =>
+const newThread = async (client: WireClient, name = `thread ${++seq}`) =>
   run(client.createThread(name));
 
 /** A raw socket (no client machinery) for protocol-level assertions. */
@@ -106,7 +106,7 @@ class TestError extends Schema.TaggedError<TestError>()("TestError", {
   message: Schema.String,
 }) {}
 
-const waitFor = async (fn: () => boolean, timeoutMs = 2000): Promise<void> => {
+const waitFor = async (fn: () => boolean, timeoutMs = 2000) => {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (fn()) return;

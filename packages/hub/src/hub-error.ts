@@ -41,5 +41,5 @@ export class HubError extends Schema.TaggedError<HubError>()("HubError", {
 }) {}
 
 /** Construct a hub error with its category (required at new sites). */
-export const makeHubError = (kind: HubErrorKind, message: string, cause?: unknown): HubError =>
+export const makeHubError = (kind: HubErrorKind, message: string, cause?: unknown) =>
   new HubError({ kind, message, cause });

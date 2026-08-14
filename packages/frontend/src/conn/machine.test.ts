@@ -15,7 +15,7 @@ import { Connected, ConnectFailed, ConnectionClosed, RetryRequested } from "./me
 const hello = HelloOk.make({ pid: 1, version: "0.1.0" });
 
 const online = Online({ pid: 1, version: "0.1.0" });
-const offline = (error = "nope"): Conn => Offline({ error });
+const offline = (error = "nope") => Offline({ error });
 
 /** Step and narrow: the test's interest is the Transitioned arm. */
 const step = (state: Conn, message: RootMessage) => {
