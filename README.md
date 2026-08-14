@@ -105,9 +105,14 @@ pnpm --filter @saku/frontend dev
 ```
 
 Vite serves the console on `:5173`; its `/__saku` bootstrap reads the daemon's
-published URL and token from `~/.saku/` and connects straight to the worker (no
-deployed hub needed). Quick-start a thread, and the prompt runs on the worker
-through the env daemon — streaming back over the wire.
+published URL and token from `~/.saku/`, verifies them with a wire handshake
+probe, and only then hands them to the console (a killed daemon leaves a
+stale URL file behind — the console never dials it). The app connects
+straight to the worker (no deployed hub needed) and, while the daemon is
+down, shows the offline state and polls the bootstrap — a restarted daemon
+is picked up automatically, on its new port, without a page reload.
+Quick-start a thread, and the prompt runs on the worker through the env
+daemon — streaming back over the wire.
 
 To run against a _deployed hub_ instead, start the env daemon in relay mode
 (`saku env start --hub <url>`) and open the console on the deployment's domain

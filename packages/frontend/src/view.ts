@@ -47,10 +47,16 @@ const connStatus = (model: Model, h: HtmlBuilder<AppMessage>): Html => {
     case "online":
       return h.span([h.Class("text-foam")], [`● online · pid ${model.conn.pid}`]);
     case "offline":
+      // The retry subscription (subscriptions.ts) reconnects automatically
+      // every couple of seconds, so offline always means "retrying".
       return h.div(
         [h.Class("flex items-center gap-2")],
         [
           h.span([h.Class("text-love")], ["✕ offline"]),
+          h.span([h.Class("text-muted")], ["· retrying"]),
+          model.conn.error === undefined
+            ? null
+            : h.span([h.Class("text-subtle max-w-64 truncate")], [model.conn.error]),
           h.button(
             [
               h.Class("border border-line px-2 py-0.5 hover:border-subtle text-subtle"),

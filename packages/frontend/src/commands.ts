@@ -28,12 +28,13 @@ import {
 import { decodeEntry, type EntryProjection } from "./projection.ts";
 import { Wire } from "./wire.ts";
 
-/** Connect (or reconnect) the wire client. */
+/** Connect (or reconnect). The service re-resolves the bootstrap and swaps
+ * the client when the daemon restarted on a new port (wire.ts). */
 export const WireConnectCmd = Command.define("WireConnect", {
   messages: [Connected, ConnectFailed],
   execute: Effect.gen(function* () {
-    const { client } = yield* Wire;
-    const hello = yield* client.connect();
+    const wire = yield* Wire;
+    const hello = yield* wire.connect();
     return Connected({ hello });
   }).pipe(
     Effect.catchTag("WireError", (error) =>
