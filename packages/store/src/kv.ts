@@ -35,7 +35,7 @@
 
 import { Array, Context, Effect, FileSystem, Layer, Option } from "effect";
 
-import { isNotFound } from "./fs.ts";
+import { isNotFound } from "./platform-error.ts";
 
 export interface KvEntry {
   readonly key: string;

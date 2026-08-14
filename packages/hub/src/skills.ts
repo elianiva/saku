@@ -1,17 +1,17 @@
 /**
  * The hub's skills store (skills.ts): the hub-hosted skills store of
  * ADR 0007 — amp-style, scoped `personal` or `workspace`, imported from
- * repos. Lives on the `KvStore` seam (keys: `skills/<id>`), like the
- * registry; the wire's minimal slice: list, import, delete. Records keep
- * `source` + `version` from day one so versioning and sharing UX are
- * additive later.
+ * repos. Lives on the `KvStore` seam (keys: `skills/<id>`, via the
+ * `jsonRecords` layer at prefix `"skills/"`), like the registry; the
+ * wire's minimal slice: list, import, delete. Records keep `source` +
+ * `version` from day one so versioning and sharing UX are additive later.
  */
 
 import { Context, Effect, Ref } from "effect";
 import type { SkillInfo, SkillScope } from "@saku/wire";
 
 import { HubError } from "./hub-error.ts";
-import { KvStore } from "@saku/store";
+import { jsonRecords, KvStore } from "@saku/store";
 
 export interface SkillsStoreShape {
   readonly list: () => Effect.Effect<readonly SkillInfo[], HubError>;
@@ -24,12 +24,6 @@ export interface SkillsStoreShape {
   readonly delete: (id: string) => Effect.Effect<boolean, HubError>;
 }
 
-const skillKey = (id: string) => `skills/${id}`;
-
-const encodeSkill = (skill: SkillInfo) => new TextEncoder().encode(`${JSON.stringify(skill)}\n`);
-
-const decodeSkill = (value: Uint8Array) => JSON.parse(new TextDecoder().decode(value)) as SkillInfo;
-
 /** The default name for an imported repo: `owner/repo` → `repo`. */
 export const skillNameFromSource = (source: string) =>
   source
@@ -41,19 +35,10 @@ export const skillNameFromSource = (source: string) =>
 export class SkillsStore extends Context.Service<SkillsStore, SkillsStoreShape>()("SkillsStore", {
   make: Effect.fn("SkillsStore.make")(function* () {
     const kv = yield* KvStore;
-    const entries = yield* kv.list({ prefix: "skills/" });
-    const loaded = yield* Effect.forEach(entries, (entry) =>
-      Effect.try(() => decodeSkill(entry.value)).pipe(
-        Effect.catch((error) =>
-          // Corrupt record: skip (the key stays on disk for inspection).
-          Effect.logWarning(`[hub] skipping corrupt skill record: ${String(error)}`).pipe(
-            Effect.as(undefined),
-          ),
-        ),
-      ),
-    ).pipe(Effect.map((skills) => skills.filter((skill) => skill !== undefined)));
+    const skills = jsonRecords<SkillInfo>(kv, "skills/");
+    const loaded = yield* skills.list();
     const skillsRef = yield* Ref.make<ReadonlyMap<string, SkillInfo>>(
-      new Map(loaded.map((skill) => [skill.id, skill])),
+      new Map(loaded.map(({ value }) => [value.id, value])),
     );
 
     return {
@@ -69,19 +54,19 @@ export class SkillsStore extends Context.Service<SkillsStore, SkillsStoreShape>(
           source: input.source,
           version: null,
         };
-        yield* kv.put(skillKey(skill.id), encodeSkill(skill));
+        yield* skills.put(skill.id, skill);
         yield* Ref.update(skillsRef, (skills) => new Map(skills).set(skill.id, skill));
         return skill;
       }),
       delete: Effect.fn("delete")(function* (id) {
-        const skills = yield* Ref.get(skillsRef);
-        if (!skills.has(id)) return false;
+        const current = yield* Ref.get(skillsRef);
+        if (!current.has(id)) return false;
         yield* Ref.update(skillsRef, (skills) => {
           const next = new Map(skills);
           next.delete(id);
           return next;
         });
-        yield* kv.delete(skillKey(id));
+        yield* skills.delete(id);
         return true;
       }),
     };

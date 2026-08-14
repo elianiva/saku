@@ -31,9 +31,8 @@ export interface PathsShape {
   readonly authPath: string;
   readonly workerLogPath: string;
   readonly threadsDir: string;
-  /** Per-thread directory. */
+  /** Per-thread directory (removed wholesale on registry delete). */
   readonly threadDir: (threadId: string) => string;
-  readonly threadFile: (threadId: string) => string;
   /** The thread session's KvStore root (meta + log/* under it, see do-session.ts). */
   readonly threadTrailRoot: (threadId: string) => string;
   /** pi's agent dir (~/.pi/agent, overridable via PI_CODING_AGENT_DIR). */
@@ -58,7 +57,6 @@ const makePaths = (sakuHome: string, agentDir: string): PathsShape => ({
   workerLogPath: join(sakuHome, "worker.log"),
   threadsDir: join(sakuHome, "threads"),
   threadDir: (threadId) => join(sakuHome, "threads", threadId),
-  threadFile: (threadId) => join(sakuHome, "threads", threadId, "thread.json"),
   threadTrailRoot: (threadId) => join(sakuHome, "threads", threadId, "trail"),
   agentDir,
   authJsonPath: join(agentDir, "auth.json"),

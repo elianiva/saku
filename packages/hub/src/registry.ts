@@ -5,7 +5,8 @@
  * Lives on the `KvStore` seam (the same durability boundary the worker's
  * session trail uses — Durable Object storage in production, memory or
  * files in tests and the local spine), so the hub runs identically inside a
- * DO and in-process. Keys: `threads/<id>/record` (one JSON record).
+ * DO and in-process. Keys: `threads/<id>/record` (one JSON record, via the
+ * `jsonRecords` layer at prefix `"threads/"`).
  *
  * What is persisted vs. derived:
  *
@@ -23,7 +24,7 @@ import type { EnvHandle } from "@saku/env";
 import type { ThreadEnvState, ThreadInfo, ThreadMode, ThreadState } from "@saku/wire";
 
 import { HubError } from "./hub-error.ts";
-import { KvStore, type KvStoreShape } from "@saku/store";
+import { jsonRecords, KvStore } from "@saku/store";
 
 /** The hub's registry record; `ThreadInfo` is its wire projection. */
 export interface HubRecord {
@@ -78,32 +79,6 @@ export interface HubRegistryShape {
   readonly toInfo: (threadId: string) => Effect.Effect<Option.Option<ThreadInfo>, HubError>;
 }
 
-const recordKey = (threadId: string) => `threads/${threadId}/record`;
-
-const encodeRecord = (record: HubRecord) => new TextEncoder().encode(`${JSON.stringify(record)}\n`);
-
-const decodeRecord = (value: Uint8Array) =>
-  JSON.parse(new TextDecoder().decode(value)) as HubRecord;
-
-/** Persist one record; every mutation is durable before it is visible. */
-const persist = (kv: KvStoreShape, record: HubRecord) =>
-  kv.put(recordKey(record.id), encodeRecord(record));
-
-/** Load every record at build time; corrupt records are skipped. */
-const load = Effect.fn("load")(function* (kv: KvStoreShape) {
-  const entries = yield* kv.list({ prefix: "threads/" });
-  return yield* Effect.forEach(entries, (entry) =>
-    Effect.try(() => decodeRecord(entry.value)).pipe(
-      Effect.catch((error) =>
-        // Corrupt record: skip (the key stays on disk for inspection).
-        Effect.logWarning(`[hub] skipping corrupt registry record: ${String(error)}`).pipe(
-          Effect.as(undefined),
-        ),
-      ),
-    ),
-  ).pipe(Effect.map((records) => records.filter((record) => record !== undefined)));
-});
-
 /** The live registry: loaded from the store when built, persisted on every
  * mutation. Requires the `KvStore` service — the DO adapter and the tests
  * provide the backend layer at the boundary. */
@@ -114,12 +89,13 @@ export class HubRegistry extends Context.Service<HubRegistry, HubRegistryShape>(
     KvStore
   > {
     const kv = yield* KvStore;
-    const loaded = yield* load(kv);
+    const records = jsonRecords<HubRecord>(kv, "threads/");
+    const loaded = yield* records.list();
     const recordsRef = yield* Ref.make<ReadonlyMap<string, HubRecord>>(
-      new Map(loaded.map((record) => [record.id, record])),
+      new Map(loaded.map(({ value }) => [value.id, value])),
     );
     const statesRef = yield* Ref.make<ReadonlyMap<string, ThreadState>>(
-      new Map(loaded.map((record) => [record.id, "idle" as ThreadState])),
+      new Map(loaded.map(({ value }) => [value.id, "idle" as ThreadState])),
     );
     const tailSeqsRef = yield* Ref.make<ReadonlyMap<string, number>>(new Map());
 
@@ -127,11 +103,11 @@ export class HubRegistry extends Context.Service<HubRegistry, HubRegistryShape>(
       threadId: string,
       fn: (record: HubRecord) => HubRecord,
     ) {
-      const records = yield* Ref.get(recordsRef);
-      const record = records.get(threadId);
+      const current = yield* Ref.get(recordsRef);
+      const record = current.get(threadId);
       if (record === undefined) return Option.none();
       const next = fn(record);
-      yield* persist(kv, next);
+      yield* records.put(`${next.id}/record`, next);
       yield* Ref.update(recordsRef, (records) => new Map(records).set(threadId, next));
       return Option.some(next);
     });
@@ -160,7 +136,7 @@ export class HubRegistry extends Context.Service<HubRegistry, HubRegistryShape>(
           env: input.mode === "sandbox" ? "stopped" : "ready",
           envHandle: null,
         };
-        yield* persist(kv, record);
+        yield* records.put(`${record.id}/record`, record);
         yield* Ref.update(recordsRef, (records) => new Map(records).set(record.id, record));
         yield* Ref.update(statesRef, (states) => new Map(states).set(record.id, "idle"));
         yield* Ref.update(tailSeqsRef, (tailSeqs) => new Map(tailSeqs).set(record.id, 0));
@@ -175,8 +151,8 @@ export class HubRegistry extends Context.Service<HubRegistry, HubRegistryShape>(
       setTailSeq: (threadId, tailSeq) =>
         Ref.update(tailSeqsRef, (tailSeqs) => new Map(tailSeqs).set(threadId, tailSeq)),
       delete: Effect.fn("delete")(function* (threadId) {
-        const records = yield* Ref.get(recordsRef);
-        if (!records.has(threadId)) return false;
+        const current = yield* Ref.get(recordsRef);
+        if (!current.has(threadId)) return false;
         yield* Ref.update(recordsRef, (records) => {
           const next = new Map(records);
           next.delete(threadId);
@@ -192,7 +168,7 @@ export class HubRegistry extends Context.Service<HubRegistry, HubRegistryShape>(
           next.delete(threadId);
           return next;
         });
-        yield* kv.delete(recordKey(threadId));
+        yield* records.delete(`${threadId}/record`);
         return true;
       }),
       toInfo: Effect.fn("toInfo")(function* (threadId) {

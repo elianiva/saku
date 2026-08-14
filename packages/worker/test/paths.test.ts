@@ -33,7 +33,7 @@ describe("PathsLive", () => {
     const paths = resolve({ SAKU_HOME: "/tmp/home-a", PI_CODING_AGENT_DIR: "/tmp/pi-a" });
     expect(paths.sakuDir).toBe("/tmp/home-a");
     expect(paths.authPath).toBe("/tmp/home-a/auth");
-    expect(paths.threadFile("id")).toBe("/tmp/home-a/threads/id/thread.json");
+    expect(paths.threadsDir).toBe("/tmp/home-a/threads");
     expect(paths.agentDir).toBe("/tmp/pi-a");
     expect(paths.modelsJsonPath).toBe("/tmp/pi-a/models.json");
   });

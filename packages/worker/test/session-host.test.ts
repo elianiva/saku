@@ -4,6 +4,9 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect, FileSystem, Layer, Option, Schema } from "effect";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
@@ -42,11 +45,7 @@ class TestError extends Schema.TaggedError<TestError>()("TestError", {
   message: Schema.String,
 }) {}
 
-const waitForState = async (
-  host: SessionHost,
-  state: HostState,
-  timeoutMs = 3000,
-) => {
+const waitForState = async (host: SessionHost, state: HostState, timeoutMs = 3000) => {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (host.threadState === state) return;
@@ -56,10 +55,7 @@ const waitForState = async (
 };
 
 /** A scripted stream that emits one assistant message immediately. */
-const oneShotStream = (
-  text: string,
-  stopReason: AssistantMessage["stopReason"] = "stop",
-) => {
+const oneShotStream = (text: string, stopReason: AssistantMessage["stopReason"] = "stop") => {
   const message = assistantMessage(text, stopReason);
   return () => {
     const stream = createAssistantMessageEventStream();
@@ -150,15 +146,22 @@ const makeHost = Effect.fn("makeHost")(function* (options: HostOptions = {}) {
 });
 
 /** The host's trail layout: a fresh scoped temp home (no env mutation). */
-const testPaths = () => PathsTest();
+const testPaths = (home?: string) => PathsTest(home);
 
 /** Run one test against a fresh host; the host is disposed on the way out. */
-const scoped = <A>(run: (world: HostWorld) => Promise<A>, options: HostOptions = {}) =>
+const scoped = <A>(
+  run: (world: HostWorld) => Promise<A>,
+  options: HostOptions = {},
+  home?: string,
+) =>
   Effect.runPromise(
     Effect.gen(function* () {
       const world = yield* makeHost(options);
       return yield* Effect.tryPromise(() => run(world)).pipe(Effect.ensuring(world.host.dispose()));
-    }).pipe(Effect.provide(NodeFileSystem.layer), Effect.provide(testPaths())),
+      // The test-path layer's build needs the FileSystem service, so the
+      // Node layer goes outermost (layer builds see the context at their
+      // provide site — deps outer, dependents inner).
+    }).pipe(Effect.provide(testPaths(home)), Effect.provide(NodeFileSystem.layer)),
   );
 
 describe("SessionHost", () => {
@@ -373,51 +376,58 @@ describe("SessionHost", () => {
   });
 
   it("recovers as interrupted when the trail has an open operation", async () => {
-    // Run once, then simulate a crash: an operation_started record without
-    // its operation_finished, written straight into the trail.
-    await scoped(
-      async ({ host, fs, kvRoot }) => {
-        await Effect.runPromise(host.prompt("first"));
-        await waitForState(host, "idle");
-        const repo = new DoSessionRepo(await buildKv(KvStore.file(fs, kvRoot)));
-        const [metadata] = await repo.list();
-        const session = await repo.open(metadata);
-        await session.appendRecord({
-          type: "operation_started",
-          id: "op-crashed",
-          lane: "main",
-          sourceLeafId: null,
-          intent: { kind: "run", originalPrompt: [], initialMessages: [] },
-        });
+    // One shared layout across both boots: a crash simulation must boot the
+    // second host over the SAME trail (a fresh `PathsTest()` per boot would
+    // give it a different temp home, i.e. an empty registry of trails).
+    const home = await mkdtemp(join(tmpdir(), "saku-host-recover-"));
+    try {
+      await scoped(
+        async ({ host, fs, kvRoot }) => {
+          await Effect.runPromise(host.prompt("first"));
+          await waitForState(host, "idle");
+          const repo = new DoSessionRepo(await buildKv(KvStore.file(fs, kvRoot)));
+          const [metadata] = await repo.list();
+          const session = await repo.open(metadata);
+          await session.appendRecord({
+            type: "operation_started",
+            id: "op-crashed",
+            lane: "main",
+            sourceLeafId: null,
+            intent: { kind: "run", originalPrompt: [], initialMessages: [] },
+          });
 
-        // A new host over the same trail boots into Interrupted.
-        const second = await Effect.runPromise(
-          Effect.gen(function* () {
-            const paths = yield* Paths;
-            const registry = new FakeRegistry(record());
-            return yield* SessionHost.create({
-              threadId: THREAD_ID,
-              record: yield* registry.get(THREAD_ID).pipe(Effect.map(Option.getOrThrow)),
-              catalog: fakeCatalog(),
-              registry,
-              sink: () => {},
-              env: new StubEnv("/work"),
-            }).pipe(Effect.provide(KvStore.file(fs, paths.threadTrailRoot(THREAD_ID))));
-          }).pipe(Effect.provide(NodeFileSystem.layer), Effect.provide(testPaths())),
-        );
-        try {
-          await waitForState(second, "interrupted");
-          const state = await Effect.runPromise(second.getState());
-          expect(state.state).toBe("interrupted");
-          // A run after interruption proceeds normally.
-          await Effect.runPromise(second.prompt("again"));
-          await waitForState(second, "idle");
-        } finally {
-          await Effect.runPromise(second.dispose());
-        }
-      },
-      { streamFn: oneShotStream("hi") },
-    );
+          // A new host over the same trail boots into Interrupted.
+          const second = await Effect.runPromise(
+            Effect.gen(function* () {
+              const paths = yield* Paths;
+              const registry = new FakeRegistry(record());
+              return yield* SessionHost.create({
+                threadId: THREAD_ID,
+                record: yield* registry.get(THREAD_ID).pipe(Effect.map(Option.getOrThrow)),
+                catalog: fakeCatalog(),
+                registry,
+                sink: () => {},
+                env: new StubEnv("/work"),
+              }).pipe(Effect.provide(KvStore.file(fs, paths.threadTrailRoot(THREAD_ID))));
+            }).pipe(Effect.provide(testPaths(home)), Effect.provide(NodeFileSystem.layer)),
+          );
+          try {
+            await waitForState(second, "interrupted");
+            const state = await Effect.runPromise(second.getState());
+            expect(state.state).toBe("interrupted");
+            // A run after interruption proceeds normally.
+            await Effect.runPromise(second.prompt("again"));
+            await waitForState(second, "idle");
+          } finally {
+            await Effect.runPromise(second.dispose());
+          }
+        },
+        { streamFn: oneShotStream("hi") },
+        home,
+      );
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
   });
 
   it("dispose settles and drains", async () => {

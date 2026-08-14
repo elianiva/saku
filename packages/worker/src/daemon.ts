@@ -80,6 +80,7 @@ import {
   ThreadRegistry,
   ThreadRegistryLive,
   ThreadRegistryTest,
+  RegistryKvLive,
   type HostRegistryShape,
   type ThreadRecord,
   type ThreadRegistryShape,
@@ -580,6 +581,9 @@ export const SakuDaemonTest = (home?: string) =>
 export const SakuDaemonLayer: Layer.Layer<SakuDaemon, DaemonError | RegistryError> =
   SakuDaemonLive().pipe(
     Layer.provide(ThreadRegistryLive),
+    // The registry's store: a file backend rooted at the threads dir (the
+    // same boundary the per-thread trail stores cross, one root up).
+    Layer.provide(RegistryKvLive),
     Layer.provide(ModelCatalogLive()),
     Layer.provide(PathsLive),
     Layer.provide(NodeFileSystem.layer),

@@ -12,13 +12,6 @@
 
 export { ensureAuthToken, readAuthToken, ensureSakuDirs } from "./auth.ts";
 export { RegistryError } from "./registry-error.ts";
-export {
-  isNotFound,
-  KvStore,
-  type DoStorageLike,
-  type KvEntry,
-  type KvStoreShape,
-} from "@saku/store";
 export { DoSessionRepo, DoSessionStorage, type DoSessionMetadata } from "./do-session.ts";
 export {
   ModelCatalog,

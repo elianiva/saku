@@ -46,15 +46,15 @@ never hold session state; they attach, tail, and command.
 
 ## Layout
 
-| Package           | Role                                                                                                                                       |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `packages/wire`   | the wire protocol: JSONL over WebSocket, hello/version, thread + session + skills commands, typed `WireClient` (an effect-machine actor)   |
-| `packages/store`  | the durability seam: the `KvStore` Effect service (the Durable Object storage contract) with memory, file, and DO storage backend layers   |
-| `packages/hub`    | the control-plane DO: registry, env provisioning (Box — incomplete, Freestyle planned), skills store, auth, routing, fan-out               |
-| `packages/worker` | the thread DO: pi-agent-core `Agent` + `Session` over DO storage, env client, idle-stop                                                    |
-| `packages/env`    | the hands daemon: pi tool surface over a streaming protocol, local and in-VM                                                               |
-| `packages/cli`    | local daemon management: `saku env start\|stop\|status`                                                                                    |
-| `packages/deploy` | the deployment's own code: the alchemy program (`alchemy.run.ts`), the workerd DOs (`SakuHubDO`/`SakuThreadDO`), the celld twin (`celld/`) |
+| Package           | Role                                                                                                                                                                                                                                                        |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `packages/wire`   | the wire protocol: JSONL over WebSocket, hello/version, thread + session + skills commands, typed `WireClient` (an effect-machine actor)                                                                                                                    |
+| `packages/store`  | the durability seam: the `KvStore` Effect service (the Durable Object storage contract) with memory, file, and DO storage backend layers, the typed JSON record layer (`jsonRecords`) for durable records under a key prefix, and the platform-error helper |
+| `packages/hub`    | the control-plane DO: registry, env provisioning (Box — incomplete, Freestyle planned), skills store, auth, routing, fan-out                                                                                                                                |
+| `packages/worker` | the thread DO: pi-agent-core `Agent` + `Session` over DO storage, env client, idle-stop                                                                                                                                                                     |
+| `packages/env`    | the hands daemon: pi tool surface over a streaming protocol, local and in-VM                                                                                                                                                                                |
+| `packages/cli`    | local daemon management: `saku env start\|stop\|status`                                                                                                                                                                                                     |
+| `packages/deploy` | the deployment's own code: the alchemy program (`alchemy.run.ts`), the workerd DOs (`SakuHubDO`/`SakuThreadDO`), the celld twin (`celld/`)                                                                                                                  |
 
 ## Prerequisites
 
