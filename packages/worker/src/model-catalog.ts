@@ -34,7 +34,7 @@ import {
 import { getApiProvider, registerBuiltInApiProviders } from "@earendil-works/pi-ai/compat";
 
 import { isNotFound } from "@saku/store";
-import { getAuthJsonPath, getModelsJsonPath } from "./paths.ts";
+import { Paths, PathsTest } from "./paths.ts";
 import { createModelCatalog, type ModelCatalogShape } from "./model-catalog-factory.ts";
 import {
   getMissingConfigValueEnvVarNames,
@@ -63,7 +63,7 @@ class AuthJsonCredentialStore implements CredentialStore {
     path: string,
     fs: FileSystem.FileSystem,
   ): Effect.Effect<AuthJsonCredentialStore, never> {
-    return Effect.gen(function* () {
+    return Effect.fn("load")(function* () {
       // Any read failure lands in the Result: missing auth.json is the default
       // install, an unreadable file is worth knowing — both yield an empty store.
       const content = yield* fs.readFileString(path).pipe(
@@ -88,7 +88,7 @@ class AuthJsonCredentialStore implements CredentialStore {
         return new AuthJsonCredentialStore(path, fs, parsed.success as Record<string, Credential>);
       }
       return new AuthJsonCredentialStore(path, fs, {});
-    });
+    })();
   }
 
   async read(providerId: string): Promise<Credential | undefined> {
@@ -190,76 +190,72 @@ const DECODE_MODELS_JSON = Schema.decodeUnknownSync(ModelsJsonSchema);
 
 const DEFAULT_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 
-const modelFromJson = (
+const modelFromJson = Effect.fn("modelFromJson")(function* (
   providerId: string,
   definition: ModelsJsonModel,
   config: ModelsJsonProviderConfig,
   env: Record<string, string>,
-): Effect.Effect<Model<Api>, ModelsJsonError> =>
-  Effect.gen(function* () {
-    const api = (definition.api ?? config.api) as Api | undefined;
-    if (api === undefined) {
-      return yield* Effect.fail(
-        new ModelsJsonError({
-          message: `Provider ${providerId}, model ${definition.id}: no "api" specified. Set at provider or model level.`,
-        }),
-      );
-    }
-    const baseUrl = definition.baseUrl ?? config.baseUrl;
-    if (baseUrl === undefined) {
-      return yield* Effect.fail(
-        new ModelsJsonError({
-          message: `Provider ${providerId}: "baseUrl" is required when defining custom models.`,
-        }),
-      );
-    }
-    const headers = resolveHeaders(definition.headers, env);
-    return {
-      id: definition.id,
-      name: definition.name ?? definition.id,
-      api,
-      provider: providerId,
-      baseUrl,
-      reasoning: definition.reasoning ?? false,
-      input: [...(definition.input ?? ["text"])],
-      cost: {
-        ...DEFAULT_COST,
-        input: definition.cost?.input ?? DEFAULT_COST.input,
-        output: definition.cost?.output ?? DEFAULT_COST.output,
-        cacheRead: definition.cost?.cacheRead ?? DEFAULT_COST.cacheRead,
-        cacheWrite: definition.cost?.cacheWrite ?? DEFAULT_COST.cacheWrite,
-      },
-      contextWindow: definition.contextWindow ?? 128_000,
-      maxTokens: definition.maxTokens ?? 16_384,
-      ...(headers === undefined ? {} : { headers }),
-      ...(definition.samplingParams === undefined
-        ? {}
-        : { samplingParams: definition.samplingParams }),
-    };
-  });
+) {
+  const api = (definition.api ?? config.api) as Api | undefined;
+  if (api === undefined) {
+    return yield* Effect.fail(
+      new ModelsJsonError({
+        message: `Provider ${providerId}, model ${definition.id}: no "api" specified. Set at provider or model level.`,
+      }),
+    );
+  }
+  const baseUrl = definition.baseUrl ?? config.baseUrl;
+  if (baseUrl === undefined) {
+    return yield* Effect.fail(
+      new ModelsJsonError({
+        message: `Provider ${providerId}: "baseUrl" is required when defining custom models.`,
+      }),
+    );
+  }
+  const headers = resolveHeaders(definition.headers, env);
+  return {
+    id: definition.id,
+    name: definition.name ?? definition.id,
+    api,
+    provider: providerId,
+    baseUrl,
+    reasoning: definition.reasoning ?? false,
+    input: [...(definition.input ?? ["text"])],
+    cost: {
+      ...DEFAULT_COST,
+      input: definition.cost?.input ?? DEFAULT_COST.input,
+      output: definition.cost?.output ?? DEFAULT_COST.output,
+      cacheRead: definition.cost?.cacheRead ?? DEFAULT_COST.cacheRead,
+      cacheWrite: definition.cost?.cacheWrite ?? DEFAULT_COST.cacheWrite,
+    },
+    contextWindow: definition.contextWindow ?? 128_000,
+    maxTokens: definition.maxTokens ?? 16_384,
+    ...(headers === undefined ? {} : { headers }),
+    ...(definition.samplingParams === undefined
+      ? {}
+      : { samplingParams: definition.samplingParams }),
+  };
+});
 
-const streamsFor = (
-  models: readonly Model<Api>[],
-): Effect.Effect<Partial<Record<Api, ProviderStreams>>, ModelsJsonError> =>
-  Effect.gen(function* () {
-    const streams: Partial<Record<Api, ProviderStreams>> = {};
-    for (const model of models) {
-      if (streams[model.api] !== undefined) continue;
-      const implementation = getApiProvider(model.api);
-      if (implementation === undefined) {
-        return yield* Effect.fail(
-          new ModelsJsonError({
-            message: `Provider ${model.provider}, model ${model.id}: no stream implementation for api "${model.api}".`,
-          }),
-        );
-      }
-      streams[model.api] = {
-        stream: implementation.stream as ProviderStreams["stream"],
-        streamSimple: implementation.streamSimple as ProviderStreams["streamSimple"],
-      };
+const streamsFor = Effect.fn("streamsFor")(function* (models: readonly Model<Api>[]) {
+  const streams: Partial<Record<Api, ProviderStreams>> = {};
+  for (const model of models) {
+    if (streams[model.api] !== undefined) continue;
+    const implementation = getApiProvider(model.api);
+    if (implementation === undefined) {
+      return yield* Effect.fail(
+        new ModelsJsonError({
+          message: `Provider ${model.provider}, model ${model.id}: no stream implementation for api "${model.api}".`,
+        }),
+      );
     }
-    return streams;
-  });
+    streams[model.api] = {
+      stream: implementation.stream as ProviderStreams["stream"],
+      streamSimple: implementation.streamSimple as ProviderStreams["streamSimple"],
+    };
+  }
+  return streams;
+});
 
 /**
  * ApiKeyAuth for models.json custom providers: a stored credential wins,
@@ -321,16 +317,17 @@ export class ModelCatalog extends Context.Service<ModelCatalog, ModelCatalogShap
 /** Build the catalog from auth.json, models.json, and pi's builtin providers. */
 export const ModelCatalogLive = (
   options: CatalogOptions = {},
-): Layer.Layer<ModelCatalog, never, FileSystem.FileSystem> =>
+): Layer.Layer<ModelCatalog, never, FileSystem.FileSystem | Paths> =>
   Layer.effect(
     ModelCatalog,
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
+      const paths = yield* Paths;
       // The daemon's own environment resolves models.json `$VAR`/`!cmd` values.
       const env = process.env as Record<string, string>;
       registerBuiltInApiProviders();
       const credentials = yield* AuthJsonCredentialStore.load(
-        options.authPath ?? getAuthJsonPath(),
+        options.authPath ?? paths.authJsonPath,
         fs,
       );
       // The shared construction: opencode-go + the scripted fixture over
@@ -338,7 +335,7 @@ export const ModelCatalogLive = (
       // check). models.json providers are added below.
       const catalog = createModelCatalog({ auth: { credentials }, env });
 
-      const config = yield* loadModelsJsonFrom(fs, options.modelsPath ?? getModelsJsonPath());
+      const config = yield* loadModelsJsonFrom(fs, options.modelsPath ?? paths.modelsJsonPath);
       for (const [providerId, providerConfig] of Object.entries(config.providers)) {
         const base = catalog.models.getProvider(providerId);
         yield* (
@@ -362,120 +359,127 @@ export const ModelCatalogLive = (
     }),
   );
 
-const loadModelsJsonFrom = (
+/**
+ * The test catalog: `ModelCatalogLive` over `PathsTest`'s temp layout —
+ * no auth.json, no models.json, so the builtin providers only (auth
+ * checks resolve against the daemon's env, as in production).
+ */
+export const ModelCatalogTest = (
+  home?: string,
+): Layer.Layer<ModelCatalog, never, FileSystem.FileSystem> =>
+  ModelCatalogLive().pipe(Layer.provide(PathsTest(home)));
+
+const loadModelsJsonFrom = Effect.fn("loadModelsJsonFrom")(function* (
   fs: FileSystem.FileSystem,
   path: string,
-): Effect.Effect<ModelsJson, never, never> =>
-  Effect.gen(function* () {
-    const raw = yield* fs.readFileString(path).pipe(
-      Effect.catch((error) => {
-        // No models.json is the default install; anything else is worth knowing.
-        if (isNotFound(error)) return Effect.succeed(undefined);
-        return Effect.logWarning(`failed to read models.json: ${String(error)}`).pipe(
-          Effect.as(undefined),
-        );
-      }),
-    );
-    if (raw === undefined) return { providers: {} };
-    const parsed = Result.try(() => DECODE_MODELS_JSON(raw));
-    if (Result.isFailure(parsed)) {
-      yield* Effect.logWarning(`models.json is not valid JSON: ${String(parsed.failure)}`);
-      return { providers: {} };
-    }
-    return parsed.success;
-  });
+) {
+  const raw = yield* fs.readFileString(path).pipe(
+    Effect.catch((error) => {
+      // No models.json is the default install; anything else is worth knowing.
+      if (isNotFound(error)) return Effect.succeed(undefined);
+      return Effect.logWarning(`failed to read models.json: ${String(error)}`).pipe(
+        Effect.as(undefined),
+      );
+    }),
+  );
+  if (raw === undefined) return { providers: {} };
+  const parsed = Result.try(() => DECODE_MODELS_JSON(raw));
+  if (Result.isFailure(parsed)) {
+    yield* Effect.logWarning(`models.json is not valid JSON: ${String(parsed.failure)}`);
+    return { providers: {} };
+  }
+  return parsed.success;
+});
 
 /** A models.json provider that is not a builtin: full construction. */
-const buildCustomProvider = (
+const buildCustomProvider = Effect.fn("buildCustomProvider")(function* (
   providerId: string,
   config: ModelsJsonProviderConfig,
   env: Record<string, string>,
-): Effect.Effect<Provider, ModelsJsonError> =>
-  Effect.gen(function* () {
-    const models: Model<Api>[] = [];
-    for (const definition of config.models ?? []) {
-      models.push(yield* modelFromJson(providerId, definition, config, env));
-    }
-    if (models.length === 0) {
-      return yield* Effect.fail(new ModelsJsonError({ message: "no models defined" }));
-    }
-    const auth: ProviderAuth = { apiKey: apiKeyAuthFor(providerId, config, env) };
-    const headers = resolveHeaders(config.headers, env);
-    const streams = yield* streamsFor(models);
-    return createProvider({
-      id: providerId,
-      name: config.name ?? providerId,
-      ...(config.baseUrl === undefined ? {} : { baseUrl: config.baseUrl }),
-      ...(headers === undefined ? {} : { headers }),
-      auth,
-      models,
-      api: streams,
-    });
+) {
+  const models: Model<Api>[] = [];
+  for (const definition of config.models ?? []) {
+    models.push(yield* modelFromJson(providerId, definition, config, env));
+  }
+  if (models.length === 0) {
+    return yield* Effect.fail(new ModelsJsonError({ message: "no models defined" }));
+  }
+  const auth: ProviderAuth = { apiKey: apiKeyAuthFor(providerId, config, env) };
+  const headers = resolveHeaders(config.headers, env);
+  const streams = yield* streamsFor(models);
+  return createProvider({
+    id: providerId,
+    name: config.name ?? providerId,
+    ...(config.baseUrl === undefined ? {} : { baseUrl: config.baseUrl }),
+    ...(headers === undefined ? {} : { headers }),
+    auth,
+    models,
+    api: streams,
   });
+});
 
 /**
  * models.json overlay over a builtin provider: base url, headers, model list
  * replacement, and per-model overrides. The provider's own auth is reused.
  */
-const overlayBuiltinProvider = (
+const overlayBuiltinProvider = Effect.fn("overlayBuiltinProvider")(function* (
   providerId: string,
   base: Provider,
   config: ModelsJsonProviderConfig,
   env: Record<string, string>,
-): Effect.Effect<Provider | undefined, ModelsJsonError> =>
-  Effect.gen(function* () {
-    const resolvedHeaders = resolveHeaders(config.headers, env);
-    const baseModels = base.getModels();
-    let models = baseModels.map((model) => ({
-      ...model,
-      baseUrl: config.baseUrl ?? model.baseUrl,
-      ...(resolvedHeaders === undefined ? {} : { headers: resolvedHeaders }),
-    }));
-    for (const definition of config.models ?? []) {
-      const existingIndex = models.findIndex((model) => model.id === definition.id);
-      const built = yield* modelFromJson(providerId, definition, config, env);
-      if (existingIndex >= 0) {
-        models[existingIndex] = built;
-      } else {
-        models.push(built);
-      }
+) {
+  const resolvedHeaders = resolveHeaders(config.headers, env);
+  const baseModels = base.getModels();
+  let models = baseModels.map((model) => ({
+    ...model,
+    baseUrl: config.baseUrl ?? model.baseUrl,
+    ...(resolvedHeaders === undefined ? {} : { headers: resolvedHeaders }),
+  }));
+  for (const definition of config.models ?? []) {
+    const existingIndex = models.findIndex((model) => model.id === definition.id);
+    const built = yield* modelFromJson(providerId, definition, config, env);
+    if (existingIndex >= 0) {
+      models[existingIndex] = built;
+    } else {
+      models.push(built);
     }
-    for (const [modelId, override] of Object.entries(config.modelOverrides ?? {})) {
-      const index = models.findIndex((model) => model.id === modelId);
-      const current = models[index];
-      if (index < 0 || current === undefined) continue;
-      models[index] = {
-        ...current,
-        name: override.name ?? current.name,
-        reasoning: override.reasoning ?? current.reasoning,
-        contextWindow: override.contextWindow ?? current.contextWindow,
-        maxTokens: override.maxTokens ?? current.maxTokens,
-        baseUrl: override.baseUrl ?? current.baseUrl,
-        ...(override.headers === undefined ? {} : { headers: override.headers }),
-        input: [...(override.input ?? current.input)],
-        cost: {
-          ...current.cost,
-          input: override.cost?.input ?? current.cost.input,
-          output: override.cost?.output ?? current.cost.output,
-          cacheRead: override.cost?.cacheRead ?? current.cost.cacheRead,
-          cacheWrite: override.cost?.cacheWrite ?? current.cost.cacheWrite,
-        },
-      };
-    }
-    const changed =
-      config.baseUrl !== undefined ||
-      resolvedHeaders !== undefined ||
-      (config.models?.length ?? 0) > 0 ||
-      Object.keys(config.modelOverrides ?? {}).length > 0;
-    if (!changed) return undefined;
-    const streams = yield* streamsFor(models);
-    return createProvider({
-      id: providerId,
-      name: config.name ?? base.name,
-      ...(config.baseUrl === undefined ? {} : { baseUrl: config.baseUrl }),
-      ...(resolvedHeaders === undefined ? {} : { headers: resolvedHeaders }),
-      auth: base.auth,
-      models,
-      api: streams,
-    });
+  }
+  for (const [modelId, override] of Object.entries(config.modelOverrides ?? {})) {
+    const index = models.findIndex((model) => model.id === modelId);
+    const current = models[index];
+    if (index < 0 || current === undefined) continue;
+    models[index] = {
+      ...current,
+      name: override.name ?? current.name,
+      reasoning: override.reasoning ?? current.reasoning,
+      contextWindow: override.contextWindow ?? current.contextWindow,
+      maxTokens: override.maxTokens ?? current.maxTokens,
+      baseUrl: override.baseUrl ?? current.baseUrl,
+      ...(override.headers === undefined ? {} : { headers: override.headers }),
+      input: [...(override.input ?? current.input)],
+      cost: {
+        ...current.cost,
+        input: override.cost?.input ?? current.cost.input,
+        output: override.cost?.output ?? current.cost.output,
+        cacheRead: override.cost?.cacheRead ?? current.cost.cacheRead,
+        cacheWrite: override.cost?.cacheWrite ?? current.cost.cacheWrite,
+      },
+    };
+  }
+  const changed =
+    config.baseUrl !== undefined ||
+    resolvedHeaders !== undefined ||
+    (config.models?.length ?? 0) > 0 ||
+    Object.keys(config.modelOverrides ?? {}).length > 0;
+  if (!changed) return undefined;
+  const streams = yield* streamsFor(models);
+  return createProvider({
+    id: providerId,
+    name: config.name ?? base.name,
+    ...(config.baseUrl === undefined ? {} : { baseUrl: config.baseUrl }),
+    ...(resolvedHeaders === undefined ? {} : { headers: resolvedHeaders }),
+    auth: base.auth,
+    models,
+    api: streams,
   });
+});

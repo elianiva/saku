@@ -100,14 +100,11 @@ export const decodeSessionEvent = (event: unknown): SessionEventProjection => {
  * is fully optional-fielded, so this only fails on non-records — bounded,
  * never crashes the trail).
  */
-export const decodeEntry = (
-  entry: unknown,
-): Effect.Effect<EntryProjection | undefined, never, never> =>
-  Effect.gen(function* () {
-    const decoded = Result.try(() => S.decodeUnknownSync(EntryProjection)(entry));
-    if (Result.isFailure(decoded)) {
-      yield* Effect.logWarning("dropping undecodable trail entry", decoded.failure);
-      return undefined;
-    }
-    return decoded.success;
-  });
+export const decodeEntry = Effect.fn("decodeEntry")(function* (entry: unknown) {
+  const decoded = Result.try(() => S.decodeUnknownSync(EntryProjection)(entry));
+  if (Result.isFailure(decoded)) {
+    yield* Effect.logWarning("dropping undecodable trail entry", decoded.failure);
+    return undefined;
+  }
+  return decoded.success;
+});

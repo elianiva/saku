@@ -108,7 +108,13 @@ const canned = (
       get_state: () =>
         Effect.succeed({
           payload: GetStateResponse.make({
-            state: { sessionId: null, state: "idle", tailSeq: 0, model: null, thinkingLevel: "off" },
+            state: {
+              sessionId: null,
+              state: "idle",
+              tailSeq: 0,
+              model: null,
+              thinkingLevel: "off",
+            },
           }),
           tailSeq: 0,
         }),
@@ -151,11 +157,10 @@ export const scriptedWorker = (): ScriptedWorker => {
         deleted.push(threadId);
       }),
     setEnvHandle: () => Effect.void,
-    command: (threadId, command) =>
-      Effect.gen(function* () {
-        commands.push({ threadId, command });
-        return yield* handler(threadId, command);
-      }),
+    command: Effect.fn("command")(function* (threadId, command) {
+      commands.push({ threadId, command });
+      return yield* handler(threadId, command);
+    }),
     close: () => Effect.void,
   };
 

@@ -106,27 +106,26 @@ export const WireLive = Layer.effect(
       });
     yield* attach(current);
 
-    const connect = (): Effect.Effect<HelloOk, WireError, never> =>
-      Effect.gen(function* () {
-        const resolved = yield* resolveConfig;
-        if (resolved._tag === "offline") {
-          return yield* Effect.fail(daemonOffline());
-        }
-        const endpoint = resolved.endpoint;
-        if (endpoint.url !== currentEndpoint.url) {
-          // The daemon restarted on a new port; the stale client's socket
-          // can never come back. Dispose it and swap in a fresh one.
-          yield* current.disconnect();
-          current = yield* makeWireClient({
-            url: endpoint.url,
-            token: endpoint.token,
-            role: "cli",
-          });
-          currentEndpoint = endpoint;
-          yield* attach(current);
-        }
-        return yield* current.connect();
-      });
+    const connect = Effect.fn("connect")(function* () {
+      const resolved = yield* resolveConfig;
+      if (resolved._tag === "offline") {
+        return yield* Effect.fail(daemonOffline());
+      }
+      const endpoint = resolved.endpoint;
+      if (endpoint.url !== currentEndpoint.url) {
+        // The daemon restarted on a new port; the stale client's socket
+        // can never come back. Dispose it and swap in a fresh one.
+        yield* current.disconnect();
+        current = yield* makeWireClient({
+          url: endpoint.url,
+          token: endpoint.token,
+          role: "cli",
+        });
+        currentEndpoint = endpoint;
+        yield* attach(current);
+      }
+      return yield* current.connect();
+    });
 
     return {
       get client(): WireClient {

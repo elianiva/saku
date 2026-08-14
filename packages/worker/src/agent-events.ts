@@ -36,40 +36,35 @@ const stripUndefined = <A>(value: A): A => {
 };
 
 /** Pi's agent events: durable appends on message_end, then wire projection. */
-export const handleAgentEvent = (
+export const handleAgentEvent = Effect.fn("handleAgentEvent")(function* (
   deps: HostDeps,
   event: AgentEvent,
-): Effect.Effect<void, SessionHostError, never> =>
-  Effect.gen(function* () {
-    if (event.type === "message_end") {
-      const message = event.message;
-      if (
-        message.role === "user" ||
-        message.role === "assistant" ||
-        message.role === "toolResult"
-      ) {
-        const entryId = yield* Effect.tryPromise({
-          try: () => deps.session.appendMessage(stripUndefined(message)),
-          catch: toSessionHostError,
-        });
-        const entry = yield* Effect.tryPromise({
-          try: () => deps.session.getEntry(entryId),
-          catch: toSessionHostError,
-        });
-        if (entry !== undefined) {
-          deps.sink({ type: "entry_appended", entry });
-        }
-      }
-      if (message.role === "assistant") {
-        yield* Ref.set(deps.lastAssistantRef, message as AssistantMessage);
+) {
+  if (event.type === "message_end") {
+    const message = event.message;
+    if (message.role === "user" || message.role === "assistant" || message.role === "toolResult") {
+      const entryId = yield* Effect.tryPromise({
+        try: () => deps.session.appendMessage(stripUndefined(message)),
+        catch: toSessionHostError,
+      });
+      const entry = yield* Effect.tryPromise({
+        try: () => deps.session.getEntry(entryId),
+        catch: toSessionHostError,
+      });
+      if (entry !== undefined) {
+        deps.sink({ type: "entry_appended", entry });
       }
     }
+    if (message.role === "assistant") {
+      yield* Ref.set(deps.lastAssistantRef, message as AssistantMessage);
+    }
+  }
 
-    const projected = projectAgentEvent(event);
-    if (projected !== null) {
-      deps.sink(projected);
-    }
-  });
+  const projected = projectAgentEvent(event);
+  if (projected !== null) {
+    deps.sink(projected);
+  }
+});
 
 /**
  * Project a pi AgentEvent onto the wire: `agent_end` is replaced by saku's

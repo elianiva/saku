@@ -11,30 +11,25 @@ import { NodeFileSystem } from "@effect/platform-node";
 import { Effect, FileSystem, Result } from "effect";
 
 import { listPiSessions, readPiSession, PiSessionsError } from "../src/pi-sessions.ts";
-import { getAgentDir } from "../src/paths.ts";
+import { Paths, PathsTest, type PathsShape } from "../src/paths.ts";
 
 const fs = await Effect.runPromise(Effect.provide(NodeFileSystem.layer)(Effect.gen(function* () {
   return yield* FileSystem.FileSystem;
 })));
 
-/** A temp dir acting as pi's agent dir (getAgentDir honors PI_CODING_AGENT_DIR). */
-const withPiAgentDir = async <T>(run: (root: string) => Promise<T>): Promise<T> => {
-  const root = await Effect.runPromise(fs.makeTempDirectory({ prefix: "saku-pi-test-" }));
-  const previous = process.env.PI_CODING_AGENT_DIR;
-  process.env.PI_CODING_AGENT_DIR = root;
-  try {
-    return await run(root);
-  } finally {
-    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
-    else process.env.PI_CODING_AGENT_DIR = previous;
-    await Effect.runPromise(fs.remove(root, { recursive: true, force: true }).pipe(Effect.catch(() => Effect.void)));
-  }
-};
+/** A temp dir acting as pi's agent dir; the layout comes from `PathsTest`. */
+const withPiAgentDir = async <T>(run: (root: string, paths: PathsShape) => Promise<T>): Promise<T> =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const paths = yield* Paths;
+      return yield* Effect.tryPromise(() => run(paths.agentDir, paths));
+    }).pipe(Effect.provide(PathsTest()), Effect.provide(NodeFileSystem.layer)),
+  );
 
 const writeSession = (root: string, cwdSlug: string, fileName: string, content: string): Promise<string> =>
   Effect.runPromise(
     Effect.gen(function* () {
-      const dir = `${getAgentDir()}/sessions/${cwdSlug}`;
+      const dir = `${root}/sessions/${cwdSlug}`;
       yield* fs.makeDirectory(dir, { recursive: true });
       yield* fs.writeFileString(`${dir}/${fileName}`, content);
       return `${dir}/${fileName}`;
@@ -57,10 +52,10 @@ const V3_SESSION = [
 
 describe("listPiSessions", () => {
   it("lists v3 sessions with pi's buildSessionInfo semantics", async () => {
-    await withPiAgentDir(async (root) => {
+    await withPiAgentDir(async (root, paths) => {
       const path = await writeSession(root, "--tmp-pi-workspace--", "2026-01-31T22-33-31-764Z_v3sess0001.jsonl", V3_SESSION);
 
-      const sessions = await Effect.runPromise(listPiSessions(fs));
+      const sessions = await Effect.runPromise(listPiSessions(fs, paths));
       expect(sessions).toHaveLength(1);
       expect(sessions[0]).toMatchObject({
         id: "v3sess0001",
@@ -74,18 +69,18 @@ describe("listPiSessions", () => {
   });
 
   it("skips malformed and non-session files silently", async () => {
-    await withPiAgentDir(async (root) => {
+    await withPiAgentDir(async (root, paths) => {
       await writeSession(root, "--tmp-other--", "not-json.jsonl", "not json at all\n");
       await writeSession(root, "--tmp-other--", "empty.jsonl", "");
       await writeSession(root, "--tmp-other--", "good.jsonl", V3_SESSION);
-      const sessions = await Effect.runPromise(listPiSessions(fs));
+      const sessions = await Effect.runPromise(listPiSessions(fs, paths));
       expect(sessions).toHaveLength(1);
       expect(sessions[0]?.id).toBe("v3sess0001");
     });
   });
 
   it("lists v4 sessions through the header line", async () => {
-    await withPiAgentDir(async (root) => {
+    await withPiAgentDir(async (root, paths) => {
       const content = [
         '{"kind":"header","version":4,"id":"v4sess0001","createdAt":1780500000000,"cwd":"/tmp/v4-workspace"}',
         '{"kind":"entry","seq":1,"lane":"main","id":"e1","type":"model_change","parentId":null,"timestamp":1780500000001,"provider":"p","modelId":"m"}',
@@ -94,7 +89,7 @@ describe("listPiSessions", () => {
       ].join("\n") + "\n";
       await writeSession(root, "--tmp-v4-workspace--", "2026-01-31T22-33-31-764Z_v4sess0001.jsonl", content);
 
-      const sessions = await Effect.runPromise(listPiSessions(fs));
+      const sessions = await Effect.runPromise(listPiSessions(fs, paths));
       expect(sessions).toHaveLength(1);
       expect(sessions[0]).toMatchObject({
         id: "v4sess0001",
@@ -107,12 +102,12 @@ describe("listPiSessions", () => {
   });
 
   it("sorts newest first by modified time", async () => {
-    await withPiAgentDir(async (root) => {
+    await withPiAgentDir(async (root, paths) => {
       const oldContent = V3_SESSION;
       const newContent = V3_SESSION.replace("v3sess0001", "v3sess0002").replace("/tmp/pi-workspace", "/tmp/pi-other");
       await writeSession(root, "--tmp-pi-workspace--", "2026-01-31T22-33-31-764Z_v3sess0001.jsonl", oldContent);
       const newPath = await writeSession(root, "--tmp-pi-other--", "2026-02-01T22-33-31-764Z_v3sess0002.jsonl", newContent);
-      const sessions = await Effect.runPromise(listPiSessions(fs));
+      const sessions = await Effect.runPromise(listPiSessions(fs, paths));
       expect(sessions.map((s) => s.id)).toEqual(["v3sess0002", "v3sess0001"]);
       expect(sessions[0]?.path).toBe(newPath);
     });
@@ -121,9 +116,9 @@ describe("listPiSessions", () => {
 
 describe("readPiSession (v3)", () => {
   it("maps v3 lines to consecutive, replayable mutations", async () => {
-    await withPiAgentDir(async (root) => {
+    await withPiAgentDir(async (root, paths) => {
       const path = await writeSession(root, "--tmp-pi-workspace--", "2026-01-31T22-33-31-764Z_v3sess0001.jsonl", V3_SESSION);
-      const data = await Effect.runPromise(readPiSession(fs, path));
+      const data = await Effect.runPromise(readPiSession(fs, paths, path));
 
       expect(data).toMatchObject({
         id: "v3sess0001",
@@ -172,7 +167,7 @@ describe("readPiSession (v3)", () => {
   });
 
   it("re-parents through consecutive facts", async () => {
-    await withPiAgentDir(async (root) => {
+    await withPiAgentDir(async (root, paths) => {
       const content = [
         '{"type":"session","version":3,"id":"chain0001","timestamp":"2026-01-31T22:00:00.000Z","cwd":"/tmp/chain"}',
         '{"type":"message","id":"a","parentId":null,"timestamp":"2026-01-31T22:00:01.000Z","message":{"role":"user","content":"one"}}',
@@ -181,7 +176,7 @@ describe("readPiSession (v3)", () => {
         '{"type":"message","id":"b","parentId":"f2","timestamp":"2026-01-31T22:00:04.000Z","message":{"role":"assistant","content":"two"}}',
       ].join("\n") + "\n";
       const path = await writeSession(root, "--tmp-chain--", "chain0001.jsonl", content);
-      const data = await Effect.runPromise(readPiSession(fs, path));
+      const data = await Effect.runPromise(readPiSession(fs, paths, path));
       const b = data.mutations.find((m) => m.kind === "entry" && m.entry.id === "b");
       // f2's parent is f1, whose parent is a — b chains to a.
       expect(b?.kind === "entry" ? b.entry.parentId : null).toBe("a");
@@ -191,7 +186,7 @@ describe("readPiSession (v3)", () => {
   });
 
   it("synthesizes retainedTail for compaction entries", async () => {
-    await withPiAgentDir(async (root) => {
+    await withPiAgentDir(async (root, paths) => {
       const content = [
         '{"type":"session","version":3,"id":"comp00001","timestamp":"2026-01-31T22:00:00.000Z","cwd":"/tmp/comp"}',
         '{"type":"message","id":"a","parentId":null,"timestamp":"2026-01-31T22:00:01.000Z","message":{"role":"user","content":"old 1"}}',
@@ -200,7 +195,7 @@ describe("readPiSession (v3)", () => {
         '{"type":"message","id":"d","parentId":"c","timestamp":"2026-01-31T22:00:04.000Z","message":{"role":"user","content":"new 1"}}',
       ].join("\n") + "\n";
       const path = await writeSession(root, "--tmp-comp--", "comp00001.jsonl", content);
-      const data = await Effect.runPromise(readPiSession(fs, path));
+      const data = await Effect.runPromise(readPiSession(fs, paths, path));
       const compaction = data.mutations.find((m) => m.kind === "entry" && m.entry.id === "c");
       const entry = compaction?.kind === "entry" ? compaction.entry : undefined;
       expect(entry?.type).toBe("compaction");
@@ -213,14 +208,14 @@ describe("readPiSession (v3)", () => {
   });
 
   it("rejects a broken parent chain with the offending line", async () => {
-    await withPiAgentDir(async (root) => {
+    await withPiAgentDir(async (root, paths) => {
       const content = [
         '{"type":"session","version":3,"id":"broken001","timestamp":"2026-01-31T22:00:00.000Z","cwd":"/tmp/broken"}',
         '{"type":"message","id":"a","parentId":null,"timestamp":"2026-01-31T22:00:01.000Z","message":{"role":"user","content":"one"}}',
         '{"type":"message","id":"b","parentId":"ghost","timestamp":"2026-01-31T22:00:02.000Z","message":{"role":"assistant","content":"two"}}',
       ].join("\n") + "\n";
       const path = await writeSession(root, "--tmp-broken--", "broken001.jsonl", content);
-      const outcome = await Effect.runPromise(readPiSession(fs, path).pipe(Effect.result));
+      const outcome = await Effect.runPromise(readPiSession(fs, paths, path).pipe(Effect.result));
       expect(Result.isFailure(outcome)).toBe(true);
       if (Result.isFailure(outcome)) {
         expect(outcome.failure).toBeInstanceOf(PiSessionsError);
@@ -233,7 +228,7 @@ describe("readPiSession (v3)", () => {
 
 describe("readPiSession (v4)", () => {
   it("adopts a v4 file through pi's own repo, re-pinning lanes", async () => {
-    await withPiAgentDir(async (root) => {
+    await withPiAgentDir(async (root, paths) => {
       const content = [
         '{"kind":"header","version":4,"id":"v4imp0001","createdAt":1780500000000,"cwd":"/tmp/v4-import"}',
         '{"kind":"entry","seq":1,"lane":"main","id":"e1","type":"model_change","parentId":null,"timestamp":1780500000001,"provider":"p","modelId":"m"}',
@@ -243,7 +238,7 @@ describe("readPiSession (v4)", () => {
       ].join("\n") + "\n";
       const path = await writeSession(root, "--tmp-v4-import--", "2026-01-31T22-33-31-764Z_v4imp0001.jsonl", content);
 
-      const data = await Effect.runPromise(readPiSession(fs, path));
+      const data = await Effect.runPromise(readPiSession(fs, paths, path));
       expect(data).toMatchObject({ id: "v4imp0001", cwd: "/tmp/v4-import", name: "v4 imported" });
       const entries = data.mutations.filter((m) => m.kind === "entry");
       expect(entries).toHaveLength(3);

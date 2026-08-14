@@ -1,7 +1,7 @@
 /**
  * Pi sessions (pi-sessions.ts): the local daemon's window into pi's own
- * session files — `~/.pi/agent/sessions/**` (via getAgentDir, which honors
- * `PI_CODING_AGENT_DIR`) — listed and adopted as saku threads.
+ * session files — `~/.pi/agent/sessions/**` (the layout's `agentDir`,
+ * honoring `PI_CODING_AGENT_DIR`) — listed and adopted as saku threads.
  *
  * pi's shell writes the v3 format (`CURRENT_SESSION_VERSION = 3` in pi's
  * session-manager): one jsonl file per session, a `session` header line
@@ -51,7 +51,7 @@ import {
   type Result as PiResult,
 } from "@earendil-works/pi-agent-core";
 
-import { getAgentDir } from "./paths.ts";
+import type { PathsShape } from "./paths.ts";
 import type { SessionMutation } from "./session-state.ts";
 
 /** The failures of the pi-sessions window. */
@@ -88,8 +88,8 @@ export interface PiSessionData {
   readonly mutations: readonly SessionMutation[];
 }
 
-/** The sessions root under pi's agent dir. */
-export const getPiSessionsDir = (): string => join(getAgentDir(), "sessions");
+/** The sessions root under pi's agent dir (from the caller's layout). */
+const sessionsRootOf = (paths: PathsShape): string => join(paths.agentDir, "sessions");
 
 const parseLine = (line: string): Record<string, unknown> | undefined => {
   const trimmed = line.trim();
@@ -119,8 +119,11 @@ const textContent = (content: unknown): string => {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
     return content
-      .filter((block): block is { type: "text"; text: string } =>
-        typeof block === "object" && block !== null && (block as { type?: string }).type === "text",
+      .filter(
+        (block): block is { type: "text"; text: string } =>
+          typeof block === "object" &&
+          block !== null &&
+          (block as { type?: string }).type === "text",
       )
       .map((block) => block.text)
       .join(" ");
@@ -210,7 +213,10 @@ const scanV3Lines = (
  * input; `PiSessionsError` carries the offending line when the chain cannot
  * be replayed (broken parent, duplicate id).
  */
-const parseV3 = (path: string, lines: readonly string[]): Result.Result<PiSessionData, PiSessionsError> =>
+const parseV3 = (
+  path: string,
+  lines: readonly string[],
+): Result.Result<PiSessionData, PiSessionsError> =>
   Result.try({
     try: () => {
       const header = parseV3Header(parseLine(lines[0] ?? "") ?? {});
@@ -339,7 +345,13 @@ const parseV3 = (path: string, lines: readonly string[]): Result.Result<PiSessio
           // pi's list view counts only `message`-typed lines.
         } else if (V3_ENTRY_TYPES.has(type)) {
           registerEntry(obj, line, type, (resolvedParent, timestamp, seq) => {
-            const { type: _type, id: _id, parentId: _parentId, timestamp: _timestamp, ...fields } = obj;
+            const {
+              type: _type,
+              id: _id,
+              parentId: _parentId,
+              timestamp: _timestamp,
+              ...fields
+            } = obj;
             return {
               ...fields,
               type,
@@ -419,11 +431,14 @@ const parseV3 = (path: string, lines: readonly string[]): Result.Result<PiSessio
  * the repo's own error reporting — the errno taxonomy is not needed here. */
 const jsonlFsOf = (fs: FileSystem.FileSystem): JsonlSessionRepoFileSystem => {
   const fail = (path: string, error: unknown): FileError =>
-    new FileError("unknown", `filesystem error: ${error instanceof Error ? error.message : String(error)}`, path);
+    new FileError(
+      "unknown",
+      `filesystem error: ${error instanceof Error ? error.message : String(error)}`,
+      path,
+    );
   const run = <T>(effect: Effect.Effect<T, unknown, never>): Promise<PiResult<T, FileError>> =>
-    Effect.runPromise(effect.pipe(Effect.result)).then(
-      (outcome): PiResult<T, FileError> =>
-        Result.isSuccess(outcome) ? ok(outcome.success) : err(fail("", outcome.failure)),
+    Effect.runPromise(effect.pipe(Effect.result)).then((outcome): PiResult<T, FileError> =>
+      Result.isSuccess(outcome) ? ok(outcome.success) : err(fail("", outcome.failure)),
     );
   return {
     absolutePath: (path) => run(Effect.succeed(resolve(path))),
@@ -431,17 +446,26 @@ const jsonlFsOf = (fs: FileSystem.FileSystem): JsonlSessionRepoFileSystem => {
     readTextFile: (path) => run(fs.readFileString(path)),
     writeFile: (path, content) =>
       Effect.runPromise(
-        fs.writeFileString(path, typeof content === "string" ? content : Buffer.from(content).toString()).pipe(Effect.result),
-      ).then(
-        (outcome): PiResult<void, FileError> =>
-          Result.isSuccess(outcome) ? ok(undefined) : err(fail(path, outcome.failure)),
+        fs
+          .writeFileString(
+            path,
+            typeof content === "string" ? content : Buffer.from(content).toString(),
+          )
+          .pipe(Effect.result),
+      ).then((outcome): PiResult<void, FileError> =>
+        Result.isSuccess(outcome) ? ok(undefined) : err(fail(path, outcome.failure)),
       ),
     appendFile: (path, content) =>
       Effect.runPromise(
-        fs.writeFileString(path, typeof content === "string" ? content : Buffer.from(content).toString(), { flag: "a" }).pipe(Effect.result),
-      ).then(
-        (outcome): PiResult<void, FileError> =>
-          Result.isSuccess(outcome) ? ok(undefined) : err(fail(path, outcome.failure)),
+        fs
+          .writeFileString(
+            path,
+            typeof content === "string" ? content : Buffer.from(content).toString(),
+            { flag: "a" },
+          )
+          .pipe(Effect.result),
+      ).then((outcome): PiResult<void, FileError> =>
+        Result.isSuccess(outcome) ? ok(undefined) : err(fail(path, outcome.failure)),
       ),
     renameFile: (sourcePath, destinationPath) =>
       Effect.runPromise(fs.rename(sourcePath, destinationPath).pipe(Effect.result)).then(
@@ -460,9 +484,8 @@ const jsonlFsOf = (fs: FileSystem.FileSystem): JsonlSessionRepoFileSystem => {
           })),
           Effect.result,
         ),
-      ).then(
-        (outcome): PiResult<FileInfo, FileError> =>
-          Result.isSuccess(outcome) ? ok(outcome.success) : err(fail(path, outcome.failure)),
+      ).then((outcome): PiResult<FileInfo, FileError> =>
+        Result.isSuccess(outcome) ? ok(outcome.success) : err(fail(path, outcome.failure)),
       ),
     listDir: (path) =>
       Effect.runPromise(fs.readDirectory(path).pipe(Effect.result)).then(
@@ -487,9 +510,8 @@ const jsonlFsOf = (fs: FileSystem.FileSystem): JsonlSessionRepoFileSystem => {
     createDir: (path, options) =>
       Effect.runPromise(
         fs.makeDirectory(path, { recursive: options?.recursive ?? true }).pipe(Effect.result),
-      ).then(
-        (outcome): PiResult<void, FileError> =>
-          Result.isSuccess(outcome) ? ok(undefined) : err(fail(path, outcome.failure)),
+      ).then((outcome): PiResult<void, FileError> =>
+        Result.isSuccess(outcome) ? ok(undefined) : err(fail(path, outcome.failure)),
       ),
     remove: (path, options) =>
       Effect.runPromise(
@@ -499,16 +521,19 @@ const jsonlFsOf = (fs: FileSystem.FileSystem): JsonlSessionRepoFileSystem => {
             force: options?.force ?? false,
           })
           .pipe(Effect.result),
-      ).then(
-        (outcome): PiResult<void, FileError> =>
-          Result.isSuccess(outcome) ? ok(undefined) : err(fail(path, outcome.failure)),
+      ).then((outcome): PiResult<void, FileError> =>
+        Result.isSuccess(outcome) ? ok(undefined) : err(fail(path, outcome.failure)),
       ),
   };
 };
 
 /** v4 log items are the same mutation vocabulary with seq hoisted and lane
  * dropped from entries — normalize to saku's SessionMutation. */
-const logItemToMutation = (item: { readonly kind: string; readonly seq: number; [key: string]: unknown }): SessionMutation => {
+const logItemToMutation = (item: {
+  readonly kind: string;
+  readonly seq: number;
+  [key: string]: unknown;
+}): SessionMutation => {
   if (item.kind === "entry") {
     return { kind: "entry", entry: item.entry as Entry };
   }
@@ -551,98 +576,97 @@ const scanV4Lines = (
 
 /** Scan one session file into its summary; Option.none when it is not a
  * readable pi session (pi's own list skips those silently). */
-const scanFile = (
-  fs: FileSystem.FileSystem,
-  path: string,
-): Effect.Effect<Option.Option<PiSessionSummary>, never, never> =>
-  Effect.gen(function* () {
-    const content = yield* fs.readFileString(path).pipe(Effect.catch(() => Effect.succeed("")));
-    if (content.length === 0) return Option.none();
-    const lines = content.split("\n");
-    const first = parseLine(lines[0] ?? "");
-    if (first === undefined) return Option.none();
-    const summary =
-      first.type === "session"
-        ? scanV3Lines(path, lines)
-        : first.kind === "header" && first.version === 4
-          ? scanV4Lines(first, lines)
-          : undefined;
-    if (summary === undefined) return Option.none();
-    const stat = yield* fs.stat(path).pipe(Effect.catch(() => Effect.succeed(undefined)));
-    return Option.some({
-      ...summary,
-      modifiedAt:
-        stat !== undefined && Option.isSome(stat.mtime)
-          ? stat.mtime.value.getTime()
-          : summary.createdAt,
-      path,
-    });
+const scanFile = Effect.fn("scanFile")(function* (fs: FileSystem.FileSystem, path: string) {
+  const content = yield* fs.readFileString(path).pipe(Effect.catch(() => Effect.succeed("")));
+  if (content.length === 0) return Option.none();
+  const lines = content.split("\n");
+  const first = parseLine(lines[0] ?? "");
+  if (first === undefined) return Option.none();
+  const summary =
+    first.type === "session"
+      ? scanV3Lines(path, lines)
+      : first.kind === "header" && first.version === 4
+        ? scanV4Lines(first, lines)
+        : undefined;
+  if (summary === undefined) return Option.none();
+  const stat = yield* fs.stat(path).pipe(Effect.catch(() => Effect.succeed(undefined)));
+  return Option.some({
+    ...summary,
+    modifiedAt:
+      stat !== undefined && Option.isSome(stat.mtime)
+        ? stat.mtime.value.getTime()
+        : summary.createdAt,
+    path,
   });
+});
 
 /** List every readable pi session under the sessions root, newest first. */
-export const listPiSessions = (
+export const listPiSessions = Effect.fn("listPiSessions")(function* (
   fs: FileSystem.FileSystem,
-): Effect.Effect<readonly PiSessionSummary[], PiSessionsError, never> =>
-  Effect.gen(function* () {
-    const root = getPiSessionsDir();
-    const dirs = yield* fs.readDirectory(root).pipe(Effect.catch(() => Effect.succeed([] as string[])));
-    const files: string[] = [];
-    for (const dir of dirs) {
-      const entries = yield* fs.readDirectory(`${root}/${dir}`).pipe(
-        Effect.catch(() => Effect.succeed([] as string[])),
-      );
-      for (const entry of entries) {
-        if (entry.endsWith(".jsonl")) files.push(`${root}/${dir}/${entry}`);
-      }
+  paths: PathsShape,
+): Effect.fn.Return<readonly PiSessionSummary[], PiSessionsError, never> {
+  const root = sessionsRootOf(paths);
+  const dirs = yield* fs
+    .readDirectory(root)
+    .pipe(Effect.catch(() => Effect.succeed([] as string[])));
+  const files: string[] = [];
+  for (const dir of dirs) {
+    const entries = yield* fs
+      .readDirectory(`${root}/${dir}`)
+      .pipe(Effect.catch(() => Effect.succeed([] as string[])));
+    for (const entry of entries) {
+      if (entry.endsWith(".jsonl")) files.push(`${root}/${dir}/${entry}`);
     }
-    const scanned = yield* Effect.forEach(files, (path) => scanFile(fs, path), {
-      concurrency: 10,
-    });
-    return scanned
-      .filter((entry): entry is Option.Some<PiSessionSummary> => Option.isSome(entry))
-      .map((entry) => entry.value)
-      .sort((a, b) => b.modifiedAt - a.modifiedAt);
+  }
+  const scanned = yield* Effect.forEach(files, (path) => scanFile(fs, path), {
+    concurrency: 10,
   });
+  return scanned
+    .filter((entry): entry is Option.Some<PiSessionSummary> => Option.isSome(entry))
+    .map((entry) => entry.value)
+    .sort((a, b) => b.modifiedAt - a.modifiedAt);
+});
 
 /** Parse one pi session file for adoption (v3 natively, v4 via pi's repo). */
-export const readPiSession = (
+export const readPiSession = Effect.fn("readPiSession")(function* (
   fs: FileSystem.FileSystem,
+  paths: PathsShape,
   path: string,
-): Effect.Effect<PiSessionData, PiSessionsError, never> =>
-  Effect.gen(function* () {
-    const content = yield* fs.readFileString(path).pipe(
-      Effect.mapError(
-        (error) =>
-          new PiSessionsError({
-            kind: "not_found",
-            message: `cannot read pi session ${path}: ${error instanceof Error ? error.message : String(error)}`,
-            cause: error,
-          }),
-      ),
-    );
-    const lines = content.split("\n");
-    const first = parseLine(lines[0] ?? "");
-    if (first === undefined) {
-      return yield* Effect.fail(
-        new PiSessionsError({ kind: "invalid", message: `${path}: not a pi session file` }),
-      );
-    }
-    if (first.type === "session") {
-      const outcome = parseV3(path, lines);
-      if (Result.isFailure(outcome)) return yield* Effect.fail(outcome.failure);
-      return outcome.success;
-    }
-    if (first.kind === "header" && first.version === 4) {
-      return yield* readV4(fs, path, first);
-    }
+) {
+  const content = yield* fs.readFileString(path).pipe(
+    Effect.mapError(
+      (error) =>
+        new PiSessionsError({
+          kind: "not_found",
+          message: `cannot read pi session ${path}: ${error instanceof Error ? error.message : String(error)}`,
+          cause: error,
+        }),
+    ),
+  );
+  const lines = content.split("\n");
+  const first = parseLine(lines[0] ?? "");
+  if (first === undefined) {
     return yield* Effect.fail(
       new PiSessionsError({ kind: "invalid", message: `${path}: not a pi session file` }),
     );
-  });
+  }
+  if (first.type === "session") {
+    const outcome = parseV3(path, lines);
+    if (Result.isFailure(outcome)) return yield* Effect.fail(outcome.failure);
+    return outcome.success;
+  }
+  if (first.kind === "header" && first.version === 4) {
+    return yield* readV4(fs, paths, path, first);
+  }
+  return yield* Effect.fail(
+    new PiSessionsError({ kind: "invalid", message: `${path}: not a pi session file` }),
+  );
+});
 
 /** Adopt a v4 file through pi-agent-core's own repo (its codec, its repair). */
 const readV4 = (
   fs: FileSystem.FileSystem,
+  paths: PathsShape,
   path: string,
   header: Record<string, unknown>,
 ): Effect.Effect<PiSessionData, PiSessionsError, never> =>
@@ -661,7 +685,7 @@ const readV4 = (
       };
       const repo = new JsonlSessionRepo({
         fs: jsonlFsOf(fs),
-        sessionsRoot: getPiSessionsDir(),
+        sessionsRoot: sessionsRootOf(paths),
       });
       const session = await repo.open(metadata);
       const log = await session.getLog();
@@ -678,7 +702,11 @@ const readV4 = (
       for (const item of log) {
         if (item.kind === "fact" && item.fact === "name" && typeof item.name === "string") {
           name = item.name;
-        } else if (item.kind === "entry" && item.entry.type === "message" && firstMessage.length === 0) {
+        } else if (
+          item.kind === "entry" &&
+          item.entry.type === "message" &&
+          firstMessage.length === 0
+        ) {
           const message = item.entry.message;
           if (message !== undefined && (message.role === "user" || message.role === "assistant")) {
             firstMessage = textContent(message.content);

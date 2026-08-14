@@ -54,73 +54,69 @@ export interface HubServerShape {
  * discipline, so the protocol's contract is exercised by both until the
  * rework lands (plan 0001).
  */
-export const makeHubServer = (
-  options: HubServerOptions,
-): Effect.Effect<HubServerShape, HubError, Scope.Scope> =>
-  Effect.gen(function* () {
-    const { hub, token } = options;
-    // The env relay: a separate port for M3 (the DO adapter of M4
-    // multiplexes both behind the deployment's domain).
-    const relay: Option.Option<HubRelayShape> =
-      options.relay === true
-        ? Option.some(
-            yield* makeHubRelay({ token }).pipe(
-              // The relay's raw socket failures are hub startup failures.
-              Effect.mapError(
-                (error) =>
-                  new HubError({
-                    kind: "startup",
-                    message: `relay: ${error instanceof Error ? error.message : String(error)}`,
-                    cause: error,
-                  }),
-              ),
+export const makeHubServer = Effect.fn("makeHubServer")(function* (options: HubServerOptions) {
+  const { hub, token } = options;
+  // The env relay: a separate port for M3 (the DO adapter of M4
+  // multiplexes both behind the deployment's domain).
+  const relay: Option.Option<HubRelayShape> =
+    options.relay === true
+      ? Option.some(
+          yield* makeHubRelay({ token }).pipe(
+            // The relay's raw socket failures are hub startup failures.
+            Effect.mapError(
+              (error) =>
+                new HubError({
+                  kind: "startup",
+                  message: `relay: ${error instanceof Error ? error.message : String(error)}`,
+                  cause: error,
+                }),
             ),
-          )
-        : Option.none();
-    const core: WireCoreShape = yield* makeWireCore({ hub, token });
-    const closedRef = yield* Ref.make(false);
-    const serverRef = yield* Ref.make<Option.Option<WebSocketServer>>(Option.none());
+          ),
+        )
+      : Option.none();
+  const core: WireCoreShape = yield* makeWireCore({ hub, token });
+  const closedRef = yield* Ref.make(false);
+  const serverRef = yield* Ref.make<Option.Option<WebSocketServer>>(Option.none());
 
-    const log = (message: string): Effect.Effect<void, never, never> =>
-      Effect.logError(`[saku-hub] ${message}`);
+  const log = (message: string): Effect.Effect<void, never, never> =>
+    Effect.logError(`[saku-hub] ${message}`);
 
-    const close = (): Effect.Effect<void, never> =>
-      Effect.gen(function* () {
-        const closed = yield* Ref.get(closedRef);
-        if (closed) return;
-        yield* Ref.set(closedRef, true);
-        yield* core.close();
-        const server = yield* Ref.get(serverRef);
-        if (Option.isSome(server)) {
-          yield* Effect.callback<void>((resume) => {
-            server.value.close(() => resume(Effect.void));
-            return Effect.void;
-          });
-        }
-        if (Option.isSome(relay)) {
-          yield* relay.value.close();
-        }
+  const close = Effect.fn("close")(function* () {
+    const closed = yield* Ref.get(closedRef);
+    if (closed) return;
+    yield* Ref.set(closedRef, true);
+    yield* core.close();
+    const server = yield* Ref.get(serverRef);
+    if (Option.isSome(server)) {
+      yield* Effect.callback<void>((resume) => {
+        server.value.close(() => resume(Effect.void));
+        return Effect.void;
       });
-
-    // listenWs owns the server's lifecycle: it resolves once the server is
-    // listening and closes it when the scope closes (interruption).
-    const server = yield* listenWs<HubError>({
-      onConnection: (socket) => {
-        // The connection handler lives for the socket's lifetime; the scope
-        // closes with the socket (the runConnection finalizer drops the client).
-        void Effect.runFork(core.runConnection(asSocketLike(socket)).pipe(Effect.scoped));
-      },
-      onError: (error) => {
-        // The listenWs mapper is a sync callback: fork the log.
-        void Effect.runFork(log(`server error: ${error.message}`));
-        return new HubError({ kind: "startup", message: error.message, cause: error });
-      },
-    });
-    yield* Ref.set(serverRef, Option.some(server));
-    yield* Effect.addFinalizer(() => close());
-    return {
-      url: wsUrlOf(server),
-      relayUrl: Option.isSome(relay) ? relay.value.url : null,
-      close,
-    };
+    }
+    if (Option.isSome(relay)) {
+      yield* relay.value.close();
+    }
   });
+
+  // listenWs owns the server's lifecycle: it resolves once the server is
+  // listening and closes it when the scope closes (interruption).
+  const server = yield* listenWs<HubError>({
+    onConnection: (socket) => {
+      // The connection handler lives for the socket's lifetime; the scope
+      // closes with the socket (the runConnection finalizer drops the client).
+      void Effect.runFork(core.runConnection(asSocketLike(socket)).pipe(Effect.scoped));
+    },
+    onError: (error) => {
+      // The listenWs mapper is a sync callback: fork the log.
+      void Effect.runFork(log(`server error: ${error.message}`));
+      return new HubError({ kind: "startup", message: error.message, cause: error });
+    },
+  });
+  yield* Ref.set(serverRef, Option.some(server));
+  yield* Effect.addFinalizer(() => close());
+  return {
+    url: wsUrlOf(server),
+    relayUrl: Option.isSome(relay) ? relay.value.url : null,
+    close,
+  };
+});

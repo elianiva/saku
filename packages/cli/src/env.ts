@@ -19,7 +19,7 @@ import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Effect, Option, Schema } from "effect";
 import { RemoteEnv, getEnvConfigPath, getEnvLogPath, getEnvUrlPath, nodeSocket } from "@saku/env";
-import { getAuthPath } from "@saku/worker";
+import { Paths, type PathsShape } from "@saku/worker";
 
 import { type DaemonLifecycleConfig } from "./lifecycle.ts";
 
@@ -42,56 +42,61 @@ export const readEnvConfig = (): Effect.Effect<Option.Option<EnvConfig>, never, 
   );
 
 /** Read ~/.saku/auth, creating it (0600) when absent — the deployment secret. */
-const ensureHubToken = (): Effect.Effect<string, Error, never> =>
-  Effect.gen(function* () {
-    const existing = yield* Effect.tryPromise(() => readFile(getAuthPath(), "utf8")).pipe(
-      Effect.map((content) => content.trim()),
-      Effect.catch(() => Effect.succeed("")),
-    );
-    if (existing.length > 0) return existing;
-    const token = randomBytes(32).toString("hex");
-    yield* Effect.tryPromise(() => mkdir(dirname(getAuthPath()), { recursive: true, mode: 0o700 }));
-    yield* Effect.tryPromise(() => writeFile(getAuthPath(), `${token}\n`, { mode: 0o600 }));
-    return token;
-  });
+const ensureHubToken = Effect.fn("ensureHubToken")(function* (
+  paths: PathsShape,
+): Effect.fn.Return<string, Error, never> {
+  const existing = yield* Effect.tryPromise(() => readFile(paths.authPath, "utf8")).pipe(
+    Effect.map((content) => content.trim()),
+    Effect.catch(() => Effect.succeed("")),
+  );
+  if (existing.length > 0) return existing;
+  const token = randomBytes(32).toString("hex");
+  yield* Effect.tryPromise(() => mkdir(dirname(paths.authPath), { recursive: true, mode: 0o700 }));
+  yield* Effect.tryPromise(() => writeFile(paths.authPath, `${token}\n`, { mode: 0o600 }));
+  return token;
+});
 
 /** Read or create the env identity (random envId + protocol token). */
-export const ensureEnvConfig = (hubUrl?: string): Effect.Effect<EnvConfig, Error, never> =>
-  Effect.gen(function* () {
-    const existing = yield* readEnvConfig();
-    if (Option.isSome(existing)) {
-      // A hub switch is honored on start; identity is stable.
-      if (hubUrl === undefined || existing.value.hubUrl === hubUrl) return existing.value;
-      const updated: EnvConfig = { ...existing.value, hubUrl };
-      yield* Effect.tryPromise(() =>
-        writeFile(getEnvConfigPath(), `${JSON.stringify(updated, null, 2)}\n`, { mode: 0o600 }),
-      );
-      return updated;
-    }
-    const config: EnvConfig = {
-      envId: `env_${randomUUID().replaceAll("-", "")}`,
-      token: randomBytes(32).toString("hex"),
-      ...(hubUrl === undefined ? {} : { hubUrl }),
-    };
+export const ensureEnvConfig = Effect.fn("ensureEnvConfig")(function* (
+  hubUrl?: string,
+): Effect.fn.Return<EnvConfig, Error, never> {
+  const existing = yield* readEnvConfig();
+  if (Option.isSome(existing)) {
+    // A hub switch is honored on start; identity is stable.
+    if (hubUrl === undefined || existing.value.hubUrl === hubUrl) return existing.value;
+    const updated: EnvConfig = { ...existing.value, hubUrl };
     yield* Effect.tryPromise(() =>
-      mkdir(dirname(getEnvConfigPath()), { recursive: true, mode: 0o700 }),
+      writeFile(getEnvConfigPath(), `${JSON.stringify(updated, null, 2)}\n`, { mode: 0o600 }),
     );
-    yield* Effect.tryPromise(() =>
-      writeFile(getEnvConfigPath(), `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 }),
-    );
-    return config;
-  });
+    return updated;
+  }
+  const config: EnvConfig = {
+    envId: `env_${randomUUID().replaceAll("-", "")}`,
+    token: randomBytes(32).toString("hex"),
+    ...(hubUrl === undefined ? {} : { hubUrl }),
+  };
+  yield* Effect.tryPromise(() =>
+    mkdir(dirname(getEnvConfigPath()), { recursive: true, mode: 0o700 }),
+  );
+  yield* Effect.tryPromise(() =>
+    writeFile(getEnvConfigPath(), `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 }),
+  );
+  return config;
+});
 
 /** The env daemon's lifecycle: env-protocol probe, --token/--cwd/--hub args. */
-export const envLifecycle = (hubUrl?: string): DaemonLifecycleConfig => ({
-  label: "env daemon",
-  entry: resolveEnvEntry(),
-  logPath: getEnvLogPath(),
-  urlPath: getEnvUrlPath(),
-  timeoutCode: "env_timeout",
-  readToken: readEnvConfig().pipe(Effect.map(Option.map((config) => config.token))),
-  probe: (identity) =>
-    Effect.gen(function* () {
+export const envLifecycle = Effect.fn("envLifecycle")(function* (
+  hubUrl?: string,
+): Effect.fn.Return<DaemonLifecycleConfig, never, Paths> {
+  const paths = yield* Paths;
+  return {
+    label: "env daemon",
+    entry: resolveEnvEntry(),
+    logPath: getEnvLogPath(),
+    urlPath: getEnvUrlPath(),
+    timeoutCode: "env_timeout",
+    readToken: readEnvConfig().pipe(Effect.map(Option.map((config) => config.token))),
+    probe: Effect.fn("probe")(function* (identity) {
       const env = new RemoteEnv({ url: identity.url, token: identity.token, socket: nodeSocket });
       const hello = yield* Effect.tryPromise(() => env.connect()).pipe(
         Effect.map(Option.some),
@@ -100,23 +105,25 @@ export const envLifecycle = (hubUrl?: string): DaemonLifecycleConfig => ({
       env.close();
       return Option.match(hello, {
         onNone: () => Option.none(),
-        onSome: (value) => Option.some({ pid: value.pid, version: value.version, cwd: value.cwd }),
+        onSome: (value) =>
+          Option.some({ pid: value.pid, version: value.version, cwd: value.cwd }),
       });
     }),
-  args: Effect.gen(function* () {
-    const config = yield* ensureEnvConfig(hubUrl);
-    // The relay credential is the deployment secret (~/.saku/auth, the
-    // worker's token); the env daemon presents it in relay_hello. Mint it
-    // when absent (the worker's own first-boot habit).
-    const hubToken = yield* ensureHubToken();
-    return [
-      "--token",
-      config.token,
-      "--cwd",
-      process.cwd(),
-      ...(config.hubUrl === undefined
-        ? []
-        : ["--hub", config.hubUrl, "--env-id", config.envId, "--hub-token", hubToken]),
-    ];
-  }),
+    args: Effect.gen(function* () {
+      const config = yield* ensureEnvConfig(hubUrl);
+      // The relay credential is the deployment secret (~/.saku/auth, the
+      // worker's token); the env daemon presents it in relay_hello. Mint it
+      // when absent (the worker's own first-boot habit).
+      const hubToken = yield* ensureHubToken(paths);
+      return [
+        "--token",
+        config.token,
+        "--cwd",
+        process.cwd(),
+        ...(config.hubUrl === undefined
+          ? []
+          : ["--hub", config.hubUrl, "--env-id", config.envId, "--hub-token", hubToken]),
+      ];
+    }),
+  };
 });

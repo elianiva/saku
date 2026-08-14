@@ -109,14 +109,16 @@ export class KvStore extends Context.Service<KvStore, KvStoreShape>()("KvStore")
             isNotFound(error) ? Effect.succeed(Option.none()) : Effect.die(error),
           ),
         ),
-      put: (key, value) =>
-        Effect.gen(function* () {
+      put: Effect.fn("put")(
+        function* (key: string, value: Uint8Array) {
           const path = keyPath(root, key);
           const tmp = `${path}.tmp`;
           yield* fs.makeDirectory(dirname(path), { recursive: true });
           yield* fs.writeFile(tmp, value);
           yield* fs.rename(tmp, path);
-        }).pipe(Effect.orDie),
+        },
+        (effect) => effect.pipe(Effect.orDie),
+      ),
       delete: (key) =>
         fs.remove(keyPath(root, key), { force: true }).pipe(Effect.catchEager(() => Effect.void)),
       list: ({ prefix }) =>

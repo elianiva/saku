@@ -173,257 +173,247 @@ export const entriesFromLog = (log: readonly LogItem[]): Entry[] =>
     .map((item) => item.entry);
 
 /** Apply a thinking level with model clamping; appends the trail entry. */
-const applyThinkingLevel = (
+const applyThinkingLevel = Effect.fn("applyThinkingLevel")(function* (
   deps: HostDeps,
   level: ThinkingLevel,
-): Effect.Effect<ThinkingLevel, SessionHostError, never> =>
-  Effect.gen(function* () {
-    const model = yield* Ref.get(deps.modelRef);
-    const available =
-      model === null
-        ? [...THINKING_LEVELS]
-        : (getSupportedThinkingLevels(model) as ThinkingLevel[]);
-    let effective = level;
-    if (!available.includes(level) && model !== null) {
-      effective = clampThinkingLevel(model, level) as ThinkingLevel;
-    }
-    const current = yield* Ref.get(deps.thinkingLevelRef);
-    if (effective === current) return effective;
-    yield* Ref.set(deps.thinkingLevelRef, effective);
-    deps.agent.state.thinkingLevel = effective;
-    const entry = yield* Effect.tryPromise({
-      try: () =>
-        deps.session.appendEntry(
-          {
-            id: deps.session.idGenerator.next(),
-            type: "thinking_level_change",
-            thinkingLevel: effective,
-          },
-          LANE,
-        ),
-      catch: toSessionHostError,
-    });
-    deps.sink({ type: "entry_appended", entry });
-    return effective;
+) {
+  const model = yield* Ref.get(deps.modelRef);
+  const available =
+    model === null ? [...THINKING_LEVELS] : (getSupportedThinkingLevels(model) as ThinkingLevel[]);
+  let effective = level;
+  if (!available.includes(level) && model !== null) {
+    effective = clampThinkingLevel(model, level) as ThinkingLevel;
+  }
+  const current = yield* Ref.get(deps.thinkingLevelRef);
+  if (effective === current) return effective;
+  yield* Ref.set(deps.thinkingLevelRef, effective);
+  deps.agent.state.thinkingLevel = effective;
+  const entry = yield* Effect.tryPromise({
+    try: () =>
+      deps.session.appendEntry(
+        {
+          id: deps.session.idGenerator.next(),
+          type: "thinking_level_change",
+          thinkingLevel: effective,
+        },
+        LANE,
+      ),
+    catch: toSessionHostError,
   });
+  deps.sink({ type: "entry_appended", entry });
+  return effective;
+});
 
 /** Set the thread's model: catalog + auth checks, trail entry, thinking re-clamp. */
-const applyModel = (
+const applyModel = Effect.fn("applyModel")(function* (
   deps: HostDeps,
   provider: string,
   modelId: string,
-): Effect.Effect<Model<Api> | null, SessionHostError, never> =>
-  Effect.gen(function* () {
-    const model = deps.catalog.getModel(provider, modelId);
-    if (model === undefined) {
-      return yield* Effect.fail(
-        new SessionHostError({
-          kind: "unknown_model",
-          message: `unknown model: ${provider}/${modelId}`,
-        }),
-      );
-    }
-    if (!(yield* deps.catalog.hasAuth(provider))) {
-      return yield* Effect.fail(
-        new SessionHostError({ kind: "no_auth", message: `no API key configured for ${provider}` }),
-      );
-    }
-    yield* Ref.set(deps.modelRef, model);
-    deps.agent.state.model = model;
-    const entry = yield* Effect.tryPromise({
-      try: () =>
-        deps.session.appendEntry(
-          { id: deps.session.idGenerator.next(), type: "model_change", provider, modelId },
-          LANE,
-        ),
-      catch: toSessionHostError,
-    });
-    deps.sink({ type: "entry_appended", entry });
-    yield* applyThinkingLevel(deps, yield* Ref.get(deps.thinkingLevelRef));
-    return model;
+) {
+  const model = deps.catalog.getModel(provider, modelId);
+  if (model === undefined) {
+    return yield* Effect.fail(
+      new SessionHostError({
+        kind: "unknown_model",
+        message: `unknown model: ${provider}/${modelId}`,
+      }),
+    );
+  }
+  if (!(yield* deps.catalog.hasAuth(provider))) {
+    return yield* Effect.fail(
+      new SessionHostError({ kind: "no_auth", message: `no API key configured for ${provider}` }),
+    );
+  }
+  yield* Ref.set(deps.modelRef, model);
+  deps.agent.state.model = model;
+  const entry = yield* Effect.tryPromise({
+    try: () =>
+      deps.session.appendEntry(
+        { id: deps.session.idGenerator.next(), type: "model_change", provider, modelId },
+        LANE,
+      ),
+    catch: toSessionHostError,
   });
+  deps.sink({ type: "entry_appended", entry });
+  yield* applyThinkingLevel(deps, yield* Ref.get(deps.thinkingLevelRef));
+  return model;
+});
 
 /** One unit of agent work: the run, then auto-compaction, settled, auto-title. */
-const runCommand = (
+const runCommand = Effect.fn("runCommand")(function* (
   deps: HostDeps,
   working: Extract<HostStateV, { readonly _tag: "Working" }>,
-): Effect.Effect<void, SessionHostError, never> =>
-  Effect.gen(function* () {
-    const content: Array<{ type: "text"; text: string } | ImageContent> = [
-      { type: "text", text: working.text },
-    ];
-    if (working.images !== undefined && working.images.length > 0) {
-      content.push(...(working.images as ImageContent[]));
-    }
-    const message: UserMessage = { role: "user", content, timestamp: Date.now() };
-    yield* Effect.tryPromise({ try: () => deps.agent.prompt(message), catch: toSessionHostError });
-    yield* maybeAutoCompact(deps);
-    deps.sink({ type: "settled" });
-    // Best-effort, never fails or delays the run or the prompt response.
-    yield* maybeAutoTitle(deps).pipe(Effect.ignore);
-  });
+) {
+  const content: Array<{ type: "text"; text: string } | ImageContent> = [
+    { type: "text", text: working.text },
+  ];
+  if (working.images !== undefined && working.images.length > 0) {
+    content.push(...(working.images as ImageContent[]));
+  }
+  const message: UserMessage = { role: "user", content, timestamp: Date.now() };
+  yield* Effect.tryPromise({ try: () => deps.agent.prompt(message), catch: toSessionHostError });
+  yield* maybeAutoCompact(deps);
+  deps.sink({ type: "settled" });
+  // Best-effort, never fails or delays the run or the prompt response.
+  yield* maybeAutoTitle(deps).pipe(Effect.ignore);
+});
 
-const maybeAutoCompact = (deps: HostDeps): Effect.Effect<void, SessionHostError, never> =>
-  Effect.gen(function* () {
-    const settings = yield* Ref.get(deps.compactionSettingsRef);
-    if (!settings.enabled) return;
-    const assistant = yield* Ref.get(deps.lastAssistantRef);
-    const model = yield* Ref.get(deps.modelRef);
-    if (assistant === undefined || model === null) return;
-    if (assistant.stopReason === "aborted" || assistant.stopReason === "error") return;
-    const log = yield* Effect.tryPromise({
-      try: () => deps.session.getLog(),
-      catch: toSessionHostError,
-    });
-    const context = buildSessionContext(entriesFromLog(log));
-    const estimate = estimateContextTokens(context.messages);
-    if (shouldCompact(estimate.tokens, model.contextWindow, settings)) {
-      yield* runCompaction(deps, "threshold");
-    }
+const maybeAutoCompact = Effect.fn("maybeAutoCompact")(function* (deps: HostDeps) {
+  const settings = yield* Ref.get(deps.compactionSettingsRef);
+  if (!settings.enabled) return;
+  const assistant = yield* Ref.get(deps.lastAssistantRef);
+  const model = yield* Ref.get(deps.modelRef);
+  if (assistant === undefined || model === null) return;
+  if (assistant.stopReason === "aborted" || assistant.stopReason === "error") return;
+  const log = yield* Effect.tryPromise({
+    try: () => deps.session.getLog(),
+    catch: toSessionHostError,
   });
+  const context = buildSessionContext(entriesFromLog(log));
+  const estimate = estimateContextTokens(context.messages);
+  if (shouldCompact(estimate.tokens, model.contextWindow, settings)) {
+    yield* runCompaction(deps, "threshold");
+  }
+});
 
 /**
  * Compaction, manual or threshold. Aborts settle as success with `undefined`
  * (the run continues); real failures propagate.
  */
-const runCompaction = (
+const runCompaction = Effect.fn("runCompaction")(function* (
   deps: HostDeps,
   reason: "manual" | "threshold" | "overflow",
   customInstructions?: string,
-): Effect.Effect<unknown, SessionHostError, never> =>
-  Effect.gen(function* () {
-    const model = yield* Ref.get(deps.modelRef);
-    if (model === null) {
-      return yield* Effect.fail(
-        new SessionHostError({ kind: "no_model", message: "no model selected for this thread" }),
-      );
-    }
-    const settings = yield* Ref.get(deps.compactionSettingsRef);
-    const log = yield* Effect.tryPromise({
-      try: () => deps.session.getLog(),
-      catch: toSessionHostError,
-    });
-    const preparation = prepareCompaction(entriesFromLog(log), settings);
-    if (!preparation.ok) {
-      return yield* Effect.fail(
-        new SessionHostError({
-          kind: "compact_prepare",
-          message: messageOf(preparation.error),
-          cause: preparation.error,
-        }),
-      );
-    }
-    if (preparation.value === undefined) {
+) {
+  const model = yield* Ref.get(deps.modelRef);
+  if (model === null) {
+    return yield* Effect.fail(
+      new SessionHostError({ kind: "no_model", message: "no model selected for this thread" }),
+    );
+  }
+  const settings = yield* Ref.get(deps.compactionSettingsRef);
+  const log = yield* Effect.tryPromise({
+    try: () => deps.session.getLog(),
+    catch: toSessionHostError,
+  });
+  const preparation = prepareCompaction(entriesFromLog(log), settings);
+  if (!preparation.ok) {
+    return yield* Effect.fail(
+      new SessionHostError({
+        kind: "compact_prepare",
+        message: messageOf(preparation.error),
+        cause: preparation.error,
+      }),
+    );
+  }
+  if (preparation.value === undefined) {
+    return undefined;
+  }
+  const prepared = preparation.value;
+
+  const abortController = new AbortController();
+  yield* Ref.set(deps.compactionAbortRef, Option.some(abortController));
+  deps.sink({ type: "compaction_start", reason });
+  const thinkingLevel = yield* Ref.get(deps.thinkingLevelRef);
+  const outcome = yield* Effect.result(
+    Effect.gen(function* () {
+      const result = yield* Effect.tryPromise({
+        try: () =>
+          compact(
+            prepared,
+            deps.catalog.models,
+            model,
+            customInstructions,
+            abortController.signal,
+            thinkingLevel,
+          ),
+        catch: toSessionHostError,
+      });
+      if (!result.ok) {
+        return yield* Effect.fail(toSessionHostError(result.error));
+      }
+      const compacted = yield* Effect.tryPromise({
+        try: () =>
+          deps.session.appendEntry(
+            {
+              id: deps.session.idGenerator.next(),
+              type: "compaction",
+              summary: result.value.summary,
+              retainedTail: result.value.retainedTail,
+              tokensBefore: result.value.tokensBefore,
+              ...(result.value.details === undefined ? {} : { details: result.value.details }),
+              ...(result.value.usage === undefined ? {} : { usage: result.value.usage }),
+            },
+            LANE,
+          ),
+        catch: toSessionHostError,
+      });
+      deps.sink({ type: "entry_appended", entry: compacted });
+      // Rebuild the live context from the compacted trail.
+      const newLog = yield* Effect.tryPromise({
+        try: () => deps.session.getLog(),
+        catch: toSessionHostError,
+      });
+      deps.agent.state.messages = buildSessionContext(entriesFromLog(newLog)).messages;
+      deps.sink({ type: "compaction_end", reason, result: result.value, aborted: false });
+      return result.value;
+    }).pipe(Effect.ensuring(Ref.set(deps.compactionAbortRef, Option.none()))),
+  );
+  if (Result.isFailure(outcome)) {
+    if (abortController.signal.aborted) {
+      deps.sink({ type: "compaction_end", reason, result: undefined, aborted: true });
       return undefined;
     }
-    const prepared = preparation.value;
-
-    const abortController = new AbortController();
-    yield* Ref.set(deps.compactionAbortRef, Option.some(abortController));
-    deps.sink({ type: "compaction_start", reason });
-    const thinkingLevel = yield* Ref.get(deps.thinkingLevelRef);
-    const outcome = yield* Effect.result(
-      Effect.gen(function* () {
-        const result = yield* Effect.tryPromise({
-          try: () =>
-            compact(
-              prepared,
-              deps.catalog.models,
-              model,
-              customInstructions,
-              abortController.signal,
-              thinkingLevel,
-            ),
-          catch: toSessionHostError,
-        });
-        if (!result.ok) {
-          return yield* Effect.fail(toSessionHostError(result.error));
-        }
-        const compacted = yield* Effect.tryPromise({
-          try: () =>
-            deps.session.appendEntry(
-              {
-                id: deps.session.idGenerator.next(),
-                type: "compaction",
-                summary: result.value.summary,
-                retainedTail: result.value.retainedTail,
-                tokensBefore: result.value.tokensBefore,
-                ...(result.value.details === undefined ? {} : { details: result.value.details }),
-                ...(result.value.usage === undefined ? {} : { usage: result.value.usage }),
-              },
-              LANE,
-            ),
-          catch: toSessionHostError,
-        });
-        deps.sink({ type: "entry_appended", entry: compacted });
-        // Rebuild the live context from the compacted trail.
-        const newLog = yield* Effect.tryPromise({
-          try: () => deps.session.getLog(),
-          catch: toSessionHostError,
-        });
-        deps.agent.state.messages = buildSessionContext(entriesFromLog(newLog)).messages;
-        deps.sink({ type: "compaction_end", reason, result: result.value, aborted: false });
-        return result.value;
-      }).pipe(Effect.ensuring(Ref.set(deps.compactionAbortRef, Option.none()))),
-    );
-    if (Result.isFailure(outcome)) {
-      if (abortController.signal.aborted) {
-        deps.sink({ type: "compaction_end", reason, result: undefined, aborted: true });
-        return undefined;
-      }
-      deps.sink({
-        type: "compaction_end",
-        reason,
-        result: undefined,
-        aborted: false,
-        errorMessage: outcome.failure.message,
-      });
-      return yield* Effect.fail(outcome.failure);
-    }
-    return outcome.success;
-  });
+    deps.sink({
+      type: "compaction_end",
+      reason,
+      result: undefined,
+      aborted: false,
+      errorMessage: outcome.failure.message,
+    });
+    return yield* Effect.fail(outcome.failure);
+  }
+  return outcome.success;
+});
 
 /** Auto-title: name quick-started threads after their first settled run. */
-const maybeAutoTitle = (
-  deps: HostDeps,
-): Effect.Effect<void, SessionHostError | RegistryError, never> =>
-  Effect.gen(function* () {
-    const record = yield* deps.registry.get(deps.threadId);
-    if (Option.isNone(record) || record.value.nameAuto !== true) return;
-    const model = deps.catalog.getModel(AUTO_TITLE_PROVIDER, AUTO_TITLE_MODEL);
-    if (model === undefined) return;
-    if (!(yield* deps.catalog.hasAuth(AUTO_TITLE_PROVIDER))) return;
+const maybeAutoTitle = Effect.fn("maybeAutoTitle")(function* (deps: HostDeps) {
+  const record = yield* deps.registry.get(deps.threadId);
+  if (Option.isNone(record) || record.value.nameAuto !== true) return;
+  const model = deps.catalog.getModel(AUTO_TITLE_PROVIDER, AUTO_TITLE_MODEL);
+  if (model === undefined) return;
+  if (!(yield* deps.catalog.hasAuth(AUTO_TITLE_PROVIDER))) return;
 
-    const response = yield* Effect.tryPromise({
-      try: () =>
-        deps.catalog.models.completeSimple(model, {
-          messages: [
-            {
-              role: "user",
-              content: [{ type: "text", text: AUTO_TITLE_PROMPT(record.value.name) }],
-              timestamp: Date.now(),
-            },
-          ],
-        }),
-      catch: toSessionHostError,
-    });
-    const title = response.content
-      .filter((c): c is { type: "text"; text: string } => c.type === "text")
-      .map((c) => c.text)
-      .join("")
-      .trim()
-      .replace(/^["']|["']$/g, "")
-      .slice(0, 80);
-    if (title.length === 0) return;
-
-    const updated = yield* deps.registry.update(deps.threadId, {
-      name: `${title} — ${record.value.name}`,
-      nameAuto: false,
-    });
-    if (Option.isSome(updated)) {
-      deps.onRecordChanged?.(updated.value);
-    }
+  const response = yield* Effect.tryPromise({
+    try: () =>
+      deps.catalog.models.completeSimple(model, {
+        messages: [
+          {
+            role: "user",
+            content: [{ type: "text", text: AUTO_TITLE_PROMPT(record.value.name) }],
+            timestamp: Date.now(),
+          },
+        ],
+      }),
+    catch: toSessionHostError,
   });
+  const title = response.content
+    .filter((c): c is { type: "text"; text: string } => c.type === "text")
+    .map((c) => c.text)
+    .join("")
+    .trim()
+    .replace(/^["']|["']$/g, "")
+    .slice(0, 80);
+  if (title.length === 0) return;
+
+  const updated = yield* deps.registry.update(deps.threadId, {
+    name: `${title} — ${record.value.name}`,
+    nameAuto: false,
+  });
+  if (Option.isSome(updated)) {
+    deps.onRecordChanged?.(updated.value);
+  }
+});
 
 type HostMachine = Machine.Machine<HostStateV, HostEventV, never, any, any, any>;
 
@@ -634,37 +624,31 @@ const makeHostMachine = (deps: HostDeps): HostMachine => {
 };
 
 /** Start a run from idle/interrupted: model check, then defer the reply to the run. */
-const startRun = <S extends HostStateV>(
+const startRun = Effect.fn("startRun")(function* <S extends HostStateV>(
   deps: HostDeps,
   state: S,
   working: Extract<HostStateV, { readonly _tag: "Working" }>,
-): Effect.Effect<
-  ReplyResult<S, HostReplyV> | DeferReplyResult<Extract<HostStateV, { readonly _tag: "Working" }>>,
-  never,
-  never
-> =>
-  Effect.gen(function* () {
-    const model = yield* Ref.get(deps.modelRef);
-    if (model === null) {
-      return Machine.reply(
-        state,
-        ReplyFailed.make({ message: "no model selected for this thread; use set_model first" }),
-      );
-    }
-    yield* deps.pushState("working");
-    return Machine.deferReply(working);
-  });
+) {
+  const model = yield* Ref.get(deps.modelRef);
+  if (model === null) {
+    return Machine.reply(
+      state,
+      ReplyFailed.make({ message: "no model selected for this thread; use set_model first" }),
+    );
+  }
+  yield* deps.pushState("working");
+  return Machine.deferReply(working);
+});
 
 /** Run IO and always answer the call with a reply — handlers never fail the actor. */
-const safeReply = <S extends HostStateV>(
+const safeReply = Effect.fn("safeReply")(function* <S extends HostStateV>(
   state: S,
   work: Effect.Effect<HostReplyV, unknown, never>,
-): Effect.Effect<ReplyResult<S, HostReplyV>, never, never> =>
-  Effect.gen(function* () {
-    const outcome = yield* work.pipe(Effect.result);
-    return Result.isFailure(outcome)
-      ? Machine.reply(state, ReplyFailed.make({ message: messageOf(outcome.failure) }))
-      : Machine.reply(state, outcome.success);
-  });
+) {
+  const outcome = yield* work.pipe(Effect.result);
+  return Result.isFailure(outcome)
+    ? Machine.reply(state, ReplyFailed.make({ message: messageOf(outcome.failure) }))
+    : Machine.reply(state, outcome.success);
+});
 
 export { HostState, HostEvent, makeHostMachine };

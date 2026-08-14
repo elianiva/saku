@@ -214,7 +214,7 @@ export class SakuThreadDO {
     command: SessionCommand,
   ): Effect.Effect<{ payload: ResponsePayload; tailSeq: number }, CommandError, never> {
     const self = this;
-    return Effect.gen(function* () {
+    return Effect.fn("runCommand")(function* () {
       // The shared dispatch serves the read-only commands without a host
       // (a thread whose session has never begun answers from the
       // record/catalog alone, ADR 0004) and starts the session on the
@@ -241,7 +241,7 @@ export class SakuThreadDO {
         tailSeq = live;
       }
       return { payload, tailSeq };
-    });
+    })();
   }
 
   /** The live host only when the thread's session has already started; none otherwise. */
@@ -249,20 +249,20 @@ export class SakuThreadDO {
     record: ThreadRecord,
   ): Effect.Effect<Option.Option<SessionHost>, CommandError, never> {
     const self = this;
-    return Effect.gen(function* () {
+    return Effect.fn("readOnlyHost")(function* () {
       if (self.host !== undefined) return Option.some(self.host);
       // A session that has started (sessionId back-filled through the push
       // channel) rebuilds its host for reads; a never-started thread answers
       // from the record/catalog alone (ADR 0004).
       if (record.sessionId === null) return Option.none();
       return Option.some(yield* self.hostFor(record));
-    });
+    })();
   }
 
   /** The lazy host: built on the first mutating command; crashed hosts rebuild. */
   private hostFor(record: ThreadRecord): Effect.Effect<SessionHost, CommandError, never> {
     const self = this;
-    return Effect.gen(function* () {
+    return Effect.fn("hostFor")(function* () {
       const existing = self.host;
       if (existing !== undefined) {
         // A crashed host rebuilds from its trail on the next touch.
@@ -324,7 +324,7 @@ export class SakuThreadDO {
       );
       self.host = host;
       return host;
-    });
+    })();
   }
 
   /** The live env connection for a handle; reconnects when needed. */
@@ -358,24 +358,23 @@ export class SakuThreadDO {
     return {
       get: (threadId) =>
         Effect.succeed(threadId === record.id ? Option.some(current()) : Option.none()),
-      update: (threadId, patch) =>
-        Effect.gen(function* () {
-          if (threadId !== record.id) return Option.none();
-          const next: ThreadRecord = { ...current(), ...patch };
-          self.record = next;
-          yield* Effect.tryPromise({
-            try: () => self.state.storage.put(RECORD_KEY, next),
-            catch: (error) =>
-              new RegistryError({
-                op: "persist",
-                message: "persist thread record",
-                cause: error,
-              }),
-          });
-          if (patch.sessionId !== undefined) push({ sessionId: patch.sessionId });
-          if (patch.name !== undefined) push({ name: patch.name });
-          return Option.some(next);
-        }),
+      update: Effect.fn("update")(function* (threadId, patch) {
+        if (threadId !== record.id) return Option.none();
+        const next: ThreadRecord = { ...current(), ...patch };
+        self.record = next;
+        yield* Effect.tryPromise({
+          try: () => self.state.storage.put(RECORD_KEY, next),
+          catch: (error) =>
+            new RegistryError({
+              op: "persist",
+              message: "persist thread record",
+              cause: error,
+            }),
+        });
+        if (patch.sessionId !== undefined) push({ sessionId: patch.sessionId });
+        if (patch.name !== undefined) push({ name: patch.name });
+        return Option.some(next);
+      }),
       setState: (threadId, state) =>
         Effect.sync(() => {
           push({ state });

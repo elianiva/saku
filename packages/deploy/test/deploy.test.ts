@@ -108,15 +108,17 @@ harnessAfterAll(
 );
 
 /** A fresh console for a test: connect inside the harness runtime. */
-const consoleFor = (url: string | undefined): Effect.Effect<WireClient, never, never> =>
-  Effect.gen(function* () {
+const consoleFor = Effect.fn("consoleFor")(
+  function* (url: string | undefined) {
     if (url === undefined) {
       return yield* Effect.die(new DeployTestError({ message: "stack deployed without a url" }));
     }
     const client = yield* makeWireClient({ url: `${url}/ws`, token: TOKEN, role: "cli" });
     yield* client.connect();
     return client;
-  }).pipe(Effect.orDie);
+  },
+  (effect) => effect.pipe(Effect.orDie),
+);
 
 /**
  * Poll an effect until its value satisfies the predicate. The sleep below
@@ -130,23 +132,21 @@ const waitFor = <A>(
   timeoutMs = 20_000,
 ): Effect.Effect<A, never, never> => {
   const deadline = Date.now() + timeoutMs;
-  const loop = (): Effect.Effect<A, never, never> =>
-    Effect.gen(function* () {
-      const value = yield* effect;
-      if (predicate(value)) return value;
-      if (Date.now() > deadline) {
-        return yield* Effect.die(new DeployTestError({ message: `timed out waiting for ${what}` }));
-      }
-      return yield* Effect.sleep(100).pipe(Effect.andThen(loop));
-    });
+  const loop = Effect.fn("loop")(function* (): Effect.fn.Return<A> {
+    const value = yield* effect;
+    if (predicate(value)) return value;
+    if (Date.now() > deadline) {
+      return yield* Effect.die(new DeployTestError({ message: `timed out waiting for ${what}` }));
+    }
+    return yield* Effect.sleep(100).pipe(Effect.andThen(loop));
+  });
   return loop();
 };
 
-const entriesOf = (client: WireClient, threadId: string): Effect.Effect<unknown[], never, never> =>
-  Effect.gen(function* () {
-    const result = yield* client.getEntries(threadId, 0).pipe(Effect.orDie);
-    return [...result.entries];
-  });
+const entriesOf = Effect.fn("entriesOf")(function* (client: WireClient, threadId: string) {
+  const result = yield* client.getEntries(threadId, 0).pipe(Effect.orDie);
+  return [...result.entries];
+});
 
 /** The human-readable text of an entry (structured pi content flattened). */
 const entryText = (entry: unknown): string => {

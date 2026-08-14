@@ -146,7 +146,11 @@ export const SessionHost = {
   create(
     options: SessionHostOptions,
   ): Effect.Effect<SessionHost, SessionHostError | RegistryError, KvStore> {
-    return Effect.gen(function* () {
+    return Effect.fn("SessionHost.create")(function* (): Effect.fn.Return<
+      SessionHost,
+      SessionHostError | RegistryError,
+      KvStore
+    > {
       const { threadId, record, catalog, registry, env } = options;
       // The trail: the session's mutations on the `KvStore` service (the
       // daemon provides a file-backed layer; a Durable Object provides its
@@ -303,69 +307,60 @@ export const SessionHost = {
           Effect.mapError(toSessionHostError),
         );
 
-      const getEntries = (
-        sinceSeq?: number,
-      ): Effect.Effect<
-        { entries: Entry[]; tailSeq: number; leafId: string | null },
-        SessionHostError,
-        never
-      > =>
-        Effect.gen(function* () {
-          const log = yield* Effect.tryPromise({
-            try: () => session.getLog(sinceSeq === undefined ? {} : { afterSeq: sinceSeq }),
-            catch: toSessionHostError,
-          });
-          const entries = entriesFromLog(log);
-          const last = log[log.length - 1];
-          const tailSeq = last === undefined ? (sinceSeq ?? 0) : last.seq;
-          const leafId = yield* Effect.tryPromise({
-            try: () => session.getLeafId(),
-            catch: toSessionHostError,
-          });
-          return { entries, tailSeq, leafId };
+      const getEntries = Effect.fn("getEntries")(function* (sinceSeq?: number) {
+        const log = yield* Effect.tryPromise({
+          try: () => session.getLog(sinceSeq === undefined ? {} : { afterSeq: sinceSeq }),
+          catch: toSessionHostError,
         });
+        const entries = entriesFromLog(log);
+        const last = log[log.length - 1];
+        const tailSeq = last === undefined ? (sinceSeq ?? 0) : last.seq;
+        const leafId = yield* Effect.tryPromise({
+          try: () => session.getLeafId(),
+          catch: toSessionHostError,
+        });
+        return { entries, tailSeq, leafId };
+      });
 
-      const dispose = (): Effect.Effect<void, never> =>
-        Effect.gen(function* () {
-          unsubscribeAgent();
-          // Settle an in-flight run; the run's own effect then finishes it.
-          const compactionAbort = yield* Ref.get(compactionAbortRef);
-          if (Option.isSome(compactionAbort)) compactionAbort.value.abort();
-          agent.abort();
-          yield* actor
-            .waitFor((state) => state._tag !== "Working" && state._tag !== "Compacting")
-            .pipe(Effect.timeout(Duration.seconds(10)), Effect.ignore);
-          yield* actor.drain;
-          // Best-effort teardown: a cleanup failure is a typed pi-seam
-          // failure, swallowed by the dispose's `Effect.ignore` below.
-          yield* Effect.tryPromise({ try: () => env.cleanup(), catch: toSessionHostError });
-        }).pipe(Effect.ignore);
+      const dispose = Effect.fn("dispose")(function* () {
+        unsubscribeAgent();
+        // Settle an in-flight run; the run's own effect then finishes it.
+        const compactionAbort = yield* Ref.get(compactionAbortRef);
+        if (Option.isSome(compactionAbort)) compactionAbort.value.abort();
+        agent.abort();
+        yield* actor
+          .waitFor((state) => state._tag !== "Working" && state._tag !== "Compacting")
+          .pipe(Effect.timeout(Duration.seconds(10)), Effect.ignore);
+        yield* actor.drain;
+        // Best-effort teardown: a cleanup failure is a typed pi-seam
+        // failure, swallowed by the dispose's `Effect.ignore` below.
+        yield* Effect.tryPromise({ try: () => env.cleanup(), catch: toSessionHostError }).pipe(
+          Effect.ignore,
+        );
+      });
 
       return {
         threadId,
         get threadState() {
           return hostStateOf(actor.sync.snapshot());
         },
-        getState: () =>
-          Effect.gen(function* () {
-            const [name, { tailSeq }, snapshot, modelValue, thinkingLevelValue] = yield* Effect.all(
-              [
-                Effect.tryPromise({ try: () => session.getName(), catch: toSessionHostError }),
-                getEntries(),
-                actor.snapshot,
-                Ref.get(modelRef),
-                Ref.get(thinkingLevelRef),
-              ],
-            );
-            return {
-              sessionId: agent.sessionId ?? null,
-              ...(name === undefined ? {} : { name }),
-              state: wireStateOf(snapshot),
-              tailSeq,
-              model: modelValue === null ? null : catalog.toWireInfo(modelValue),
-              thinkingLevel: thinkingLevelValue,
-            };
-          }),
+        getState: Effect.fn("getState")(function* () {
+          const [name, { tailSeq }, snapshot, modelValue, thinkingLevelValue] = yield* Effect.all([
+            Effect.tryPromise({ try: () => session.getName(), catch: toSessionHostError }),
+            getEntries(),
+            actor.snapshot,
+            Ref.get(modelRef),
+            Ref.get(thinkingLevelRef),
+          ]);
+          return {
+            sessionId: agent.sessionId ?? null,
+            ...(name === undefined ? {} : { name }),
+            state: wireStateOf(snapshot),
+            tailSeq,
+            model: modelValue === null ? null : catalog.toWireInfo(modelValue),
+            thinkingLevel: thinkingLevelValue,
+          };
+        }),
         getEntries,
         getSessionStats: () =>
           Effect.tryPromise({ try: () => session.getStats(), catch: toSessionHostError }),
@@ -398,35 +393,34 @@ export const SessionHost = {
           ),
         setSessionName: (name) =>
           command(HostEvent.SetSessionNameRequested({ name })).pipe(Effect.asVoid),
-        branch: (entryId) =>
-          Effect.gen(function* () {
-            const snapshot = yield* actor.snapshot;
-            if (snapshot._tag === "Working" || snapshot._tag === "Compacting") {
-              return yield* Effect.fail(
-                new SessionHostError({
-                  kind: "branch_busy",
-                  message: "cannot branch while the agent is working",
-                }),
-              );
-            }
-            const entry = yield* Effect.tryPromise({
-              try: () => session.getEntry(entryId),
-              catch: toSessionHostError,
-            });
-            if (entry === undefined) {
-              return yield* Effect.fail(
-                new SessionHostError({
-                  kind: "unknown_entry",
-                  message: `unknown entry: ${entryId}`,
-                }),
-              );
-            }
-            yield* Effect.tryPromise({
-              try: () => session.moveLane(LANE, entryId),
-              catch: toSessionHostError,
-            });
-            return entryId;
-          }),
+        branch: Effect.fn("branch")(function* (entryId) {
+          const snapshot = yield* actor.snapshot;
+          if (snapshot._tag === "Working" || snapshot._tag === "Compacting") {
+            return yield* Effect.fail(
+              new SessionHostError({
+                kind: "branch_busy",
+                message: "cannot branch while the agent is working",
+              }),
+            );
+          }
+          const entry = yield* Effect.tryPromise({
+            try: () => session.getEntry(entryId),
+            catch: toSessionHostError,
+          });
+          if (entry === undefined) {
+            return yield* Effect.fail(
+              new SessionHostError({
+                kind: "unknown_entry",
+                message: `unknown entry: ${entryId}`,
+              }),
+            );
+          }
+          yield* Effect.tryPromise({
+            try: () => session.moveLane(LANE, entryId),
+            catch: toSessionHostError,
+          });
+          return entryId;
+        }),
         setSteeringMode: (mode) =>
           Effect.sync(() => {
             agent.steeringMode = mode;
@@ -437,6 +431,6 @@ export const SessionHost = {
           }),
         dispose,
       };
-    });
+    })();
   },
 };

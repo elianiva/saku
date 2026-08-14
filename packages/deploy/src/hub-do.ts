@@ -127,7 +127,7 @@ export class SakuHubDO {
       varOrDefault(env, "SAKU_IDLE_STOP_MS", String(IDLE_STOP_DEFAULT_MS)),
       10,
     );
-    return Effect.gen(function* () {
+    return Effect.fn("buildHubShape")(function* () {
       return yield* makeHub({
         registry: yield* makeHubRegistry(),
         skills: yield* makeSkillsStore(),
@@ -136,7 +136,7 @@ export class SakuHubDO {
         idleStopMs,
         idleStop,
       });
-    }).pipe(
+    })().pipe(
       // The hub's registry and skills store live on DO storage — the
       // platform boundary (the `KvStore` service, doStorage backend).
       Effect.provide(KvStore.doStorage(state.storage)),

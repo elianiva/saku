@@ -14,7 +14,7 @@ import { NodeFileSystem } from "@effect/platform-node";
 import { Effect, Exit, FileSystem, Schema, Scope } from "effect";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
-import { getThreadTrailRoot } from "@saku/worker";
+import { Paths, PathsTest, type PathsShape } from "@saku/worker";
 import { KvStore } from "@saku/store";
 import { makeWireClient, type ThreadInfo, type WireClient } from "@saku/wire";
 
@@ -46,7 +46,7 @@ const oneShotStream = (text: string): StreamFn => {
 interface World {
   readonly url: string;
   readonly fs: FileSystem.FileSystem;
-  readonly home: string;
+  readonly paths: PathsShape;
   readonly scope: Scope.Scope;
 }
 
@@ -56,16 +56,18 @@ let world: World;
 const workerCatalog = (completions: string[] = []) => fakeCatalog({ completions });
 
 beforeEach(async () => {
-  const { fs, home, url, scope } = await Effect.runPromise(
+  // The scope outlives the building run: it holds the server open and the
+  // test layout (`PathsTest`) alive until afterEach closes it.
+  const scope = await Effect.runPromise(Scope.make());
+  const { fs, paths, url } = await Effect.runPromise(
     Effect.gen(function* () {
-      const scope = yield* Scope.make();
       const fs = yield* FileSystem.FileSystem;
-      const home = yield* fs.makeTempDirectory({ prefix: "saku-hub-real-" });
-      process.env.SAKU_HOME = home;
+      const paths = yield* Paths;
       const registry = yield* makeHubRegistry().pipe(Effect.provide(KvStore.memory()));
       const skills = yield* makeSkillsStore().pipe(Effect.provide(KvStore.memory()));
       const worker = yield* inProcessWorker({
         fs,
+        paths,
         catalog: workerCatalog(),
         streamFn: oneShotStream("a canned response"),
       });
@@ -79,25 +81,19 @@ beforeEach(async () => {
       const server = yield* makeHubServer({ hub, token: TEST_TOKEN }).pipe(
         Effect.provideService(Scope.Scope, scope),
       );
-      return { fs, home, url: server.url, scope };
-    }).pipe(Effect.provide(NodeFileSystem.layer)),
+      return { fs, paths, url: server.url };
+    }).pipe(
+      Effect.provide(PathsTest()),
+      Effect.provideService(Scope.Scope, scope),
+      Effect.provide(NodeFileSystem.layer),
+    ),
   );
-  world = { url, fs, home, scope };
+  world = { url, fs, paths, scope };
 });
 
 afterEach(async () => {
-  delete process.env.SAKU_HOME;
+  // Closing the scope releases the server and removes the test layout.
   await Effect.runPromise(Scope.close(world.scope, Exit.void));
-  await Effect.runPromise(
-    Effect.provide(NodeFileSystem.layer)(
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        yield* fs
-          .remove(world.home, { recursive: true, force: true })
-          .pipe(Effect.catch(() => Effect.void));
-      }),
-    ),
-  );
 });
 
 const connect = (): Promise<WireClient> =>
@@ -195,7 +191,7 @@ describe("hub + real SessionHost over the wire", () => {
     // The trail directory is gone with the thread.
     const trailExists = await run(
       world.fs
-        .exists(getThreadTrailRoot(thread.id))
+        .exists(world.paths.threadTrailRoot(thread.id))
         .pipe(Effect.catch(() => Effect.succeed(false))),
     );
     expect(trailExists).toBe(false);

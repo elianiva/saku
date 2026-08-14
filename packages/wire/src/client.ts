@@ -224,21 +224,20 @@ const settleConnect = (
     ),
   );
 
-const emit = (
+const emit = Effect.fn("emit")(function* (
   deps: ClientDeps,
   kind: ClientEventKind,
   payload: ClientEvents[ClientEventKind],
-): Effect.Effect<void, never, never> =>
-  Effect.gen(function* () {
-    const set = deps.listeners.get(kind);
-    if (set === undefined) return;
-    for (const listener of set) {
-      const result = Result.try(() => listener(payload));
-      if (Result.isFailure(result)) {
-        yield* Effect.logError("[wire] listener failed:", result.failure);
-      }
+) {
+  const set = deps.listeners.get(kind);
+  if (set === undefined) return;
+  for (const listener of set) {
+    const result = Result.try(() => listener(payload));
+    if (Result.isFailure(result)) {
+      yield* Effect.logError("[wire] listener failed:", result.failure);
     }
-  });
+  }
+});
 
 /** Fail every in-flight request; the pending map is drained. */
 const failAllPending = (deps: ClientDeps, error: WireError): Effect.Effect<void, never, never> =>
@@ -492,9 +491,7 @@ const COMMANDS = {
   listSkills: command(false, "list_skills", ListSkillsCommand, (p) => [...p.skills]),
   importSkill: command(false, "import_skill", ImportSkillCommand, (p) => p.skill),
   deleteSkill: command(false, "delete_skill", DeleteSkillCommand, () => undefined),
-  listPiSessions: command(false, "list_pi_sessions", ListPiSessionsCommand, (p) => [
-    ...p.sessions,
-  ]),
+  listPiSessions: command(false, "list_pi_sessions", ListPiSessionsCommand, (p) => [...p.sessions]),
   importPiSession: command(false, "import_pi_session", ImportPiSessionCommand, (p) => p.thread),
 };
 
@@ -520,53 +517,48 @@ const resolveResponse = (
   );
 
 /** Dispatch one decoded server frame in `Connected`. */
-const handleFrame = (deps: ClientDeps, frame: WireEvent): Effect.Effect<void, never, never> =>
-  Effect.gen(function* () {
-    yield* Match.value(frame).pipe(
-      Match.withReturnType<Effect.Effect<void, never, never>>(),
-      Match.tagsExhaustive({
-        response: (frame) =>
-          frame.ok
-            ? resolveResponse(deps, frame.id, Result.succeed(frame.payload))
-            : resolveResponse(
-                deps,
-                frame.id,
-                Result.fail(new WireError({ code: "command_failed", message: frame.error })),
-              ),
-        event: (frame) =>
-          // The envelope's event payload is opaque JSON by design (ADR 0005:
-          // pi's event vocabulary crosses the wire unvalidated); the console
-          // narrows it to the projected `SessionWireEvent` at this boundary.
-          emit(deps, "event", {
-            threadId: frame.threadId,
-            event: narrowPi<SessionWireEvent>(frame.event),
-          }),
-        thread_changed: (frame) => emit(deps, "thread_changed", frame.thread),
-        hello_ok: (frame) => emit(deps, "hello_ok", frame),
-        error: (frame) => emit(deps, "error", { message: frame.message }),
-      }),
-    );
-    return;
-  });
+const handleFrame = Effect.fn("handleFrame")(function* (deps: ClientDeps, frame: WireEvent) {
+  yield* Match.value(frame).pipe(
+    Match.withReturnType<Effect.Effect<void, never, never>>(),
+    Match.tagsExhaustive({
+      response: (frame) =>
+        frame.ok
+          ? resolveResponse(deps, frame.id, Result.succeed(frame.payload))
+          : resolveResponse(
+              deps,
+              frame.id,
+              Result.fail(new WireError({ code: "command_failed", message: frame.error })),
+            ),
+      event: (frame) =>
+        // The envelope's event payload is opaque JSON by design (ADR 0005:
+        // pi's event vocabulary crosses the wire unvalidated); the console
+        // narrows it to the projected `SessionWireEvent` at this boundary.
+        emit(deps, "event", {
+          threadId: frame.threadId,
+          event: narrowPi<SessionWireEvent>(frame.event),
+        }),
+      thread_changed: (frame) => emit(deps, "thread_changed", frame.thread),
+      hello_ok: (frame) => emit(deps, "hello_ok", frame),
+      error: (frame) => emit(deps, "error", { message: frame.message }),
+    }),
+  );
+  return;
+});
 
 /** Decode one frame line, or surface the failure as an error event. */
-const decodeFrameLine = (
-  deps: ClientDeps,
-  line: string,
-): Effect.Effect<WireEvent, WireError, never> =>
-  Effect.gen(function* () {
-    const parsed = Result.try(() => parseFrame(line));
-    if (Result.isFailure(parsed)) {
-      yield* emit(deps, "error", { message: "malformed JSON frame from server" });
-      return yield* Effect.fail(new WireError({ code: "decode", message: "malformed frame" }));
-    }
-    const decoded = Result.try(() => DECODE(parsed.success));
-    if (Result.isFailure(decoded)) {
-      yield* emit(deps, "error", { message: `undecodable wire frame: ${String(decoded.failure)}` });
-      return yield* Effect.fail(new WireError({ code: "decode", message: "undecodable frame" }));
-    }
-    return decoded.success;
-  });
+const decodeFrameLine = Effect.fn("decodeFrameLine")(function* (deps: ClientDeps, line: string) {
+  const parsed = Result.try(() => parseFrame(line));
+  if (Result.isFailure(parsed)) {
+    yield* emit(deps, "error", { message: "malformed JSON frame from server" });
+    return yield* Effect.fail(new WireError({ code: "decode", message: "malformed frame" }));
+  }
+  const decoded = Result.try(() => DECODE(parsed.success));
+  if (Result.isFailure(decoded)) {
+    yield* emit(deps, "error", { message: `undecodable wire frame: ${String(decoded.failure)}` });
+    return yield* Effect.fail(new WireError({ code: "decode", message: "undecodable frame" }));
+  }
+  return decoded.success;
+});
 
 /** A console's connection to the hub. Create once per process. */
 export interface WireClient {
@@ -662,179 +654,172 @@ export interface WireClient {
 }
 
 /** Spawn the client's actor and return the client value. */
-export const makeWireClient = (
+export const makeWireClient = Effect.fn("makeWireClient")(function* (
   options: WorkerClientOptions,
-): Effect.Effect<WireClient, never, never> =>
-  Effect.gen(function* () {
-    const pendingRef = yield* Ref.make<Pending>(new Map());
-    const connectRef = yield* Ref.make<Option.Option<ConnectDeferred>>(Option.none());
-    const seqRef = yield* Ref.make(0);
-    const listeners: ListenerMap = new Map();
-    const reconnectEnabled = options.reconnect ?? false;
-    const requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
-    const deps: ClientDeps = {
-      url: options.url,
-      token: options.token,
-      role: options.role,
-      version: options.version ?? WIRE_VERSION,
-      pendingRef,
-      connectRef,
-      listeners,
-    };
-    const actor = yield* Machine.spawn(makeMachine(deps));
-    yield* actor.start;
+): Effect.fn.Return<WireClient, never, never> {
+  const pendingRef = yield* Ref.make<Pending>(new Map());
+  const connectRef = yield* Ref.make<Option.Option<ConnectDeferred>>(Option.none());
+  const seqRef = yield* Ref.make(0);
+  const listeners: ListenerMap = new Map();
+  const reconnectEnabled = options.reconnect ?? false;
+  const requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
+  const deps: ClientDeps = {
+    url: options.url,
+    token: options.token,
+    role: options.role,
+    version: options.version ?? WIRE_VERSION,
+    pendingRef,
+    connectRef,
+    listeners,
+  };
+  const actor = yield* Machine.spawn(makeMachine(deps));
+  yield* actor.start;
 
-    const connect = (): Effect.Effect<HelloOk, WireError, never> =>
-      Effect.gen(function* () {
-        const deferred = yield* Deferred.make<HelloOk, WireError>();
-        yield* Ref.set(connectRef, Option.some(deferred));
-        yield* actor.send(ClientEvent.ConnectRequested);
-        const hello = yield* Deferred.await(deferred).pipe(
-          Effect.ensuring(Ref.set(connectRef, Option.none())),
-        );
-        // The hello_ok transition has run, but the actor may not have landed
-        // on Connected yet; wait for the state so a command immediately after
-        // connect() sees a Connected snapshot.
-        yield* actor.waitFor((state) => ClientState.$is("Connected")(state));
-        return hello;
-      });
-
-    const waitForClose = (): Effect.Effect<void, WireError, never> =>
-      actor
-        .waitFor((state) => !ClientState.$is("Connected")(state))
-        .pipe(
-          Effect.flatMap(() =>
-            Effect.fail(new WireError({ code: "disconnected", message: "connection closed" })),
-          ),
-        );
-
-    const start = (): Effect.Effect<void, WireError, never> => {
-      const attempt = (): Effect.Effect<void, WireError, never> =>
-        connect().pipe(Effect.flatMap(() => waitForClose()));
-      if (!reconnectEnabled) return attempt();
-      // Handshake rejections fail through — a bad token must not spin forever.
-      return attempt().pipe(
-        Effect.catchIf(
-          (error) => error.code === "handshake",
-          (error) => Effect.fail(error),
-        ),
-        Effect.retry(Schedule.exponential("200 millis", 2)),
-      );
-    };
-
-    const disconnect = (): Effect.Effect<void, never, never> =>
-      Effect.gen(function* () {
-        yield* failAllPending(
-          deps,
-          new WireError({ code: "disconnected", message: "client disconnected" }),
-        );
-        yield* actor.send(ClientEvent.DisconnectRequested);
-        // Drain: the machine closes the socket (DisconnectRequested), then
-        // the actor stops after the queue is empty.
-        yield* actor.drain;
-      });
-
-    const on = <K extends ClientEventKind>(
-      kind: K,
-      listener: (payload: ClientEvents[K]) => void,
-    ): (() => void) => {
-      let set = listeners.get(kind);
-      if (set === undefined) {
-        set = new Set();
-        listeners.set(kind, set);
-      }
-      set.add(listener as Listener);
-      return () => {
-        set.delete(listener as Listener);
-      };
-    };
-
-    const nextRequestId = (): Effect.Effect<string, never, never> =>
-      Ref.updateAndGet(seqRef, (n) => n + 1).pipe(Effect.map((n) => `req_${n}`));
-
-    const request = <A extends object, K extends ResponsePayload["_tag"], T>(
-      spec: CommandSpec<A, K, T>,
-      args: A,
-      threadId?: string,
-    ): Effect.Effect<T, WireError, never> =>
-      Effect.gen(function* () {
-        const state = yield* actor.snapshot;
-        if (!ClientState.$is("Connected")(state)) {
-          return yield* Effect.fail(
-            new WireError({ code: "disconnected", message: "not connected" }),
-          );
-        }
-        const id = yield* nextRequestId();
-        const frame: WireCommand = {
-          _tag: "command",
-          id,
-          ...(threadId === undefined ? {} : { threadId }),
-          command: spec.schema.make(args),
-        };
-        const deferred = yield* Deferred.make<ResponsePayload, WireError>();
-        yield* Ref.update(pendingRef, (pending) => new Map(pending).set(id, deferred));
-        yield* actor.send(ClientEvent.CommandSent({ id, frame }));
-        const payload = yield* Effect.ensuring(
-          Deferred.await(deferred).pipe(
-            Effect.timeout(requestTimeoutMs),
-            Effect.mapError((error) =>
-              Cause.isTimeoutError(error)
-                ? new WireError({ code: "timeout", message: `command ${id} timed out` })
-                : error,
-            ),
-          ),
-          // The response handler already removed the entry on success; this
-          // covers timeout and interruption.
-          Ref.update(pendingRef, (pending) => {
-            const next = new Map(pending);
-            next.delete(id);
-            return next;
-          }),
-        );
-        const variant = yield* narrowResponse(payload, spec.tag);
-        return spec.extract(variant);
-      });
-
-    return {
-      role: options.role,
-      get isConnected() {
-        return actor.sync.matches("Connected");
-      },
-      connect,
-      start,
-      disconnect,
-      on,
-      listThreads: () => request(COMMANDS.listThreads, {}),
-      createThread: (name, options) => request(COMMANDS.createThread, { name, ...options }),
-      getThread: (threadId) => request(COMMANDS.getThread, { threadId }),
-      renameThread: (threadId, name) => request(COMMANDS.renameThread, { threadId, name }),
-      deleteThread: (threadId) => request(COMMANDS.deleteThread, { threadId }),
-      prompt: (threadId, text, images) => request(COMMANDS.prompt, { text, images }, threadId),
-      steer: (threadId, text) => request(COMMANDS.steer, { text }, threadId),
-      followUp: (threadId, text) => request(COMMANDS.followUp, { text }, threadId),
-      abort: (threadId) => request(COMMANDS.abort, {}, threadId),
-      setSteeringMode: (threadId, mode) => request(COMMANDS.setSteeringMode, { mode }, threadId),
-      setFollowUpMode: (threadId, mode) => request(COMMANDS.setFollowUpMode, { mode }, threadId),
-      compact: (threadId, customInstructions) =>
-        request(COMMANDS.compact, { customInstructions }, threadId),
-      setAutoCompaction: (threadId, enabled) =>
-        request(COMMANDS.setAutoCompaction, { enabled }, threadId),
-      getAvailableModels: (threadId) => request(COMMANDS.getAvailableModels, {}, threadId),
-      setModel: (threadId, provider, modelId) =>
-        request(COMMANDS.setModel, { provider, modelId }, threadId),
-      getAvailableThinkingLevels: (threadId) =>
-        request(COMMANDS.getAvailableThinkingLevels, {}, threadId),
-      setThinkingLevel: (threadId, level) =>
-        request(COMMANDS.setThinkingLevel, { level }, threadId),
-      getEntries: (threadId, sinceSeq) => request(COMMANDS.getEntries, { sinceSeq }, threadId),
-      branch: (threadId, entryId) => request(COMMANDS.branch, { entryId }, threadId),
-      getSessionStats: (threadId) => request(COMMANDS.getSessionStats, {}, threadId),
-      setSessionName: (threadId, name) => request(COMMANDS.setSessionName, { name }, threadId),
-      getState: (threadId) => request(COMMANDS.getState, {}, threadId),
-      listSkills: () => request(COMMANDS.listSkills, {}),
-      importSkill: (source, scope) => request(COMMANDS.importSkill, { source, scope }),
-      deleteSkill: (id) => request(COMMANDS.deleteSkill, { id }),
-      listPiSessions: () => request(COMMANDS.listPiSessions, {}),
-      importPiSession: (path) => request(COMMANDS.importPiSession, { path }),
-    };
+  const connect = Effect.fn("connect")(function* () {
+    const deferred = yield* Deferred.make<HelloOk, WireError>();
+    yield* Ref.set(connectRef, Option.some(deferred));
+    yield* actor.send(ClientEvent.ConnectRequested);
+    const hello = yield* Deferred.await(deferred).pipe(
+      Effect.ensuring(Ref.set(connectRef, Option.none())),
+    );
+    // The hello_ok transition has run, but the actor may not have landed
+    // on Connected yet; wait for the state so a command immediately after
+    // connect() sees a Connected snapshot.
+    yield* actor.waitFor((state) => ClientState.$is("Connected")(state));
+    return hello;
   });
+
+  const waitForClose = (): Effect.Effect<void, WireError, never> =>
+    actor
+      .waitFor((state) => !ClientState.$is("Connected")(state))
+      .pipe(
+        Effect.flatMap(() =>
+          Effect.fail(new WireError({ code: "disconnected", message: "connection closed" })),
+        ),
+      );
+
+  const start = (): Effect.Effect<void, WireError, never> => {
+    const attempt = (): Effect.Effect<void, WireError, never> =>
+      connect().pipe(Effect.flatMap(() => waitForClose()));
+    if (!reconnectEnabled) return attempt();
+    // Handshake rejections fail through — a bad token must not spin forever.
+    return attempt().pipe(
+      Effect.catchIf(
+        (error) => error.code === "handshake",
+        (error) => Effect.fail(error),
+      ),
+      Effect.retry(Schedule.exponential("200 millis", 2)),
+    );
+  };
+
+  const disconnect = Effect.fn("disconnect")(function* () {
+    yield* failAllPending(
+      deps,
+      new WireError({ code: "disconnected", message: "client disconnected" }),
+    );
+    yield* actor.send(ClientEvent.DisconnectRequested);
+    // Drain: the machine closes the socket (DisconnectRequested), then
+    // the actor stops after the queue is empty.
+    yield* actor.drain;
+  });
+
+  const on = <K extends ClientEventKind>(
+    kind: K,
+    listener: (payload: ClientEvents[K]) => void,
+  ): (() => void) => {
+    let set = listeners.get(kind);
+    if (set === undefined) {
+      set = new Set();
+      listeners.set(kind, set);
+    }
+    set.add(listener as Listener);
+    return () => {
+      set.delete(listener as Listener);
+    };
+  };
+
+  const nextRequestId = (): Effect.Effect<string, never, never> =>
+    Ref.updateAndGet(seqRef, (n) => n + 1).pipe(Effect.map((n) => `req_${n}`));
+
+  const request = Effect.fn("request")(function* <
+    A extends object,
+    K extends ResponsePayload["_tag"],
+    T,
+  >(spec: CommandSpec<A, K, T>, args: A, threadId?: string) {
+    const state = yield* actor.snapshot;
+    if (!ClientState.$is("Connected")(state)) {
+      return yield* Effect.fail(new WireError({ code: "disconnected", message: "not connected" }));
+    }
+    const id = yield* nextRequestId();
+    const frame: WireCommand = {
+      _tag: "command",
+      id,
+      ...(threadId === undefined ? {} : { threadId }),
+      command: spec.schema.make(args),
+    };
+    const deferred = yield* Deferred.make<ResponsePayload, WireError>();
+    yield* Ref.update(pendingRef, (pending) => new Map(pending).set(id, deferred));
+    yield* actor.send(ClientEvent.CommandSent({ id, frame }));
+    const payload = yield* Effect.ensuring(
+      Deferred.await(deferred).pipe(
+        Effect.timeout(requestTimeoutMs),
+        Effect.mapError((error) =>
+          Cause.isTimeoutError(error)
+            ? new WireError({ code: "timeout", message: `command ${id} timed out` })
+            : error,
+        ),
+      ),
+      // The response handler already removed the entry on success; this
+      // covers timeout and interruption.
+      Ref.update(pendingRef, (pending) => {
+        const next = new Map(pending);
+        next.delete(id);
+        return next;
+      }),
+    );
+    const variant = yield* narrowResponse(payload, spec.tag);
+    return spec.extract(variant);
+  });
+
+  return {
+    role: options.role,
+    get isConnected() {
+      return actor.sync.matches("Connected");
+    },
+    connect,
+    start,
+    disconnect,
+    on,
+    listThreads: () => request(COMMANDS.listThreads, {}),
+    createThread: (name, options) => request(COMMANDS.createThread, { name, ...options }),
+    getThread: (threadId) => request(COMMANDS.getThread, { threadId }),
+    renameThread: (threadId, name) => request(COMMANDS.renameThread, { threadId, name }),
+    deleteThread: (threadId) => request(COMMANDS.deleteThread, { threadId }),
+    prompt: (threadId, text, images) => request(COMMANDS.prompt, { text, images }, threadId),
+    steer: (threadId, text) => request(COMMANDS.steer, { text }, threadId),
+    followUp: (threadId, text) => request(COMMANDS.followUp, { text }, threadId),
+    abort: (threadId) => request(COMMANDS.abort, {}, threadId),
+    setSteeringMode: (threadId, mode) => request(COMMANDS.setSteeringMode, { mode }, threadId),
+    setFollowUpMode: (threadId, mode) => request(COMMANDS.setFollowUpMode, { mode }, threadId),
+    compact: (threadId, customInstructions) =>
+      request(COMMANDS.compact, { customInstructions }, threadId),
+    setAutoCompaction: (threadId, enabled) =>
+      request(COMMANDS.setAutoCompaction, { enabled }, threadId),
+    getAvailableModels: (threadId) => request(COMMANDS.getAvailableModels, {}, threadId),
+    setModel: (threadId, provider, modelId) =>
+      request(COMMANDS.setModel, { provider, modelId }, threadId),
+    getAvailableThinkingLevels: (threadId) =>
+      request(COMMANDS.getAvailableThinkingLevels, {}, threadId),
+    setThinkingLevel: (threadId, level) => request(COMMANDS.setThinkingLevel, { level }, threadId),
+    getEntries: (threadId, sinceSeq) => request(COMMANDS.getEntries, { sinceSeq }, threadId),
+    branch: (threadId, entryId) => request(COMMANDS.branch, { entryId }, threadId),
+    getSessionStats: (threadId) => request(COMMANDS.getSessionStats, {}, threadId),
+    setSessionName: (threadId, name) => request(COMMANDS.setSessionName, { name }, threadId),
+    getState: (threadId) => request(COMMANDS.getState, {}, threadId),
+    listSkills: () => request(COMMANDS.listSkills, {}),
+    importSkill: (source, scope) => request(COMMANDS.importSkill, { source, scope }),
+    deleteSkill: (id) => request(COMMANDS.deleteSkill, { id }),
+    listPiSessions: () => request(COMMANDS.listPiSessions, {}),
+    importPiSession: (path) => request(COMMANDS.importPiSession, { path }),
+  };
+});

@@ -30,7 +30,7 @@ import {
   type ThreadCommand,
   type WireEvent,
 } from "@saku/wire";
-import { makeWireServer, type WireServerShape } from "@saku/wire/server";
+import { makeWireServer } from "@saku/wire/server";
 
 import { HubError, makeHubError } from "./hub-error.ts";
 import type { HubEvent, HubShape } from "./hub.ts";
@@ -53,8 +53,7 @@ export interface WireCoreShape {
 
 /** The hub-shaped thread/skill routing (the semantics live in `hub.ts`). */
 const runHubCommand =
-  (hub: HubShape) =>
-  (command: ThreadCommand | SkillCommand | PiSessionCommand): Effect.Effect<ResponsePayload, HubError, never> =>
+  (hub: HubShape) => (command: ThreadCommand | SkillCommand | PiSessionCommand) =>
     Match.value(command).pipe(
       Match.withReturnType<Effect.Effect<ResponsePayload, HubError, never>>(),
       Match.tagsExhaustive({
@@ -91,56 +90,46 @@ const runHubCommand =
         // serves these (the mirror of the daemon's skills_not_served).
         list_pi_sessions: () =>
           Effect.fail(
-            makeHubError(
-              "pi_sessions",
-              "pi sessions are served by the local daemon, not the hub",
-            ),
+            makeHubError("pi_sessions", "pi sessions are served by the local daemon, not the hub"),
           ),
         import_pi_session: () =>
           Effect.fail(
-            makeHubError(
-              "pi_sessions",
-              "pi sessions are served by the local daemon, not the hub",
-            ),
+            makeHubError("pi_sessions", "pi sessions are served by the local daemon, not the hub"),
           ),
       }),
     );
 
-export const makeWireCore = (
-  options: WireCoreOptions,
-): Effect.Effect<WireCoreShape, never, never> =>
-  Effect.gen(function* () {
-    const { hub, token } = options;
-    const pid = options.pid ?? (typeof process !== "undefined" ? process.pid : 0);
-    const core: WireServerShape = yield* makeWireServer({
-      token: () => Effect.succeed(token),
-      pid,
-      log: (message) => Effect.logWarning(`[saku-hub] ${message}`),
-      handlers: {
-        runHubCommand: runHubCommand(hub),
-        runSessionCommand: (threadId, command) => hub.runSessionCommand(threadId, command),
-      },
-    });
-
-    /** The hub's events → wire frames (the fan-out). */
-    const onHubEvent = (event: HubEvent): void => {
-      const frame: WireEvent =
-        event.type === "thread_changed"
-          ? ThreadChanged.make({ thread: event.thread })
-          : EventFrame.make({ threadId: event.threadId, event: event.event });
-      void Effect.runFork(core.broadcast(frame));
-    };
-
-    // The hub subscription lives for the core's lifetime (the node server
-    // closes it on teardown; a DO keeps it for the instance's lifetime).
-    const unsubscribe = hub.subscribe(onHubEvent);
-
-    return {
-      runConnection: (socket) => core.runConnection(socket),
-      close: () =>
-        Effect.gen(function* () {
-          unsubscribe();
-          yield* core.close();
-        }),
-    };
+export const makeWireCore = Effect.fn("makeWireCore")(function* (options: WireCoreOptions) {
+  const { hub, token } = options;
+  const pid = options.pid ?? (typeof process !== "undefined" ? process.pid : 0);
+  const core = yield* makeWireServer({
+    token: () => Effect.succeed(token),
+    pid,
+    log: (message) => Effect.logWarning(`[saku-hub] ${message}`),
+    handlers: {
+      runHubCommand: runHubCommand(hub),
+      runSessionCommand: (threadId, command) => hub.runSessionCommand(threadId, command),
+    },
   });
+
+  /** The hub's events → wire frames (the fan-out). */
+  const onHubEvent = (event: HubEvent): void => {
+    const frame: WireEvent =
+      event.type === "thread_changed"
+        ? ThreadChanged.make({ thread: event.thread })
+        : EventFrame.make({ threadId: event.threadId, event: event.event });
+    void Effect.runFork(core.broadcast(frame));
+  };
+
+  // The hub subscription lives for the core's lifetime (the node server
+  // closes it on teardown; a DO keeps it for the instance's lifetime).
+  const unsubscribe = hub.subscribe(onHubEvent);
+
+  return {
+    runConnection: (socket) => core.runConnection(socket),
+    close: Effect.fn(function* () {
+      unsubscribe();
+      yield* core.close();
+    }),
+  } satisfies WireCoreShape;
+});

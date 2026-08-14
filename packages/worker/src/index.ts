@@ -23,6 +23,7 @@ export { DoSessionRepo, DoSessionStorage, type DoSessionMetadata } from "./do-se
 export {
   ModelCatalog,
   ModelCatalogLive,
+  ModelCatalogTest,
   type CatalogOptions,
   type ModelCatalogShape,
 } from "./model-catalog.ts";
@@ -37,6 +38,7 @@ export {
 export {
   ThreadRegistry,
   ThreadRegistryLive,
+  ThreadRegistryTest,
   ThreadRecordSchema,
   type HostRegistryShape,
   type ThreadRecord,
@@ -45,6 +47,7 @@ export {
 export {
   SakuDaemon,
   SakuDaemonLive,
+  SakuDaemonTest,
   SakuDaemonLayer,
   DaemonError,
   type DaemonOptions,

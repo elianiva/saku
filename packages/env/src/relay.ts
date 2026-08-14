@@ -44,96 +44,93 @@ export interface RelayClientShape {
 }
 
 /** One registration attempt: dial, hello, then serve until the socket dies. */
-const runRegistration = (
+const runRegistration = Effect.fn("runRegistration")(function* (
   options: RelayClientOptions,
   ctx: EnvConnectionContext,
-): Effect.Effect<boolean, never, Scope.Scope> =>
-  Effect.gen(function* () {
-    const socket = yield* Effect.acquireRelease(
-      Effect.sync(() => new WebSocket(options.url)),
-      (socket) => Effect.sync(() => socket.close()),
-    );
-    // Wait for the socket to open, send relay_hello, and hand the socket
-    // straight to the shared env connection handler: the hub's next frame
-    // is either an env_error (rejected registration — surfaced by the
-    // handler) or a worker's piped env_hello (serve it).
-    const outcome = yield* Effect.callback<Result.Result<void, string>>((resume) => {
-      let settled = false;
-      const finish = (result: Result.Result<void, string>): void => {
-        if (settled) return;
-        settled = true;
-        socket.off("error", onError);
-        socket.off("close", onClose);
-        resume(Effect.succeed(result));
-      };
-      const onError = (error: Error): void => {
-        finish(Result.fail(error.message));
-      };
-      const onClose = (): void => {
-        finish(Result.fail("relay closed before the registration"));
-      };
-      socket.on("error", onError);
-      socket.once("close", onClose);
-      socket.on("open", () => {
-        socket.send(
-          serializeFrame(
-            RelayHello.make({ envId: options.envId, token: options.token, version: ENV_VERSION }),
-          ),
-        );
-        finish(Result.succeed(undefined));
-      });
-      return Effect.sync(() => {
-        socket.off("error", onError);
-        socket.off("close", onClose);
-      });
+) {
+  const socket = yield* Effect.acquireRelease(
+    Effect.sync(() => new WebSocket(options.url)),
+    (socket) => Effect.sync(() => socket.close()),
+  );
+  // Wait for the socket to open, send relay_hello, and hand the socket
+  // straight to the shared env connection handler: the hub's next frame
+  // is either an env_error (rejected registration — surfaced by the
+  // handler) or a worker's piped env_hello (serve it).
+  const outcome = yield* Effect.callback<Result.Result<void, string>>((resume) => {
+    let settled = false;
+    const finish = (result: Result.Result<void, string>): void => {
+      if (settled) return;
+      settled = true;
+      socket.off("error", onError);
+      socket.off("close", onClose);
+      resume(Effect.succeed(result));
+    };
+    const onError = (error: Error): void => {
+      finish(Result.fail(error.message));
+    };
+    const onClose = (): void => {
+      finish(Result.fail("relay closed before the registration"));
+    };
+    socket.on("error", onError);
+    socket.once("close", onClose);
+    socket.on("open", () => {
+      socket.send(
+        serializeFrame(
+          RelayHello.make({ envId: options.envId, token: options.token, version: ENV_VERSION }),
+        ),
+      );
+      finish(Result.succeed(undefined));
     });
-    if (Result.isFailure(outcome)) {
-      yield* (options.log?.(`relay failed: ${outcome.failure}`) ?? Effect.void);
-      return false;
-    }
-    yield* (options.log?.(`relay registered (${options.envId.slice(0, 8)})`) ?? Effect.void);
-    // Registration accepted: serve the env protocol on this socket until it
-    // drops; the hub pipes a worker's attach onto it.
-    yield* handleEnvConnection(socket, ctx);
-    return true;
+    return Effect.sync(() => {
+      socket.off("error", onError);
+      socket.off("close", onClose);
+    });
   });
+  if (Result.isFailure(outcome)) {
+    yield* options.log?.(`relay failed: ${outcome.failure}`) ?? Effect.void;
+    return false;
+  }
+  yield* options.log?.(`relay registered (${options.envId.slice(0, 8)})`) ?? Effect.void;
+  // Registration accepted: serve the env protocol on this socket until it
+  // drops; the hub pipes a worker's attach onto it.
+  yield* handleEnvConnection(socket, ctx);
+  return true;
+});
 
 /**
  * The reconnect loop: register, serve, wait out the backoff on drop, and
  * repeat until stopped. Runs inside the caller's scope (the entry process
  * keeps it in an `Effect.never`).
  */
-export const makeEnvRelayClient = (
+export const makeEnvRelayClient = Effect.fn("makeEnvRelayClient")(function* (
   options: RelayClientOptions,
-): Effect.Effect<RelayClientShape, never, Scope.Scope> =>
-  Effect.gen(function* () {
-    const log = options.log ?? (() => Effect.void);
-    const ctx: EnvConnectionContext = {
-      token: options.hello.token,
-      cwd: options.hello.cwd ?? process.cwd(),
-      fs: options.fs,
-      log,
-    };
-    const runningRef = yield* Ref.make(true);
-    const connectedRef = yield* Ref.make(false);
-    const loop = Effect.gen(function* () {
-      while (yield* Ref.get(runningRef)) {
-        const registered = yield* runRegistration(options, ctx);
-        yield* Ref.set(connectedRef, registered);
-        if (!(yield* Ref.get(runningRef))) return;
-        yield* log("relay disconnected; reconnecting");
-        yield* Effect.sleep(`${BACKOFF_MS} millis`);
-      }
-    });
-    // The loop fiber: forked scoped — the scope's exit interrupts it.
-    const fiber = yield* Effect.forkScoped(loop);
-    yield* Effect.addFinalizer(() => Fiber.interrupt(fiber));
-    return {
-      connected: () => Ref.get(connectedRef),
-      stop: () =>
-        Effect.gen(function* () {
-          yield* Ref.set(runningRef, false);
-          yield* Fiber.interrupt(fiber);
-        }),
-    };
+) {
+  const log = options.log ?? (() => Effect.void);
+  const ctx: EnvConnectionContext = {
+    token: options.hello.token,
+    cwd: options.hello.cwd ?? process.cwd(),
+    fs: options.fs,
+    log,
+  };
+  const runningRef = yield* Ref.make(true);
+  const connectedRef = yield* Ref.make(false);
+  const loop = Effect.gen(function* () {
+    while (yield* Ref.get(runningRef)) {
+      const registered = yield* runRegistration(options, ctx);
+      yield* Ref.set(connectedRef, registered);
+      if (!(yield* Ref.get(runningRef))) return;
+      yield* log("relay disconnected; reconnecting");
+      yield* Effect.sleep(`${BACKOFF_MS} millis`);
+    }
   });
+  // The loop fiber: forked scoped — the scope's exit interrupts it.
+  const fiber = yield* Effect.forkScoped(loop);
+  yield* Effect.addFinalizer(() => Fiber.interrupt(fiber));
+  return {
+    connected: () => Ref.get(connectedRef),
+    stop: Effect.fn("stop")(function* () {
+      yield* Ref.set(runningRef, false);
+      yield* Fiber.interrupt(fiber);
+    }),
+  };
+});

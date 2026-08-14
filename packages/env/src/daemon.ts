@@ -207,189 +207,185 @@ const runOp = (
  * Total: every failure is a frame + close, never a thrown effect.
  * Resolves when the socket closes.
  */
-export const handleEnvConnection = (
+export const handleEnvConnection = Effect.fn("handleEnvConnection")(function* (
   socket: WebSocket,
   ctx: EnvConnectionContext,
-): Effect.Effect<void, never, Scope.Scope> =>
-  Effect.gen(function* () {
-    const aborters = new Map<string, () => void>();
-    const send = (frame: unknown): void => {
-      Result.try(() => socket.send(serializeFrame(frame)));
-    };
-    const drop = (message: string): void => {
-      send(EnvErrorFrame.make({ message }));
-      socket.close();
-    };
+) {
+  const aborters = new Map<string, () => void>();
+  const send = (frame: unknown): void => {
+    Result.try(() => socket.send(serializeFrame(frame)));
+  };
+  const drop = (message: string): void => {
+    send(EnvErrorFrame.make({ message }));
+    socket.close();
+  };
 
-    // The first frame must be env_hello.
-    const helloOutcome = yield* Effect.callback<Result.Result<EnvHello, string>>((resume) => {
-      let done = false;
-      const finish = (outcome: Result.Result<EnvHello, string>): void => {
-        if (done) return;
-        done = true;
-        socket.off("message", onMessage);
-        socket.off("close", onClose);
-        resume(Effect.succeed(outcome));
-      };
-      const onMessage = (data: unknown): void => {
-        const parsed = Result.try(() => parseFrame(decodeFrame(data)));
-        if (Result.isFailure(parsed)) return; // keep waiting for a frame
-        if (typeof parsed.success !== "object" || parsed.success === null) return;
-        const frame = parsed.success as { _tag?: string };
-        // The hub's rejection of a relay registration arrives as env_error.
-        if (frame._tag === "env_error") {
-          const message = (parsed.success as { message?: string }).message;
-          finish(Result.fail(message ?? "env_error"));
-          return;
-        }
-        const decoded = Result.try(() => DECODE_FIRST(parsed.success));
-        if (Result.isFailure(decoded)) {
-          finish(Result.fail("expected env_hello"));
-          return;
-        }
-        finish(Result.succeed(decoded.success));
-      };
-      const onClose = (): void => {
-        finish(Result.fail("connection closed before env_hello"));
-      };
-      socket.on("message", onMessage);
-      socket.once("close", onClose);
-      return Effect.sync(() => {
-        socket.off("message", onMessage);
-        socket.off("close", onClose);
-      });
-    });
-    if (Result.isFailure(helloOutcome)) {
-      yield* ctx.log(helloOutcome.failure);
-      drop(helloOutcome.failure);
-      return;
-    }
-    const hello = helloOutcome.success;
-    if (hello.version !== ENV_VERSION) {
-      drop(`version mismatch: expected ${ENV_VERSION}`);
-      return;
-    }
-    if (hello.token !== ctx.token) {
-      drop("invalid token");
-      return;
-    }
-    const cwd = hello.cwd ?? ctx.cwd;
-    const env = new LocalEnv(cwd, ctx.fs);
-    send(EnvHelloOk.make({ pid: process.pid, version: ENV_VERSION, cwd }));
-
+  // The first frame must be env_hello.
+  const helloOutcome = yield* Effect.callback<Result.Result<EnvHello, string>>((resume) => {
+    let done = false;
+    const finish = (outcome: Result.Result<EnvHello, string>): void => {
+      if (done) return;
+      done = true;
+      socket.off("message", onMessage);
+      socket.off("close", onClose);
+      resume(Effect.succeed(outcome));
+    };
     const onMessage = (data: unknown): void => {
       const parsed = Result.try(() => parseFrame(decodeFrame(data)));
-      if (Result.isFailure(parsed) || parsed.success === undefined) return;
+      if (Result.isFailure(parsed)) return; // keep waiting for a frame
       if (typeof parsed.success !== "object" || parsed.success === null) return;
       const frame = parsed.success as { _tag?: string };
-      if (frame._tag === "env_abort") {
-        const decoded = Result.try(() => DECODE_ABORT(parsed.success));
-        if (Result.isFailure(decoded)) return;
-        aborters.get(decoded.success.id)?.();
+      // The hub's rejection of a relay registration arrives as env_error.
+      if (frame._tag === "env_error") {
+        const message = (parsed.success as { message?: string }).message;
+        finish(Result.fail(message ?? "env_error"));
         return;
       }
-      if (frame._tag !== "env_request") return;
-      const request = Result.try(() => DECODE_REQUEST(parsed.success));
-      if (Result.isFailure(request)) {
-        send(
-          EnvResponseError.make({
-            id: "(decode)",
-            ok: false,
-            error: { kind: "invalid", message: "undecodable env_request" },
-          }),
-        );
+      const decoded = Result.try(() => DECODE_FIRST(parsed.success));
+      if (Result.isFailure(decoded)) {
+        finish(Result.fail("expected env_hello"));
         return;
       }
-      const id = request.success.id;
-      const op = decodeOp(request.success.op);
-      if (Result.isFailure(op)) {
+      finish(Result.succeed(decoded.success));
+    };
+    const onClose = (): void => {
+      finish(Result.fail("connection closed before env_hello"));
+    };
+    socket.on("message", onMessage);
+    socket.once("close", onClose);
+    return Effect.sync(() => {
+      socket.off("message", onMessage);
+      socket.off("close", onClose);
+    });
+  });
+  if (Result.isFailure(helloOutcome)) {
+    yield* ctx.log(helloOutcome.failure);
+    drop(helloOutcome.failure);
+    return;
+  }
+  const hello = helloOutcome.success;
+  if (hello.version !== ENV_VERSION) {
+    drop(`version mismatch: expected ${ENV_VERSION}`);
+    return;
+  }
+  if (hello.token !== ctx.token) {
+    drop("invalid token");
+    return;
+  }
+  const cwd = hello.cwd ?? ctx.cwd;
+  const env = new LocalEnv(cwd, ctx.fs);
+  send(EnvHelloOk.make({ pid: process.pid, version: ENV_VERSION, cwd }));
+
+  const onMessage = (data: unknown): void => {
+    const parsed = Result.try(() => parseFrame(decodeFrame(data)));
+    if (Result.isFailure(parsed) || parsed.success === undefined) return;
+    if (typeof parsed.success !== "object" || parsed.success === null) return;
+    const frame = parsed.success as { _tag?: string };
+    if (frame._tag === "env_abort") {
+      const decoded = Result.try(() => DECODE_ABORT(parsed.success));
+      if (Result.isFailure(decoded)) return;
+      aborters.get(decoded.success.id)?.();
+      return;
+    }
+    if (frame._tag !== "env_request") return;
+    const request = Result.try(() => DECODE_REQUEST(parsed.success));
+    if (Result.isFailure(request)) {
+      send(
+        EnvResponseError.make({
+          id: "(decode)",
+          ok: false,
+          error: { kind: "invalid", message: "undecodable env_request" },
+        }),
+      );
+      return;
+    }
+    const id = request.success.id;
+    const op = decodeOp(request.success.op);
+    if (Result.isFailure(op)) {
+      send(
+        EnvResponseError.make({
+          id,
+          ok: false,
+          error: { kind: "invalid", message: op.failure },
+        }),
+      );
+      return;
+    }
+    void Promise.resolve(runOp(env, id, op.success, { cwd, pid: process.pid, aborters, send }))
+      .then((outcome) => {
+        if (outcome.ok) {
+          send(
+            EnvResponseOk.make({
+              id,
+              ok: true,
+              payload: encodePayload(op.success, outcome.payload),
+            }),
+          );
+        } else {
+          send(EnvResponseError.make({ id, ok: false, error: outcome.error }));
+        }
+      })
+      .catch((error: unknown) => {
         send(
           EnvResponseError.make({
             id,
             ok: false,
-            error: { kind: "invalid", message: op.failure },
+            error: { kind: "unknown", message: String(error) },
           }),
         );
-        return;
-      }
-      void Promise.resolve(runOp(env, id, op.success, { cwd, pid: process.pid, aborters, send }))
-        .then((outcome) => {
-          if (outcome.ok) {
-            send(
-              EnvResponseOk.make({
-                id,
-                ok: true,
-                payload: encodePayload(op.success, outcome.payload),
-              }),
-            );
-          } else {
-            send(EnvResponseError.make({ id, ok: false, error: outcome.error }));
-          }
-        })
-        .catch((error: unknown) => {
-          send(
-            EnvResponseError.make({
-              id,
-              ok: false,
-              error: { kind: "unknown", message: String(error) },
-            }),
-          );
-        })
-        .finally(() => aborters.delete(id));
-    };
-    socket.on("message", onMessage);
+      })
+      .finally(() => aborters.delete(id));
+  };
+  socket.on("message", onMessage);
 
-    yield* Effect.callback<void>((resume) => {
-      const onClose = (): void => {
-        resume(Effect.void);
-      };
-      socket.once("close", onClose);
-      return Effect.sync(() => socket.off("close", onClose));
-    });
-    // The connection is gone; kill whatever is still running.
-    for (const abort of aborters.values()) abort();
+  yield* Effect.callback<void>((resume) => {
+    const onClose = (): void => {
+      resume(Effect.void);
+    };
+    socket.once("close", onClose);
+    return Effect.sync(() => socket.off("close", onClose));
   });
+  // The connection is gone; kill whatever is still running.
+  for (const abort of aborters.values()) abort();
+});
 
 /** Build the daemon: listen, then serve connections until close. */
-export const makeEnvDaemon = (
-  options: EnvDaemonOptions,
-): Effect.Effect<EnvDaemonShape, Error, Scope.Scope> =>
-  Effect.gen(function* () {
-    const { token, fs } = options;
-    const log = options.log ?? (() => Effect.void);
-    const ctx: EnvConnectionContext = {
-      token,
-      cwd: options.cwd ?? process.cwd(),
-      fs,
-      log,
-    };
-    const server = yield* Effect.callback<WebSocketServer, Error>((resume) => {
-      const server = new WebSocketServer({
-        host: options.host ?? "127.0.0.1",
-        port: options.port ?? 0,
-      });
-      server.on("connection", (socket) => {
-        void Effect.runFork(Effect.scoped(handleEnvConnection(socket, ctx)));
-      });
-      server.on("error", (error) => {
-        // The socket callback is outside the Effect runtime: fork the log.
-        void Effect.runFork(log(`server error: ${error.message}`));
-        resume(Effect.fail(error));
-      });
-      server.on("listening", () => resume(Effect.succeed(server)));
-      return Effect.sync(() => {
-        server.close();
-      });
+export const makeEnvDaemon = Effect.fn("makeEnvDaemon")(function* (options: EnvDaemonOptions) {
+  const { token, fs } = options;
+  const log = options.log ?? (() => Effect.void);
+  const ctx: EnvConnectionContext = {
+    token,
+    cwd: options.cwd ?? process.cwd(),
+    fs,
+    log,
+  };
+  const server = yield* Effect.callback<WebSocketServer, Error>((resume) => {
+    const server = new WebSocketServer({
+      host: options.host ?? "127.0.0.1",
+      port: options.port ?? 0,
     });
-    const address = server.address();
-    const url =
-      address !== null && typeof address !== "string"
-        ? `ws://${address.address}:${address.port}`
-        : "";
-    const close = (): Effect.Effect<void, never> =>
-      Effect.callback<void>((resume) => {
-        server.close(() => resume(Effect.void));
-        return Effect.void;
-      });
-    return { url, close };
+    server.on("connection", (socket) => {
+      void Effect.runFork(Effect.scoped(handleEnvConnection(socket, ctx)));
+    });
+    server.on("error", (error) => {
+      // The socket callback is outside the Effect runtime: fork the log.
+      void Effect.runFork(log(`server error: ${error.message}`));
+      resume(Effect.fail(error));
+    });
+    server.on("listening", () => resume(Effect.succeed(server)));
+    return Effect.sync(() => {
+      server.close();
+    });
   });
+  const address = server.address();
+  const url =
+    address !== null && typeof address !== "string"
+      ? `ws://${address.address}:${address.port}`
+      : "";
+  const close = (): Effect.Effect<void, never> =>
+    Effect.callback<void>((resume) => {
+      server.close(() => resume(Effect.void));
+      return Effect.void;
+    });
+  return { url, close };
+});

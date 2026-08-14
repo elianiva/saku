@@ -238,14 +238,13 @@ describe("makeIdleStop — the policy directly", () => {
               handles.push({ threadId, handle });
             }),
         },
-        infoOf: (threadId) =>
-          Effect.gen(function* () {
-            const info = yield* registry.toInfo(threadId);
-            if (Option.isNone(info)) {
-              return yield* Effect.fail(makeHubError("registry", `unknown thread: ${threadId}`));
-            }
-            return info.value;
-          }),
+        infoOf: Effect.fn("infoOf")(function* (threadId) {
+          const info = yield* registry.toInfo(threadId);
+          if (Option.isNone(info)) {
+            return yield* Effect.fail(makeHubError("registry", `unknown thread: ${threadId}`));
+          }
+          return info.value;
+        }),
         emitThreadChanged: (thread) => Effect.sync(() => changed.push(thread)),
         idleStopMs: options.idleStopMs ?? IDLE_MS,
         controller: options.controller,

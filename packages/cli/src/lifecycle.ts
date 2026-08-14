@@ -82,24 +82,25 @@ export const readPublishedUrl = (
   );
 
 /** Probe the daemon over its protocol; never fails, never leaks a socket. */
-export const status = (config: DaemonLifecycleConfig): Effect.Effect<DaemonStatus, never, never> =>
-  Effect.gen(function* () {
-    const url = yield* readPublishedUrl(config);
-    const token = yield* config.readToken;
-    if (Option.isNone(url) || Option.isNone(token)) return { running: false };
-    const identity: DaemonIdentity = { url: url.value, token: token.value };
-    const info = yield* config.probe(identity);
-    return Option.match(info, {
-      onNone: () => ({ running: false, ...identity }),
-      onSome: (value) => ({
-        running: true,
-        ...identity,
-        pid: value.pid,
-        version: value.version,
-        ...(value.cwd === undefined ? {} : { cwd: value.cwd }),
-      }),
-    });
+export const status = Effect.fn("status")(function* (
+  config: DaemonLifecycleConfig,
+): Effect.fn.Return<DaemonStatus, never, never> {
+  const url = yield* readPublishedUrl(config);
+  const token = yield* config.readToken;
+  if (Option.isNone(url) || Option.isNone(token)) return { running: false };
+  const identity: DaemonIdentity = { url: url.value, token: token.value };
+  const info = yield* config.probe(identity);
+  return Option.match(info, {
+    onNone: () => ({ running: false, ...identity }),
+    onSome: (value) => ({
+      running: true,
+      ...identity,
+      pid: value.pid,
+      version: value.version,
+      ...(value.cwd === undefined ? {} : { cwd: value.cwd }),
+    }),
   });
+});
 
 const spawnFailure =
   (label: DaemonLifecycleConfig["label"]) =>
@@ -116,34 +117,33 @@ const spawnFailure =
  * is funneled into the error channel instead of reporting a phantom
  * "started (pid 0)".
  */
-export const spawn = (config: DaemonLifecycleConfig): Effect.Effect<number, CliError, never> =>
-  Effect.gen(function* () {
-    // A fresh home has no ~/.saku yet; the log fd needs the directory.
-    yield* Effect.tryPromise(() =>
-      mkdir(dirname(config.logPath), { recursive: true, mode: 0o700 }),
-    ).pipe(Effect.mapError(spawnFailure(config.label)));
-    const logFd = yield* Effect.tryPromise(() => open(config.logPath, "a")).pipe(
-      Effect.mapError(spawnFailure(config.label)),
-    );
-    const args = yield* config.args.pipe(Effect.mapError(spawnFailure(config.label)));
-    const child = spawnProcess(process.execPath, [config.entry, ...args], {
-      detached: true,
-      stdio: ["ignore", logFd.fd, logFd.fd],
-    });
-    // pid is set synchronously on a successful spawn; on failure it stays
-    // undefined and the 'error' event carries the cause.
-    const pid = yield* Effect.tryPromise(
-      () =>
-        new Promise<number>((resolve, reject) => {
-          child.once("error", reject);
-          if (child.pid !== undefined) resolve(child.pid);
-        }),
-    ).pipe(Effect.mapError(spawnFailure(config.label)));
-    // The child holds the inherited fd; drop the parent's handle.
-    yield* Effect.tryPromise(() => logFd.close()).pipe(Effect.mapError(spawnFailure(config.label)));
-    child.unref();
-    return pid;
+export const spawn = Effect.fn("spawn")(function* (config: DaemonLifecycleConfig) {
+  // A fresh home has no ~/.saku yet; the log fd needs the directory.
+  yield* Effect.tryPromise(() =>
+    mkdir(dirname(config.logPath), { recursive: true, mode: 0o700 }),
+  ).pipe(Effect.mapError(spawnFailure(config.label)));
+  const logFd = yield* Effect.tryPromise(() => open(config.logPath, "a")).pipe(
+    Effect.mapError(spawnFailure(config.label)),
+  );
+  const args = yield* config.args.pipe(Effect.mapError(spawnFailure(config.label)));
+  const child = spawnProcess(process.execPath, [config.entry, ...args], {
+    detached: true,
+    stdio: ["ignore", logFd.fd, logFd.fd],
   });
+  // pid is set synchronously on a successful spawn; on failure it stays
+  // undefined and the 'error' event carries the cause.
+  const pid = yield* Effect.tryPromise(
+    () =>
+      new Promise<number>((resolve, reject) => {
+        child.once("error", reject);
+        if (child.pid !== undefined) resolve(child.pid);
+      }),
+  ).pipe(Effect.mapError(spawnFailure(config.label)));
+  // The child holds the inherited fd; drop the parent's handle.
+  yield* Effect.tryPromise(() => logFd.close()).pipe(Effect.mapError(spawnFailure(config.label)));
+  child.unref();
+  return pid;
+});
 
 /**
  * Probe until the daemon answers: first probe + 99 retries, 100 ms apart.
@@ -165,31 +165,28 @@ export const waitForUp = (
   );
 
 /** Spawn if needed and wait until the socket answers. Returns the connection info. */
-export const ensure = (
-  config: DaemonLifecycleConfig,
-): Effect.Effect<DaemonConnection, CliError, never> =>
-  Effect.gen(function* () {
-    const current = yield* status(config);
-    if (
-      current.running &&
-      current.pid !== undefined &&
-      current.url !== undefined &&
-      current.token !== undefined
-    ) {
-      return { pid: current.pid, url: current.url, token: current.token };
-    }
-    const pid = yield* spawn(config);
-    const now = yield* waitForUp(config).pipe(
-      Effect.mapError(
-        () =>
-          new CliError({
-            code: config.timeoutCode,
-            message: `${config.label === "worker" ? "daemon" : "env daemon"} did not come up (spawned pid ${pid}); see ${config.logPath}`,
-          }),
-      ),
-    );
-    return { pid: now.pid, url: now.url, token: now.token };
-  });
+export const ensure = Effect.fn("ensure")(function* (config: DaemonLifecycleConfig) {
+  const current = yield* status(config);
+  if (
+    current.running &&
+    current.pid !== undefined &&
+    current.url !== undefined &&
+    current.token !== undefined
+  ) {
+    return { pid: current.pid, url: current.url, token: current.token };
+  }
+  const pid = yield* spawn(config);
+  const now = yield* waitForUp(config).pipe(
+    Effect.mapError(
+      () =>
+        new CliError({
+          code: config.timeoutCode,
+          message: `${config.label === "worker" ? "daemon" : "env daemon"} did not come up (spawned pid ${pid}); see ${config.logPath}`,
+        }),
+    ),
+  );
+  return { pid: now.pid, url: now.url, token: now.token };
+});
 
 /** Probe until the daemon is gone: first probe + 49 retries, 100 ms apart. */
 export const waitForStop = (config: DaemonLifecycleConfig): Effect.Effect<void, never, never> =>
@@ -204,15 +201,12 @@ export const waitForStop = (config: DaemonLifecycleConfig): Effect.Effect<void, 
   );
 
 /** Stop the daemon; returns the pid that was stopped, or none. */
-export const stop = (
-  config: DaemonLifecycleConfig,
-): Effect.Effect<Option.Option<number>, never, never> =>
-  Effect.gen(function* () {
-    const current = yield* status(config);
-    if (!current.running || current.pid === undefined) return Option.none();
-    const pid = current.pid;
-    // Already gone is fine — the process was reaped between the probe and now.
-    yield* Effect.try(() => process.kill(pid, "SIGTERM")).pipe(Effect.catch(() => Effect.void));
-    yield* waitForStop(config);
-    return Option.some(pid);
-  });
+export const stop = Effect.fn("stop")(function* (config: DaemonLifecycleConfig) {
+  const current = yield* status(config);
+  if (!current.running || current.pid === undefined) return Option.none();
+  const pid = current.pid;
+  // Already gone is fine — the process was reaped between the probe and now.
+  yield* Effect.try(() => process.kill(pid, "SIGTERM")).pipe(Effect.catch(() => Effect.void));
+  yield* waitForStop(config);
+  return Option.some(pid);
+});

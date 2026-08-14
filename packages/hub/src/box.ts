@@ -83,7 +83,11 @@ class PollNotReady extends Schema.TaggedError<PollNotReady>()("PollNotReady", {
 export const pollUntilReady = (
   api: BoxApi,
   boxId: string,
-  options: { intervalMs?: number; timeoutMs?: number; log?: (message: string) => Effect.Effect<void, never, never> } = {},
+  options: {
+    intervalMs?: number;
+    timeoutMs?: number;
+    log?: (message: string) => Effect.Effect<void, never, never>;
+  } = {},
 ): Effect.Effect<BoxInfo, BoxError, never> => {
   const intervalMs = options.intervalMs ?? 1000;
   const timeoutMs = options.timeoutMs ?? 5 * 60 * 1000;
@@ -118,124 +122,112 @@ export const makeBoxApi = (deps: BoxApiDeps): BoxApi => {
   const baseUrl = deps.baseUrl ?? "https://ascii.dev/api/box/v1";
   const fetchImpl = deps.fetch ?? ((...args: Parameters<typeof fetch>) => fetch(...args));
 
-  const request = (
-    method: string,
-    path: string,
-    body?: unknown,
-  ): Effect.Effect<unknown, BoxError, never> =>
-    Effect.gen(function* () {
-      const response = yield* Effect.tryPromise({
-        try: () =>
-          fetchImpl(`${baseUrl}${path}`, {
-            method,
-            headers: {
-              authorization: `Bearer ${deps.apiKey}`,
-              ...(body === undefined ? {} : { "content-type": "application/json" }),
-            },
-            ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-          }),
-        catch: (error) =>
-          new BoxError({ message: `box api unreachable: ${String(error)}`, body: error }),
-      });
-      const text = yield* Effect.tryPromise({
-        try: () => response.text(),
-        catch: (error) =>
-          new BoxError({ message: `box api read failed: ${String(error)}`, body: error }),
-      });
-      const parsed = Result.try(() => JSON.parse(text) as Envelope);
-      const envelope = Result.isSuccess(parsed) ? parsed.success : undefined;
-      if (!response.ok) {
-        return yield* Effect.fail(
-          new BoxError({
-            message:
-              envelope?.ok === false && typeof envelope?.error === "string"
-                ? (envelope.error as string)
-                : `box api ${method} ${path} failed: HTTP ${response.status}`,
-            status: response.status,
-            body: envelope ?? text,
-          }),
-        );
-      }
-      return envelope ?? {};
+  const request = Effect.fn("request")(function* (method: string, path: string, body?: unknown) {
+    const response = yield* Effect.tryPromise({
+      try: () =>
+        fetchImpl(`${baseUrl}${path}`, {
+          method,
+          headers: {
+            authorization: `Bearer ${deps.apiKey}`,
+            ...(body === undefined ? {} : { "content-type": "application/json" }),
+          },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        }),
+      catch: (error) =>
+        new BoxError({ message: `box api unreachable: ${String(error)}`, body: error }),
     });
+    const text = yield* Effect.tryPromise({
+      try: () => response.text(),
+      catch: (error) =>
+        new BoxError({ message: `box api read failed: ${String(error)}`, body: error }),
+    });
+    const parsed = Result.try(() => JSON.parse(text) as Envelope);
+    const envelope = Result.isSuccess(parsed) ? parsed.success : undefined;
+    if (!response.ok) {
+      return yield* Effect.fail(
+        new BoxError({
+          message:
+            envelope?.ok === false && typeof envelope?.error === "string"
+              ? (envelope.error as string)
+              : `box api ${method} ${path} failed: HTTP ${response.status}`,
+          status: response.status,
+          body: envelope ?? text,
+        }),
+      );
+    }
+    return envelope ?? {};
+  });
 
   return {
-    createBox: (input) =>
-      Effect.gen(function* () {
-        const envelope = yield* request("POST", "/boxes", {
-          type: input.type ?? "default",
-          ttlSeconds: input.ttlSeconds ?? null,
-          ...(input.env === undefined ? {} : { env: input.env }),
-        });
-        const box = (envelope as { box?: { id?: string; status?: string } }).box;
-        const id = box?.id ?? (envelope as { id?: string }).id;
-        if (id === undefined) {
-          return yield* Effect.fail(
-            new BoxError({ message: "box created without an id", body: envelope }),
-          );
-        }
-        return { id, status: box?.status ?? "provisioning" };
-      }),
-    getBox: (boxId) =>
-      Effect.gen(function* () {
-        const envelope = yield* request("GET", `/boxes/${boxId}`);
-        const box = (envelope as { box?: { id?: string; status?: string } }).box;
-        const id = box?.id ?? boxId;
-        const status = box?.status ?? (envelope as { status?: string }).status;
-        if (status === undefined) {
-          return yield* Effect.fail(
-            new BoxError({ message: `box ${boxId} without a status`, body: envelope }),
-          );
-        }
-        return { id, status };
-      }),
-    runCommand: (boxId, command, options) =>
-      Effect.gen(function* () {
-        const envelope = yield* request("POST", `/boxes/${boxId}/commands`, {
-          command,
-          ...(options?.timeoutSeconds === undefined
-            ? {}
-            : { timeoutSeconds: options.timeoutSeconds }),
-          ...(options?.cwd === undefined ? {} : { cwd: options.cwd }),
-        });
-        const result = envelope as {
-          success?: boolean;
-          exitCode?: number | null;
-          stdout?: string;
-          stderr?: string;
-        };
-        return {
-          stdout: result.stdout ?? "",
-          stderr: result.stderr ?? "",
-          exitCode: result.exitCode ?? -1,
-          success: result.success ?? false,
-        };
-      }),
-    writeFile: (boxId, path, content) =>
-      Effect.gen(function* () {
-        yield* request("PUT", `/boxes/${boxId}/files`, { path, content, encoding: "utf8" });
-      }),
-    readFile: (boxId, path) =>
-      Effect.gen(function* () {
-        const envelope = yield* request(
-          "GET",
-          `/boxes/${boxId}/files?path=${encodeURIComponent(path)}`,
+    createBox: Effect.fn("createBox")(function* (input) {
+      const envelope = yield* request("POST", "/boxes", {
+        type: input.type ?? "default",
+        ttlSeconds: input.ttlSeconds ?? null,
+        ...(input.env === undefined ? {} : { env: input.env }),
+      });
+      const box = (envelope as { box?: { id?: string; status?: string } }).box;
+      const id = box?.id ?? (envelope as { id?: string }).id;
+      if (id === undefined) {
+        return yield* Effect.fail(
+          new BoxError({ message: "box created without an id", body: envelope }),
         );
-        const content = (envelope as { content?: string }).content;
-        if (content === undefined) {
-          return yield* Effect.fail(
-            new BoxError({ message: `box file ${path} without content`, body: envelope }),
-          );
-        }
-        return content;
-      }),
-    stop: (boxId) =>
-      Effect.gen(function* () {
-        yield* request("POST", `/boxes/${boxId}/stop`);
-      }),
-    resume: (boxId) =>
-      Effect.gen(function* () {
-        yield* request("POST", `/boxes/${boxId}/resume`);
-      }),
+      }
+      return { id, status: box?.status ?? "provisioning" };
+    }),
+    getBox: Effect.fn("getBox")(function* (boxId) {
+      const envelope = yield* request("GET", `/boxes/${boxId}`);
+      const box = (envelope as { box?: { id?: string; status?: string } }).box;
+      const id = box?.id ?? boxId;
+      const status = box?.status ?? (envelope as { status?: string }).status;
+      if (status === undefined) {
+        return yield* Effect.fail(
+          new BoxError({ message: `box ${boxId} without a status`, body: envelope }),
+        );
+      }
+      return { id, status };
+    }),
+    runCommand: Effect.fn("runCommand")(function* (boxId, command, options) {
+      const envelope = yield* request("POST", `/boxes/${boxId}/commands`, {
+        command,
+        ...(options?.timeoutSeconds === undefined
+          ? {}
+          : { timeoutSeconds: options.timeoutSeconds }),
+        ...(options?.cwd === undefined ? {} : { cwd: options.cwd }),
+      });
+      const result = envelope as {
+        success?: boolean;
+        exitCode?: number | null;
+        stdout?: string;
+        stderr?: string;
+      };
+      return {
+        stdout: result.stdout ?? "",
+        stderr: result.stderr ?? "",
+        exitCode: result.exitCode ?? -1,
+        success: result.success ?? false,
+      };
+    }),
+    writeFile: Effect.fn("writeFile")(function* (boxId, path, content) {
+      yield* request("PUT", `/boxes/${boxId}/files`, { path, content, encoding: "utf8" });
+    }),
+    readFile: Effect.fn("readFile")(function* (boxId, path) {
+      const envelope = yield* request(
+        "GET",
+        `/boxes/${boxId}/files?path=${encodeURIComponent(path)}`,
+      );
+      const content = (envelope as { content?: string }).content;
+      if (content === undefined) {
+        return yield* Effect.fail(
+          new BoxError({ message: `box file ${path} without content`, body: envelope }),
+        );
+      }
+      return content;
+    }),
+    stop: Effect.fn("stop")(function* (boxId) {
+      yield* request("POST", `/boxes/${boxId}/stop`);
+    }),
+    resume: Effect.fn("resume")(function* (boxId) {
+      yield* request("POST", `/boxes/${boxId}/resume`);
+    }),
   };
 };

@@ -3,7 +3,7 @@
  * with scripted model streams and a stub env — no network, no real LLM.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect, FileSystem, Layer, Option, Schema } from "effect";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
@@ -20,7 +20,7 @@ import {
 } from "../src/session-host.ts";
 import { DoSessionRepo } from "../src/do-session.ts";
 import { KvStore, type KvStoreShape } from "@saku/store";
-import { getThreadTrailRoot } from "../src/paths.ts";
+import { Paths, PathsTest } from "../src/paths.ts";
 import { assistantMessage, fakeCatalog, FakeRegistry, TEST_MODEL, TEST_PROVIDER } from "./fakes.ts";
 import { StubEnv } from "./stub-env.ts";
 
@@ -123,33 +123,34 @@ interface HostOptions {
 }
 
 /** Build a host over a fresh trail (the FileSystem service is provided by the caller). */
-const makeHost = (
-  options: HostOptions = {},
-): Effect.Effect<HostWorld, RegistryError | SessionHostError, FileSystem.FileSystem> =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const registry = new FakeRegistry(record());
-    if (options.nameAuto === false) {
-      yield* registry.update(THREAD_ID, { nameAuto: false });
-    }
-    const events: Array<{ type: string }> = [];
-    const sink: HostEventSink = (event) => {
-      events.push({ type: event.type });
-    };
-    const host = yield* SessionHost.create({
-      threadId: THREAD_ID,
-      record: yield* registry.get(THREAD_ID).pipe(Effect.map(Option.getOrThrow)),
-      catalog: fakeCatalog({ completions: options.completions }),
-      registry,
-      sink,
-      ...(options.streamFn === undefined ? {} : { streamFn: options.streamFn }),
-      ...(options.env === undefined ? { env: new StubEnv("/work") } : { env: options.env }),
-    }).pipe(
-      // The test trail is file-backed under the thread's directory.
-      Effect.provide(KvStore.file(fs, getThreadTrailRoot(THREAD_ID))),
-    );
-    return { host, registry, events, fs, kvRoot: getThreadTrailRoot(THREAD_ID) };
-  });
+const makeHost = Effect.fn("makeHost")(function* (options: HostOptions = {}) {
+  const fs = yield* FileSystem.FileSystem;
+  const paths = yield* Paths;
+  const registry = new FakeRegistry(record());
+  if (options.nameAuto === false) {
+    yield* registry.update(THREAD_ID, { nameAuto: false });
+  }
+  const events: Array<{ type: string }> = [];
+  const sink: HostEventSink = (event) => {
+    events.push({ type: event.type });
+  };
+  const host = yield* SessionHost.create({
+    threadId: THREAD_ID,
+    record: yield* registry.get(THREAD_ID).pipe(Effect.map(Option.getOrThrow)),
+    catalog: fakeCatalog({ completions: options.completions }),
+    registry,
+    sink,
+    ...(options.streamFn === undefined ? {} : { streamFn: options.streamFn }),
+    ...(options.env === undefined ? { env: new StubEnv("/work") } : { env: options.env }),
+  }).pipe(
+    // The test trail is file-backed under the thread's directory.
+    Effect.provide(KvStore.file(fs, paths.threadTrailRoot(THREAD_ID))),
+  );
+  return { host, registry, events, fs, kvRoot: paths.threadTrailRoot(THREAD_ID) };
+});
+
+/** The host's trail layout: a fresh scoped temp home (no env mutation). */
+const testPaths = (): Layer.Layer<Paths, never, FileSystem.FileSystem> => PathsTest();
 
 /** Run one test against a fresh host; the host is disposed on the way out. */
 const scoped = <A>(run: (world: HostWorld) => Promise<A>, options: HostOptions = {}): Promise<A> =>
@@ -157,36 +158,10 @@ const scoped = <A>(run: (world: HostWorld) => Promise<A>, options: HostOptions =
     Effect.gen(function* () {
       const world = yield* makeHost(options);
       return yield* Effect.tryPromise(() => run(world)).pipe(Effect.ensuring(world.host.dispose()));
-    }).pipe(Effect.provide(NodeFileSystem.layer)),
+    }).pipe(Effect.provide(NodeFileSystem.layer), Effect.provide(testPaths())),
   );
 
 describe("SessionHost", () => {
-  let home: string;
-
-  beforeEach(async () => {
-    home = await Effect.runPromise(
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        return yield* fs.makeTempDirectory({ prefix: "saku-host-" });
-      }).pipe(Effect.provide(NodeFileSystem.layer)),
-    );
-    process.env.SAKU_HOME = home;
-  });
-
-  afterEach(async () => {
-    delete process.env.SAKU_HOME;
-    await Effect.runPromise(
-      Effect.provide(NodeFileSystem.layer)(
-        Effect.gen(function* () {
-          const fs = yield* FileSystem.FileSystem;
-          yield* fs
-            .remove(home, { recursive: true, force: true })
-            .pipe(Effect.catch(() => Effect.void));
-        }),
-      ),
-    );
-  });
-
   it("starts with a fresh trail: idle, model persisted, no entries", async () => {
     await scoped(async ({ host }) => {
       const state = await Effect.runPromise(host.getState());
@@ -418,6 +393,7 @@ describe("SessionHost", () => {
         // A new host over the same trail boots into Interrupted.
         const second = await Effect.runPromise(
           Effect.gen(function* () {
+            const paths = yield* Paths;
             const registry = new FakeRegistry(record());
             return yield* SessionHost.create({
               threadId: THREAD_ID,
@@ -426,8 +402,8 @@ describe("SessionHost", () => {
               registry,
               sink: () => {},
               env: new StubEnv("/work"),
-            }).pipe(Effect.provide(KvStore.file(fs, getThreadTrailRoot(THREAD_ID))));
-          }).pipe(Effect.provide(NodeFileSystem.layer)),
+            }).pipe(Effect.provide(KvStore.file(fs, paths.threadTrailRoot(THREAD_ID))));
+          }).pipe(Effect.provide(NodeFileSystem.layer), Effect.provide(testPaths())),
         );
         try {
           await waitForState(second, "interrupted");
