@@ -3,7 +3,7 @@
 /*
  * Saku console — humanlayer-style, pseudo-TUI, rose pine light.
  *
- * A terminal-shaped web console: monospace everything, hard corners, 1px
+ * A terminal-shaped web console: Space Grotesk everywhere, hard corners, 1px
  * borders on an off-white base, uppercase tracking labels, and glyph-driven
  * status (● ○ ◐ ▸ ◇ ✕). The rose pine light palette is the only color:
  * pine for the live accent, gold for working, love for errors.
@@ -23,9 +23,9 @@
   --color-foam: #56949f;
   --color-iris: #907aa9;
 
-  --font-mono:
-    ui-monospace, "JetBrains Mono", "SF Mono", "Cascadia Code", "Fira Code", Menlo, Consolas,
-    monospace;
+  --font-sans:
+    "Space Grotesk Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    sans-serif;
 }
 
 html,
@@ -38,7 +38,7 @@ body {
   margin: 0;
   background: var(--color-base);
   color: var(--color-text);
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
   color-scheme: light;

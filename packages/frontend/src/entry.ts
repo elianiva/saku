@@ -6,6 +6,7 @@
 import { Runtime } from "foldkit";
 
 import { application } from "./main.ts";
+import "@fontsource-variable/space-grotesk";
 import "./styles.css";
 
 Runtime.run(application);
