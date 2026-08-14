@@ -23,8 +23,6 @@ export const messageRole = (message: MessageProjection): string => asString(mess
 export const messageError = (message: MessageProjection): string =>
   message.stopReason === "error" ? asString(message.errorMessage) : "";
 
-// -- text -------------------------------------------------------------------
-
 /** The joined text content of a message (all text blocks / raw strings). */
 export const messageText = (message: MessageProjection): string => {
   const content = message.content;
@@ -85,8 +83,6 @@ export const messageToolResult = (message: MessageProjection): ToolResultRow | n
     isError: message.isError === true,
   };
 };
-
-// -- previews ---------------------------------------------------------------
 
 /**
  * One-line JSON of an unknown value, falling back to `String(value)` when

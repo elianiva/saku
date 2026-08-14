@@ -11,8 +11,6 @@ import { describe, expect, it } from "vitest";
 import { emptyLiveRegion, foldLive, Trail, type Live } from "./live.ts";
 import type { EntryProjection, MessageProjection, SessionEventProjection } from "./projection.ts";
 
-// -- fixtures ---------------------------------------------------------------
-
 /** The fold's initial state: trail idle, nothing streamed. */
 const initial = (): Live => ({ trail: Trail.Idle(), live: emptyLiveRegion() });
 
@@ -84,8 +82,6 @@ const unhandled: SessionEventProjection = {
   event: { type: "some_future_event" },
 };
 
-// -- the message stream -----------------------------------------------------
-
 describe("message stream", () => {
   it("folds start/update/end into the streaming message", () => {
     const state = fold(
@@ -141,8 +137,6 @@ describe("message stream", () => {
     expect(endScroll).toBe(true);
   });
 });
-
-// -- tool execution ---------------------------------------------------------
 
 describe("tool execution", () => {
   it("folds start/update/end into one tool row", () => {
@@ -207,8 +201,6 @@ describe("tool execution", () => {
     expect(endScroll).toBe(false);
   });
 });
-
-// -- the trail --------------------------------------------------------------
 
 describe("entry_appended", () => {
   it("grows the trail and bumps tailSeq", () => {
@@ -301,8 +293,6 @@ describe("entry_appended", () => {
   });
 });
 
-// -- the settled transition -------------------------------------------------
-
 describe("settled", () => {
   it("clears the whole live region and keeps the trail", () => {
     const before = fold(
@@ -317,8 +307,6 @@ describe("settled", () => {
     expect(scroll).toBe(false);
   });
 });
-
-// -- compaction and the unknown tail ----------------------------------------
 
 describe("compaction and unknown events", () => {
   it("shows the compaction notice and clears it on completion", () => {

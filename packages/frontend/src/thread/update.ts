@@ -79,7 +79,6 @@ export const update = (model: Model, message: ThreadMessage): UpdateReturn =>
           ? [evo(model, { info: (_) => thread }), none, Option.none()]
           : [model, none, Option.none()],
 
-      // trail
       TrailLoaded: ({ entries, tailSeq }) => [
         evo(model, { trail: (_) => Trail.Success({ data: { entries, tailSeq } }) }),
         [ScrollTrailCmd()],
@@ -91,7 +90,6 @@ export const update = (model: Model, message: ThreadMessage): UpdateReturn =>
         Option.none(),
       ],
 
-      // composer
       ComposerChanged: ({ text }) => [evo(model, { composer: (_) => text }), none, Option.none()],
       ComposerFocused: () => [evo(model, { focused: (_) => true }), none, Option.none()],
       ComposerBlurred: () => [evo(model, { focused: (_) => false }), none, Option.none()],
@@ -111,7 +109,6 @@ export const update = (model: Model, message: ThreadMessage): UpdateReturn =>
       PromptAcked: () => [evo(model, { composer: (_) => "" }), none, Option.none()],
       SendFailed: ({ message }) => [evo(model, { notice: (_) => message }), none, Option.none()],
 
-      // quick start landings
       // A thread was born from the draft: clear the draft (the prompt was
       // consumed), release the guard, and surface the fact — the root
       // pushes its URL, exactly as if the user had clicked the rail row.
@@ -128,7 +125,6 @@ export const update = (model: Model, message: ThreadMessage): UpdateReturn =>
         Option.none(),
       ],
 
-      // pi session picker (the welcome's "from pi…" flow)
       // Opening is guarded: only on the welcome, and only when closed.
       PiSessionsRequested: () =>
         model.id !== null || model.piPicker._tag !== "Idle"
@@ -171,14 +167,12 @@ export const update = (model: Model, message: ThreadMessage): UpdateReturn =>
         Option.none(),
       ],
 
-      // abort
       AbortRequested: () =>
         model.id === null
           ? [model, none, Option.none()]
           : [model, [AbortCmd({ id: model.id })], Option.none()],
       AbortDone: () => [model, none, Option.none()],
 
-      // housekeeping
       ScrollDone: () => [model, none, Option.none()],
     }),
   );

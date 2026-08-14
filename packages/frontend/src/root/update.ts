@@ -93,12 +93,10 @@ export const update = (model: Model, message: RootMessage): UpdateReturn =>
   M.value(message).pipe(
     M.withReturnType<UpdateReturn>(),
     M.tagsExhaustive({
-      // ---- routing ----
       ChangedRoute: ({ route }) => applyRoute(model, route),
       Navigated: () => [model, none],
       NavigatedTo: () => [model, none],
 
-      // ---- connection (machine-stepped) ----
       // A successful connect also clears the wire-error banner.
       Connected: (m) => {
         const result = connMachine.step(model.conn, m);
@@ -111,11 +109,9 @@ export const update = (model: Model, message: RootMessage): UpdateReturn =>
       ConnectionClosed: (m) => stepConn(model, m),
       RetryRequested: (m) => stepConn(model, m),
 
-      // ---- submodel delegation ----
       GotRailMessage: ({ message: railMessage }) => delegateToRail(model, railMessage),
       GotThreadMessage: ({ message: threadMessage }) => delegateToThread(model, threadMessage),
 
-      // ---- wire bridge ----
       // A session event: route it to the pane only when the route pins its
       // thread (the pane never sees other threads' streams).
       WireEvent: ({ threadId, event }) =>
@@ -131,7 +127,6 @@ export const update = (model: Model, message: RootMessage): UpdateReturn =>
         return [next, [...cmds, ...threadCmds]];
       },
 
-      // ---- root-owned notices ----
       ServerErrorNotice: ({ message }) => [evo(model, { banner: (_) => message }), none],
       DismissBanner: () => [evo(model, { banner: (_) => null }), none],
     }),

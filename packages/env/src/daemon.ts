@@ -221,7 +221,7 @@ export const handleEnvConnection = (
       socket.close();
     };
 
-    // -- hello: the first frame must be env_hello ----------------------------
+    // The first frame must be env_hello.
     const helloOutcome = yield* Effect.callback<Result.Result<EnvHello, string>>((resume) => {
       let done = false;
       const finish = (outcome: Result.Result<EnvHello, string>): void => {
@@ -277,7 +277,6 @@ export const handleEnvConnection = (
     const env = new LocalEnv(cwd, ctx.fs);
     send(EnvHelloOk.make({ pid: process.pid, version: ENV_VERSION, cwd }));
 
-    // -- requests ------------------------------------------------------------
     const onMessage = (data: unknown): void => {
       const parsed = Result.try(() => parseFrame(decodeFrame(data)));
       if (Result.isFailure(parsed) || parsed.success === undefined) return;

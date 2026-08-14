@@ -382,8 +382,6 @@ export class RemoteEnv implements ExecutionEnv {
     this.connected = false;
   }
 
-  // -- ExecutionEnv ---------------------------------------------------------
-
   /** File-channel ops: failures are FileErrors, the payload is the raw value. */
   private fileOp<O extends EnvOpType>(op: O): Promise<PiResult<PayloadOf<O>, FileError>> {
     return this.op(op) as Promise<PiResult<PayloadOf<O>, FileError>>;

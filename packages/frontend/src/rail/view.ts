@@ -108,8 +108,6 @@ const threadRow = (
   );
 };
 
-// -- glyphs -----------------------------------------------------------------
-
 const stateGlyph = (thread: ThreadInfo, h: HtmlBuilder<RailMessage>): Html => {
   const { glyph, tone, title } = statePresentation(thread.state);
   return h.span([h.Class(tone), h.Title(title)], [glyph]);

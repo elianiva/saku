@@ -46,7 +46,6 @@ export const update = (model: Model, message: RailMessage): UpdateReturn =>
   M.value(message).pipe(
     M.withReturnType<UpdateReturn>(),
     M.tagsExhaustive({
-      // grid
       ThreadsListed: ({ threads }) => [
         evo(model, { list: (_) => threadList.Success({ data: threads }), notice: (_) => null }),
         none,
@@ -62,7 +61,6 @@ export const update = (model: Model, message: RailMessage): UpdateReturn =>
       // env, or name changed — the auto-title lands here).
       ThreadChanged: ({ thread }) => [upsertThread(model, thread), none, Option.none()],
 
-      // delete
       // A row clicked: surface the fact upward and let the root navigate.
       ClickedThread: ({ id }) => [model, none, Option.some(OpenedThread({ id }))],
       DeleteRequested: ({ id }) => [model, [DeleteThreadCmd({ id })], Option.none()],

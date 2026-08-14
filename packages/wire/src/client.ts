@@ -125,10 +125,6 @@ export interface ClientEvents {
 }
 export type ClientEventKind = keyof ClientEvents;
 
-// ---------------------------------------------------------------------------
-// The connection state machine
-// ---------------------------------------------------------------------------
-
 /** Connection lifecycle. The socket rides the state it belongs to. */
 const ClientState = State({
   Disconnected: {},
@@ -423,12 +419,10 @@ const makeMachine = (
       }),
     );
 
-// ---------------------------------------------------------------------------
 // The command registry: one row per wire command (its schema/make, thread
 // scoping, response extractor). Every client method below is derived from
 // its row, so the request shape and the response extraction live in one
 // place per command.
-// ---------------------------------------------------------------------------
 
 interface CommandSpec<A extends object, K extends ResponsePayload["_tag"], T> {
   /** The command's schema; its static `make` builds the wire payload. */
@@ -455,13 +449,11 @@ const command = <A extends object, K extends ResponsePayload["_tag"], T>(
 
 /** One row per wire command; the client methods are thin derivations. */
 const COMMANDS = {
-  // -- threads (hub-level: no threadId on the frame)
   listThreads: command(false, "list_threads", ListThreadsCommand, (p) => [...p.threads]),
   createThread: command(false, "create_thread", CreateThreadCommand, (p) => p.thread),
   getThread: command(false, "get_thread", GetThreadCommand, (p) => p.thread),
   renameThread: command(false, "rename_thread", RenameThreadCommand, (p) => p.thread),
   deleteThread: command(false, "delete_thread", DeleteThreadCommand, () => undefined),
-  // -- session (thread-scoped)
   prompt: command(true, "prompt", PromptCommand, () => undefined),
   steer: command(true, "steer", SteerCommand, () => undefined),
   followUp: command(true, "follow_up", FollowUpCommand, () => undefined),
@@ -497,11 +489,9 @@ const COMMANDS = {
   ),
   setSessionName: command(true, "set_session_name", SetSessionNameCommand, () => undefined),
   getState: command(true, "get_state", GetStateCommand, (p) => p.state),
-  // -- skills (hub-level)
   listSkills: command(false, "list_skills", ListSkillsCommand, (p) => [...p.skills]),
   importSkill: command(false, "import_skill", ImportSkillCommand, (p) => p.skill),
   deleteSkill: command(false, "delete_skill", DeleteSkillCommand, () => undefined),
-  // -- pi sessions (local-daemon-only: pi's files live on the user's machine)
   listPiSessions: command(false, "list_pi_sessions", ListPiSessionsCommand, (p) => [
     ...p.sessions,
   ]),
@@ -578,10 +568,6 @@ const decodeFrameLine = (
     return decoded.success;
   });
 
-// ---------------------------------------------------------------------------
-// The client value
-// ---------------------------------------------------------------------------
-
 /** A console's connection to the hub. Create once per process. */
 export interface WireClient {
   readonly role: ConsoleRole;
@@ -597,7 +583,6 @@ export interface WireClient {
     kind: K,
     listener: (payload: ClientEvents[K]) => void,
   ) => () => void;
-  // -- threads
   readonly listThreads: () => Effect.Effect<ThreadInfo[], WireError, never>;
   readonly createThread: (
     name: string,
@@ -609,10 +594,8 @@ export interface WireClient {
     name: string,
   ) => Effect.Effect<ThreadInfo, WireError, never>;
   readonly deleteThread: (threadId: string) => Effect.Effect<void, WireError, never>;
-  // -- pi sessions (local-daemon-only: pi's files live on the user's machine)
   readonly listPiSessions: () => Effect.Effect<PiSessionInfo[], WireError, never>;
   readonly importPiSession: (path: string) => Effect.Effect<ThreadInfo, WireError, never>;
-  // -- session
   readonly prompt: (
     threadId: string,
     text: string,
@@ -670,7 +653,6 @@ export interface WireClient {
     name: string,
   ) => Effect.Effect<void, WireError, never>;
   readonly getState: (threadId: string) => Effect.Effect<ThreadSessionState, WireError, never>;
-  // -- skills
   readonly listSkills: () => Effect.Effect<SkillInfo[], WireError, never>;
   readonly importSkill: (
     source: string,
@@ -767,8 +749,6 @@ export const makeWireClient = (
       };
     };
 
-    // -- command plumbing ----------------------------------------------------
-
     const nextRequestId = (): Effect.Effect<string, never, never> =>
       Ref.updateAndGet(seqRef, (n) => n + 1).pipe(Effect.map((n) => `req_${n}`));
 
@@ -824,13 +804,11 @@ export const makeWireClient = (
       start,
       disconnect,
       on,
-      // -- thread commands
       listThreads: () => request(COMMANDS.listThreads, {}),
       createThread: (name, options) => request(COMMANDS.createThread, { name, ...options }),
       getThread: (threadId) => request(COMMANDS.getThread, { threadId }),
       renameThread: (threadId, name) => request(COMMANDS.renameThread, { threadId, name }),
       deleteThread: (threadId) => request(COMMANDS.deleteThread, { threadId }),
-      // -- session commands
       prompt: (threadId, text, images) => request(COMMANDS.prompt, { text, images }, threadId),
       steer: (threadId, text) => request(COMMANDS.steer, { text }, threadId),
       followUp: (threadId, text) => request(COMMANDS.followUp, { text }, threadId),
@@ -853,11 +831,9 @@ export const makeWireClient = (
       getSessionStats: (threadId) => request(COMMANDS.getSessionStats, {}, threadId),
       setSessionName: (threadId, name) => request(COMMANDS.setSessionName, { name }, threadId),
       getState: (threadId) => request(COMMANDS.getState, {}, threadId),
-      // -- skills commands
       listSkills: () => request(COMMANDS.listSkills, {}),
       importSkill: (source, scope) => request(COMMANDS.importSkill, { source, scope }),
       deleteSkill: (id) => request(COMMANDS.deleteSkill, { id }),
-      // -- pi session commands
       listPiSessions: () => request(COMMANDS.listPiSessions, {}),
       importPiSession: (path) => request(COMMANDS.importPiSession, { path }),
     };

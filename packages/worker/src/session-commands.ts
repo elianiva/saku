@@ -67,7 +67,7 @@ export const runSessionCommand = <E>(
   Match.value(command).pipe(
     Match.withReturnType<Effect.Effect<ResponsePayload, E | SessionHostError, never>>(),
     Match.tagsExhaustive({
-      // -- reads: served without a session host where possible --------------
+      // Reads: served without a session host where possible.
       get_entries: (command) =>
         deps.readOnlyHost(threadId).pipe(
           Effect.flatMap(
@@ -128,7 +128,7 @@ export const runSessionCommand = <E>(
           ),
         ),
 
-      // -- mutating commands: the thread starts here (ADR 0004) -------------
+      // Mutating commands: the thread starts here (ADR 0004).
       prompt: (command) =>
         deps.hostFor(threadId).pipe(
           Effect.flatMap((host) => host.prompt(command.text, command.images)),

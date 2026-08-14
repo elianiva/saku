@@ -26,10 +26,6 @@ import { SkillResponse } from "./skills.ts";
 import { PiSessionResponse } from "./pi-sessions.ts";
 import { ThreadInfo } from "./thread.ts";
 
-// ---------------------------------------------------------------------------
-// Shared session structs
-// ---------------------------------------------------------------------------
-
 /** The thinking-level ladder (pi's own `ThinkingLevel` vocabulary). */
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
@@ -54,10 +50,6 @@ export const ThreadSessionState = S.Struct({
   thinkingLevel: ThinkingLevelSchema,
 });
 export type ThreadSessionState = S.Schema.Type<typeof ThreadSessionState>;
-
-// ---------------------------------------------------------------------------
-// Session commands (console → server)
-// ---------------------------------------------------------------------------
 
 export const PromptCommand = S.TaggedStruct("prompt", {
   text: S.String,
@@ -130,10 +122,6 @@ export const READ_ONLY_COMMANDS: ReadonlySet<SessionCommand["_tag"]> = new Set([
   "get_available_thinking_levels",
 ]);
 
-// ---------------------------------------------------------------------------
-// Command responses (server → console)
-// ---------------------------------------------------------------------------
-
 export const PromptResponse = S.TaggedStruct("prompt", {});
 export const SteerResponse = S.TaggedStruct("steer", {});
 export const FollowUpResponse = S.TaggedStruct("follow_up", {});
@@ -202,10 +190,6 @@ export type SessionResponse<K extends ResponsePayload["_tag"]> = Extract<
   ResponsePayload,
   { readonly _tag: K }
 >;
-
-// ---------------------------------------------------------------------------
-// Session events (server → console)
-// ---------------------------------------------------------------------------
 
 /**
  * Streaming session events: pi's `AgentEvent` verbatim, minus `agent_end`

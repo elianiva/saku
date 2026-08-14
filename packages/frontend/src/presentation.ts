@@ -13,8 +13,6 @@ import type { ThreadEnvState, ThreadMode, ThreadState } from "@saku/wire";
 export const modeChar = (mode: ThreadMode): "L" | "S" | "A" =>
   mode === "sandbox" ? "S" : mode === "any" ? "A" : "L";
 
-// -- glyphs -----------------------------------------------------------------
-
 /** How the rail draws a thread state: glyph char, tone, title. */
 export interface StatePresentation {
   readonly glyph: string;
@@ -44,8 +42,6 @@ export const envPresentation = (env: ThreadEnvState): EnvPresentation =>
       : env === "stopped"
         ? { glyph: "▽", tone: "text-muted", title: "env stopped — resumes on prompt" }
         : { glyph: "✕", tone: "text-love", title: "env error — next prompt retries" };
-
-// -- the header -------------------------------------------------------------
 
 /** The header's `state · env` line: text and tone. */
 export const headerState = (

@@ -136,8 +136,6 @@ export const makeWireServer = (
         ),
       );
 
-    // -- command routing -----------------------------------------------------
-
     const handleHello = (client: Client, hello: Hello): Effect.Effect<void, never> =>
       Effect.gen(function* () {
         if (hello.version !== WIRE_VERSION) {
@@ -211,8 +209,6 @@ export const makeWireServer = (
         });
       });
 
-    // -- connections ---------------------------------------------------------
-
     const runConnection = (socket: ServerSocket): Effect.Effect<void, never, Scope.Scope> =>
       Effect.gen(function* () {
         const authed = yield* Ref.make(false);
@@ -259,8 +255,6 @@ export const makeWireServer = (
           return Effect.sync(() => socket.off("close", onClose));
         });
       });
-
-    // -- lifecycle -----------------------------------------------------------
 
     const closeClients = (): Effect.Effect<void, never> =>
       Effect.gen(function* () {

@@ -115,8 +115,6 @@ export const startHubFixture = (): Effect.Effect<HubFixture, Error, never> =>
 
     const record = (tag: string): Effect.Effect<void, never> => Effect.sync(() => calls.push(tag));
 
-    // -- the shared server core (the real implementation) ----------------------
-
     const core = yield* makeWireServer({
       token: () => Effect.succeed(TEST_TOKEN),
       handlers: {
@@ -126,8 +124,6 @@ export const startHubFixture = (): Effect.Effect<HubFixture, Error, never> =>
           record(command._tag).pipe(Effect.flatMap(() => runSessionCommand(threadId, command))),
       },
     });
-
-    // -- thread registry -------------------------------------------------------
 
     const threadInfo = (thread: ScriptedThread): ThreadInfo => ({
       id: thread.id,
@@ -187,8 +183,6 @@ export const startHubFixture = (): Effect.Effect<HubFixture, Error, never> =>
         yield* threadChanged(thread);
         yield* core.broadcast(EventFrame.make({ threadId: thread.id, event: { type: "settled" } }));
       });
-
-    // -- command routing (the fixture's scripted semantics) --------------------
 
     const runHubCommand = (
       command: ThreadCommand | SkillCommand | PiSessionCommand,
@@ -447,8 +441,6 @@ export const startHubFixture = (): Effect.Effect<HubFixture, Error, never> =>
           }),
         );
       });
-
-    // -- the server (the real `listenWs` transport) ----------------------------
 
     const server = yield* listenWs({
       onConnection: (socket) => {

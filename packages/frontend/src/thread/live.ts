@@ -21,8 +21,6 @@ import { AsyncData } from "foldkit";
 import { asString, messageText, messageThinking, stringifyLive } from "./format.ts";
 import { EntryProjection, type SessionEventProjection } from "./projection.ts";
 
-// -- the active thread's view ----------------------------------------------
-
 /** The trail's loaded payload: the entries plus the last sequence seen. */
 export const TrailData = S.Struct({
   entries: S.Array(EntryProjection),
@@ -66,8 +64,6 @@ export interface Live {
 
 /** The live region before anything streamed. */
 export const emptyLiveRegion = (): LiveRegion => ({ tools: [] });
-
-// -- folding ----------------------------------------------------------------
 
 /** `entry_appended` on the active thread: grow the trail, dedupe by id. */
 const foldEntryAppended = (state: Live, entry: EntryProjection): readonly [Live, boolean] => {

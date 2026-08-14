@@ -356,8 +356,6 @@ export class LocalEnv implements ExecutionEnv {
     // Nothing to release.
   }
 
-  // -- Shell ----------------------------------------------------------------
-
   async exec(
     command: string,
     options?: ShellExecOptions,

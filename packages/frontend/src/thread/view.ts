@@ -55,8 +55,6 @@ export const view = Submodel.defineView<Model, ThreadMessage>((model, h) =>
   ),
 );
 
-// -- header -----------------------------------------------------------------
-
 const threadHeader = (model: Model, h: HtmlBuilder<ThreadMessage>): Html => {
   const info = model.info;
   return h.div(
@@ -98,8 +96,6 @@ const abortButton = (h: HtmlBuilder<ThreadMessage>): Html =>
     ],
     ["■ abort"],
   );
-
-// -- the trail --------------------------------------------------------------
 
 const trailArea = (model: Model, h: HtmlBuilder<ThreadMessage>): Html =>
   AsyncData.match(model.trail, {
@@ -253,8 +249,6 @@ const renderMessageEntry = (message: MessageProjection, h: HtmlBuilder<ThreadMes
 const roleLabel = (h: HtmlBuilder<ThreadMessage>, label: string, tone: string): Html =>
   h.div([h.Class(`text-[10px] uppercase tracking-[0.18em] ${tone}`)], [label]);
 
-// -- the live run -----------------------------------------------------------
-
 const liveRegion = (model: Model, h: HtmlBuilder<ThreadMessage>): Html => {
   const { live } = model;
   const hasMessage = live.message !== undefined && live.message !== "";
@@ -327,8 +321,6 @@ const liveToolRow = (tool: LiveTool, h: HtmlBuilder<ThreadMessage>): Html => {
     ],
   );
 };
-
-// -- the composer -----------------------------------------------------------
 
 /** The docked composer area under a pinned thread's trail. */
 const composerArea = (model: Model, h: HtmlBuilder<ThreadMessage>): Html =>
@@ -415,8 +407,6 @@ const composerBox = (
     ],
   );
 };
-
-// -- welcome ----------------------------------------------------------------
 
 /** The root route's surface: wordmark, greeting, and the quick-start
  *  composer in a centered chat-app column (CONTEXT.md: Quick start). */

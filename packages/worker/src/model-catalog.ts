@@ -45,10 +45,6 @@ import {
 
 export type { ModelCatalogShape } from "./model-catalog-factory.ts";
 
-// ---------------------------------------------------------------------------
-// auth.json → CredentialStore
-// ---------------------------------------------------------------------------
-
 const AUTH_JSON_FILE_MODE = 0o600;
 
 /** Credential store over pi's auth.json (`Record<providerId, Credential>`). */
@@ -139,10 +135,6 @@ class AuthJsonCredentialStore implements CredentialStore {
     );
   }
 }
-
-// ---------------------------------------------------------------------------
-// models.json → providers
-// ---------------------------------------------------------------------------
 
 /** A models.json configuration problem (missing api/baseUrl, unknown api implementation, empty provider). */
 export class ModelsJsonError extends Schema.TaggedError<ModelsJsonError>()("ModelsJsonError", {
@@ -315,10 +307,6 @@ const apiKeyAuthFor = (
     },
   };
 };
-
-// ---------------------------------------------------------------------------
-// The catalog service
-// ---------------------------------------------------------------------------
 
 export interface CatalogOptions {
   authPath?: string;

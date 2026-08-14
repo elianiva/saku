@@ -34,8 +34,6 @@ export const GotRailMessage = Message.m("GotRailMessage", { message: Rail.RailMe
 /** Wraps a thread Message so the root can delegate to the pane's update. */
 export const GotThreadMessage = Message.m("GotThreadMessage", { message: Thread.ThreadMessage });
 
-// ---- wire bridge (the root subscription → root facts) ----
-
 /** A session event streamed for some thread; the root routes it to the pane
  *  only when the route pins that thread. */
 export const WireEvent = Message.m("WireEvent", {

@@ -19,14 +19,10 @@ import { PiSessionInfo, ThreadInfo, WireError } from "@saku/wire";
 import type { OpenedThread } from "../root/message.ts";
 import { EntryProjection, SessionEventProjection } from "./projection.ts";
 
-// -- wire bridge (root-delegated) ------------------------------------------
-
 /** A session event landed for this thread (root routed it by thread id). */
 export const SessionEvent = Message.m("SessionEvent", { event: SessionEventProjection });
 /** The registry broadcast for this thread — the header's info refresh. */
 export const ThreadChanged = Message.m("ThreadChanged", { thread: ThreadInfo });
-
-// -- trail -----------------------------------------------------------------
 
 /** The trail read landed (a LoadTrail result). */
 export const TrailLoaded = Message.m("TrailLoaded", {
@@ -34,8 +30,6 @@ export const TrailLoaded = Message.m("TrailLoaded", {
   tailSeq: S.Number,
 });
 export const TrailFailed = Message.m("TrailFailed", { error: S.String });
-
-// -- composer ---------------------------------------------------------------
 
 export const ComposerChanged = Message.m("ComposerChanged", { text: S.String });
 /** Enter / the send button: prompts the pinned thread, or quick-starts a new
@@ -48,13 +42,9 @@ export const SendFailed = Message.m("SendFailed", { message: S.String });
 export const ComposerFocused = Message.m("ComposerFocused");
 export const ComposerBlurred = Message.m("ComposerBlurred");
 
-// -- quick start (the welcome composer's landings) --------------------------
-
 /** The quick-start command landed: a thread was born from the draft. */
 export const ThreadCreated = Message.m("ThreadCreated", { thread: ThreadInfo });
 export const CreateFailed = Message.m("CreateFailed", { message: S.String });
-
-// -- pi session picker (the welcome's "from pi…" flow) -----------------------
 
 /** The welcome's "from pi…" affordance was clicked: open the picker. */
 export const PiSessionsRequested = Message.m("PiSessionsRequested");
@@ -73,8 +63,6 @@ export const PiPickerClosed = Message.m("PiPickerClosed");
 
 export const AbortRequested = Message.m("AbortRequested");
 export const AbortDone = Message.m("AbortDone");
-
-// -- housekeeping -----------------------------------------------------------
 
 /** The scroll command's landing (the DOM touch happened). */
 export const ScrollDone = Message.m("ScrollDone");

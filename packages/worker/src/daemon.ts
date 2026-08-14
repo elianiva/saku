@@ -163,8 +163,6 @@ export const makeSakuDaemon = (options: {
     const log = (message: string): Effect.Effect<void, never, never> =>
       Effect.logInfo(`[saku-worker] ${message}`);
 
-    // -- event sinks ---------------------------------------------------------
-
     /** All consoles see every session event (stateless routing). */
     const emitSessionEvent = (
       threadId: string,
@@ -173,8 +171,6 @@ export const makeSakuDaemon = (options: {
 
     const emitThreadChanged = (thread: ThreadInfo): Effect.Effect<void, never> =>
       core.broadcast(ThreadChanged.make({ thread }));
-
-    // -- thread state helpers ------------------------------------------------
 
     const tailSeqOf = (threadId: string): Effect.Effect<number, SessionHostError, never> =>
       Ref.get(hostsRef).pipe(
@@ -211,8 +207,6 @@ export const makeSakuDaemon = (options: {
         }
         return resolved.success.id;
       });
-
-    // -- command routing -----------------------------------------------------
 
     const runHubCommand = (
       command: ThreadCommand | SkillCommand | PiSessionCommand,
@@ -492,8 +486,6 @@ export const makeSakuDaemon = (options: {
         }),
       );
 
-    // -- the shared connection core -----------------------------------------
-
     const core: WireServerShape = yield* makeWireServer({
       // The token is re-read per hello, so a console that connects after a
       // credentials change authenticates against the current auth.json.
@@ -505,8 +497,6 @@ export const makeSakuDaemon = (options: {
         runSessionCommand: handleSessionCommand,
       },
     });
-
-    // -- lifecycle -----------------------------------------------------------
 
     const close = (): Effect.Effect<void, never> =>
       Effect.gen(function* () {
@@ -526,8 +516,6 @@ export const makeSakuDaemon = (options: {
         }
         yield* fs.remove(urlPath, { force: true }).pipe(Effect.catch(() => Effect.void));
       });
-
-    // -- startup -------------------------------------------------------------
 
     /** The daemon's startup phase failures (dirs/token/listen), all tagged. */
     const startup =

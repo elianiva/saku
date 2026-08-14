@@ -57,7 +57,6 @@ export type HubEvent =
 export type HubListener = (event: HubEvent) => void;
 
 export interface HubShape {
-  // -- threads
   readonly listThreads: () => Effect.Effect<ThreadInfo[], HubError, never>;
   readonly createThread: (input: {
     name: string;
@@ -72,12 +71,10 @@ export interface HubShape {
   ) => Effect.Effect<ThreadInfo, HubError, never>;
   /** Delete the thread; returns the removed info (for the broadcast). */
   readonly deleteThread: (threadIdInput: string) => Effect.Effect<ThreadInfo, HubError, never>;
-  // -- sessions
   readonly runSessionCommand: (
     threadIdInput: string,
     command: SessionCommand,
   ) => Effect.Effect<ResponsePayload, HubError, never>;
-  // -- skills
   readonly listSkills: () => Effect.Effect<readonly SkillInfo[], HubError, never>;
   readonly importSkill: (
     source: string,

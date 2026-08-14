@@ -22,10 +22,6 @@ import { EnvHandle } from "@saku/env/remote";
 import { HubError } from "@saku/hub/core";
 import { RegistryError, SessionHostError, ThreadRecordSchema } from "@saku/worker/isolate";
 
-// ---------------------------------------------------------------------------
-// The RPC envelope
-// ---------------------------------------------------------------------------
-
 /** A JSON response from a DO endpoint (what the caller parses). */
 export interface RpcEnvelope {
   readonly ok: boolean;
@@ -53,10 +49,6 @@ export const rpcErrorOf = (
   kind: errorKindOf(error),
   message: error instanceof Error ? error.message : String(error),
 });
-
-// ---------------------------------------------------------------------------
-// The /push contract (thread → hub)
-// ---------------------------------------------------------------------------
 
 /**
  * The `/push` payloads, validated at the boundary: the push channel
@@ -92,10 +84,6 @@ export const HubPushSchema = Schema.Union([
 export type HubPush = Schema.Codec.Encoded<typeof HubPushSchema>;
 
 export const decodeHubPush = Schema.decodeUnknownOption(HubPushSchema);
-
-// ---------------------------------------------------------------------------
-// The thread endpoints' payloads (hub → thread)
-// ---------------------------------------------------------------------------
 
 /** /create: the hub's record for this thread (persisted in DO storage). */
 export const CreatePayload = Schema.Struct({ record: ThreadRecordSchema });

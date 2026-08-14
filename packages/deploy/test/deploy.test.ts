@@ -107,8 +107,6 @@ harnessAfterAll(
   ),
 );
 
-// -- helpers ----------------------------------------------------------------
-
 /** A fresh console for a test: connect inside the harness runtime. */
 const consoleFor = (url: string | undefined): Effect.Effect<WireClient, never, never> =>
   Effect.gen(function* () {
@@ -180,8 +178,6 @@ const makeThreadWatcher = (client: WireClient) => {
   });
   return { events, off };
 };
-
-// -- the spine --------------------------------------------------------------
 
 t(
   "a console drives a thread through the deployed hub and thread DO",
@@ -265,8 +261,6 @@ t(
   }).pipe(Effect.timeout("1 minutes")),
 );
 
-// -- the relay in the hub DO ------------------------------------------------
-
 t(
   "the env relay lives in the hub DO: register, attach, exec",
   Effect.gen(function* () {
@@ -304,8 +298,6 @@ t(
     }
   }).pipe(Effect.timeout("1 minutes")),
 );
-
-// -- teardown ---------------------------------------------------------------
 
 t(
   "delete_thread removes the thread (record + worker storage)",

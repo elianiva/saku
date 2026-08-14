@@ -24,8 +24,6 @@ export const ThreadRoute = Route.r("Thread", { id: S.String });
 export const AppRoute = S.Union([ThreadRoute, ThreadsRoute]);
 export type AppRoute = S.Schema.Type<typeof AppRoute>;
 
-// -- routers (biparsers) matching each route's URL --------------------------
-
 const threadsRouter = pipe(Route.root, Route.mapTo(ThreadsRoute));
 const threadRouter = pipe(
   Route.literal("thread"),

@@ -50,8 +50,6 @@ export const EnvFileInfo = S.Struct({
 });
 export type EnvFileInfo = S.Schema.Type<typeof EnvFileInfo>;
 
-// -- frames ------------------------------------------------------------------
-
 export const EnvHello = S.TaggedStruct("env_hello", {
   token: S.String,
   version: S.String,
@@ -111,8 +109,6 @@ export const EnvResponseError = S.TaggedStruct("env_response", {
 });
 export type EnvResponseError = S.Schema.Type<typeof EnvResponseError>;
 
-// -- relay frames ------------------------------------------------------------
-
 /** The env daemon → hub registration (outbound; no open ports). */
 export const RelayHello = S.TaggedStruct("relay_hello", {
   envId: S.String,
@@ -132,8 +128,6 @@ export type RelayAttach = S.Schema.Type<typeof RelayAttach>;
 /** Connection-level failure: auth, version mismatch, unknown env. */
 export const EnvErrorFrame = S.TaggedStruct("env_error", { message: S.String });
 export type EnvErrorFrame = S.Schema.Type<typeof EnvErrorFrame>;
-
-// -- ops ---------------------------------------------------------------------
 
 export const EnvOp = S.Union([
   S.TaggedStruct("health", {}),

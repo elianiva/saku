@@ -26,10 +26,6 @@ import { workerLifecycle } from "./daemon.ts";
 import { ensureEnvConfig, envLifecycle } from "./env.ts";
 import { ensure, spawn, status, stop } from "./lifecycle.ts";
 
-// ---------------------------------------------------------------------------
-// Output
-// ---------------------------------------------------------------------------
-
 /**
  * The CLI's output logger: message-only lines. The CLI's stdout IS its
  * result (ids, tables, status), so Effect's logger is configured to print
@@ -40,10 +36,6 @@ const CliLogger = Logger.withConsoleLog(
     Array.isArray(message) ? message.map(String).join(" ") : String(message),
   ),
 );
-
-// ---------------------------------------------------------------------------
-// Console plumbing
-// ---------------------------------------------------------------------------
 
 /**
  * Connect to the worker, starting the daemon on demand — opencode-style:
@@ -96,10 +88,6 @@ const run = <T>(
         ),
     ),
   );
-
-// ---------------------------------------------------------------------------
-// Commands
-// ---------------------------------------------------------------------------
 
 const pad = (text: string, width: number): string => text.padEnd(width).slice(0, width);
 
@@ -371,10 +359,6 @@ usage:
   saku pi list
   saku pi import <id-or-path>
 `;
-
-// ---------------------------------------------------------------------------
-// Dispatch
-// ---------------------------------------------------------------------------
 
 const main = (): Effect.Effect<void, WireError | CliError, never> =>
   Effect.gen(function* () {

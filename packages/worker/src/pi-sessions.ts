@@ -91,10 +91,6 @@ export interface PiSessionData {
 /** The sessions root under pi's agent dir. */
 export const getPiSessionsDir = (): string => join(getAgentDir(), "sessions");
 
-// ---------------------------------------------------------------------------
-// Shared line helpers
-// ---------------------------------------------------------------------------
-
 const parseLine = (line: string): Record<string, unknown> | undefined => {
   const trimmed = line.trim();
   if (trimmed.length === 0) return undefined;
@@ -141,10 +137,6 @@ const firstMessageOf = (obj: Record<string, unknown>): string | undefined => {
   const text = textContent((message as { content?: unknown }).content);
   return text.length > 0 ? text : undefined;
 };
-
-// ---------------------------------------------------------------------------
-// v3 (pi's current on-disk format)
-// ---------------------------------------------------------------------------
 
 interface V3Header {
   readonly id: string;
@@ -422,10 +414,6 @@ const parseV3 = (path: string, lines: readonly string[]): Result.Result<PiSessio
           }),
   });
 
-// ---------------------------------------------------------------------------
-// v4 (pi-agent-core's jsonl format — read through pi's own repo)
-// ---------------------------------------------------------------------------
-
 /** The promise FileSystem seam pi's repo needs, over the effect FileSystem
  * service (the same adapter shape as LocalEnv). Failures are conduits for
  * the repo's own error reporting — the errno taxonomy is not needed here. */
@@ -560,10 +548,6 @@ const scanV4Lines = (
     firstMessage: firstMessage.length > 0 ? firstMessage : "(no messages)",
   };
 };
-
-// ---------------------------------------------------------------------------
-// The window
-// ---------------------------------------------------------------------------
 
 /** Scan one session file into its summary; Option.none when it is not a
  * readable pi session (pi's own list skips those silently). */

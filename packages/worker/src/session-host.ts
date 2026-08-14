@@ -74,10 +74,6 @@ import {
 export { SessionHostError } from "./session-host-error.ts";
 export type { HostEventSink, SessionHostState as HostState } from "./session-machine.ts";
 
-// ---------------------------------------------------------------------------
-// The host value
-// ---------------------------------------------------------------------------
-
 export interface SessionHost {
   readonly threadId: string;
   /** The host-local lifecycle tag; the daemon rebuilds a crashed host. */

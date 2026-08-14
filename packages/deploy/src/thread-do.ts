@@ -113,8 +113,6 @@ export class SakuThreadDO {
     return this.envHandle;
   }
 
-  // -- fetch routing --------------------------------------------------------
-
   async fetch(request: Request): Promise<Response> {
     const path = new URL(request.url).pathname;
     try {
@@ -149,8 +147,6 @@ export class SakuThreadDO {
     if (threadId === undefined) return;
     pushToHub(this.deployment, { type: "idleStopFired", threadId });
   }
-
-  // -- handlers -------------------------------------------------------------
 
   private async handleCreate(request: Request): Promise<Response> {
     const body = await readBody(request, decodeCreatePayload);

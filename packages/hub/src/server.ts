@@ -102,8 +102,6 @@ export const makeHubServer = (
         }
       });
 
-    // -- startup -------------------------------------------------------------
-
     // listenWs owns the server's lifecycle: it resolves once the server is
     // listening and closes it when the scope closes (interruption).
     const server = yield* listenWs<HubError>({

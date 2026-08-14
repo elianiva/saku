@@ -9,7 +9,6 @@ import { Schema as S } from "effect";
 import { Message } from "foldkit";
 import { ThreadInfo, WireError } from "@saku/wire";
 
-// ---- grid ----
 /** A fresh list landed from the wire (a ListThreads result). */
 export const ThreadsListed = Message.m("ThreadsListed", { threads: S.Array(ThreadInfo) });
 export const ListFailed = Message.m("ListFailed", { error: WireError });
@@ -17,7 +16,6 @@ export const RefreshRequested = Message.m("RefreshRequested");
 /** The registry broadcast: upsert into the list. */
 export const ThreadChanged = Message.m("ThreadChanged", { thread: ThreadInfo });
 
-// ---- delete ----
 /** A rail row was clicked: the update emits `OpenedThread` for the root. */
 export const ClickedThread = Message.m("ClickedThread", { id: S.String });
 export const DeleteRequested = Message.m("DeleteRequested", { id: S.String });

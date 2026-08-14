@@ -63,10 +63,6 @@ export type HostEventSink = (event: SessionWireEvent) => void;
 /** The host's lifecycle: the wire's `ThreadState` plus a host-local crash state. */
 export type SessionHostState = ThreadState | "crashed";
 
-// ---------------------------------------------------------------------------
-// The machine's state and events
-// ---------------------------------------------------------------------------
-
 /** Host lifecycle. `Crashed` never crosses the wire (ADR 0001). */
 const HostState = State({
   Idle: {},
@@ -143,10 +139,6 @@ export const wireStateOf = (state: HostStateV): ThreadState =>
 export const hostStateOf = (state: HostStateV): SessionHostState =>
   state._tag === "Crashed" ? "crashed" : wireStateOf(state);
 
-// ---------------------------------------------------------------------------
-// Dependencies shared by the machine and the host value
-// ---------------------------------------------------------------------------
-
 export interface HostDeps {
   readonly threadId: string;
   readonly agent: Agent;
@@ -179,10 +171,6 @@ export const entriesFromLog = (log: readonly LogItem[]): Entry[] =>
   log
     .filter((item): item is Extract<LogItem, { kind: "entry" }> => item.kind === "entry")
     .map((item) => item.entry);
-
-// ---------------------------------------------------------------------------
-// Shared session operations (used by transition handlers and state effects)
-// ---------------------------------------------------------------------------
 
 /** Apply a thinking level with model clamping; appends the trail entry. */
 const applyThinkingLevel = (
@@ -437,10 +425,6 @@ const maybeAutoTitle = (
     }
   });
 
-// ---------------------------------------------------------------------------
-// The machine
-// ---------------------------------------------------------------------------
-
 type HostMachine = Machine.Machine<HostStateV, HostEventV, never, any, any, any>;
 
 /**
@@ -463,7 +447,6 @@ const busyReply = (
 const makeHostMachine = (deps: HostDeps): HostMachine => {
   const machine = Machine.make({ state: HostState, event: HostEvent, initial: deps.initialState });
 
-  // -- runs: idle/interrupted start one; busy states reject ------------------
   return (
     machine
       .on([HostState.Idle, HostState.Interrupted], HostEvent.PromptRequested, ({ state, event }) =>
@@ -492,7 +475,7 @@ const makeHostMachine = (deps: HostDeps): HostMachine => {
         HostEvent.FollowUpRequested,
         ({ state }) => Machine.reply(state, busyReply(state)),
       )
-      // -- abort: settle the in-flight run; elsewhere it is a no-op --------------
+      // Abort settles the in-flight run; elsewhere it is a no-op.
       .on(HostState.Working, HostEvent.AbortRequested, ({ state }) =>
         Effect.gen(function* () {
           const compactionAbort = yield* Ref.get(deps.compactionAbortRef);
@@ -506,7 +489,6 @@ const makeHostMachine = (deps: HostDeps): HostMachine => {
         HostEvent.AbortRequested,
         ({ state }) => Machine.reply(state, ReplyOk.make({})),
       )
-      // -- manual compaction -----------------------------------------------------
       .on([HostState.Idle, HostState.Interrupted], HostEvent.CompactRequested, ({ event }) =>
         Machine.deferReply(HostState.Compacting({ customInstructions: event.customInstructions })),
       )
@@ -522,7 +504,7 @@ const makeHostMachine = (deps: HostDeps): HostMachine => {
       .on(HostState.Crashed, HostEvent.CompactRequested, ({ state }) =>
         Machine.reply(state, ReplyFailed.make({ message: "host crashed; retry" })),
       )
-      // -- config commands: valid in every state (the trail is the source of truth)
+      // Config commands are valid in every state (the trail is the source of truth).
       .on(
         [
           HostState.Idle,
@@ -595,7 +577,7 @@ const makeHostMachine = (deps: HostDeps): HostMachine => {
             ),
           ),
       )
-      // -- run lifecycle: the state-scoped effects settle their own replies -------
+      // Run lifecycle: the state-scoped effects settle their own replies.
       .on(HostState.Working, HostEvent.RunFinished, () =>
         Effect.gen(function* () {
           yield* deps.pushState("idle");
@@ -620,7 +602,6 @@ const makeHostMachine = (deps: HostDeps): HostMachine => {
           return HostState.Idle;
         }),
       )
-      // -- the run: entered only via a run command; the entry event carries it ----
       .spawn(HostState.Working, ({ self, state }) =>
         Effect.gen(function* () {
           yield* runCommand(deps, state);
