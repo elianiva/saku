@@ -23,8 +23,8 @@ import {
 } from "@saku/wire";
 
 import type { EnvHandle } from "@saku/env";
-import { makeHubError } from "../src/hub-error.ts";
-import { HubError, type EnvProvisioner } from "../src/index.ts";
+import { HubError } from "../src/hub-error.ts";
+import type { EnvProvisioner } from "../src/index.ts";
 import type {
   HubEventSink,
   ThreadWorkerRef,
@@ -47,7 +47,9 @@ export const scriptedProvisioner = (
     ensure: (thread, handle) => {
       if (thread.mode !== "sandbox") return Effect.succeed(Option.none());
       if (options.fail === true) {
-        return Effect.fail(makeHubError("provisioner", "sandbox provisioning failed (scripted)"));
+        return Effect.fail(
+          new HubError({ kind: "provisioner", message: "sandbox provisioning failed (scripted)" }),
+        );
       }
       const existing: EnvHandle = Option.isSome(handle)
         ? handle.value
@@ -93,10 +95,7 @@ export interface ScriptedWorker {
 }
 
 /** The canned read-only answers the scripted worker gives until scripted over. */
-const canned = (
-  _threadId: string,
-  command: SessionCommand,
-) =>
+const canned = (_threadId: string, command: SessionCommand) =>
   Match.value(command).pipe(
     Match.withReturnType<Effect.Effect<WorkerCommandResult, HubError, never>>(),
     Match.tags({
@@ -130,7 +129,9 @@ const canned = (
         }),
     }),
     Match.orElse((command) =>
-      Effect.fail(makeHubError("command", `unscripted command: ${command._tag}`)),
+      Effect.fail(
+        new HubError({ kind: "command", message: `unscripted command: ${command._tag}` }),
+      ),
     ),
   );
 

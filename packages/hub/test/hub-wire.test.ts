@@ -16,28 +16,21 @@ import { KvStore } from "@saku/store";
 import {
   WIRE_VERSION,
   decodeFrame,
-  makeWireClient,
+  WireClient,
   parseFrame,
   serializeFrame,
   type ThreadInfo,
-  type WireClient,
+  type WireClientShape,
   type WorkerClientOptions,
 } from "@saku/wire";
 import { Hello, WireCommand } from "@saku/wire";
 
-import {
-  HubError,
-  makeHub,
-  makeHubRegistry,
-  makeHubServer,
-  makeSkillsStore,
-} from "../src/index.ts";
+import { HubError, Hub, HubRegistry, HubServer, SkillsStore } from "../src/index.ts";
 import { scriptedProvisioner, scriptedWorker, type ScriptedWorker } from "./mock-worker.ts";
 
 const TEST_TOKEN = "hub-test-secret";
 
-const run = <A, E extends Error>(effect: Effect.Effect<A, E, never>) =>
-  Effect.runPromise(effect);
+const run = <A, E extends Error>(effect: Effect.Effect<A, E, never>) => Effect.runPromise(effect);
 
 interface World {
   readonly url: string;
@@ -52,17 +45,17 @@ beforeEach(async () => {
   world = await Effect.runPromise(
     Effect.gen(function* () {
       const scope = yield* Scope.make();
-      const registry = yield* makeHubRegistry().pipe(Effect.provide(KvStore.memory()));
-      const skills = yield* makeSkillsStore().pipe(Effect.provide(KvStore.memory()));
+      const registry = yield* HubRegistry.make().pipe(Effect.provide(KvStore.memory()));
+      const skills = yield* SkillsStore.make().pipe(Effect.provide(KvStore.memory()));
       const worker = scriptedWorker();
-      const hub = yield* makeHub({
+      const hub = yield* Hub.make({
         registry,
         skills,
         workerRef: worker.ref,
         provisioner: scriptedProvisioner({ fail: true }),
       });
       worker.attach(hub.events);
-      const server = yield* makeHubServer({ hub, token: TEST_TOKEN }).pipe(
+      const server = yield* HubServer.make({ hub, token: TEST_TOKEN }).pipe(
         Effect.provideService(Scope.Scope, scope),
       );
       return { url: server.url, worker, scope };
@@ -76,9 +69,9 @@ afterEach(async () => {
 });
 
 const connect = (options?: Partial<WorkerClientOptions>) =>
-  run(makeWireClient({ url: world.url, token: TEST_TOKEN, role: "cli", ...options }));
+  run(WireClient.make({ url: world.url, token: TEST_TOKEN, role: "cli", ...options }));
 
-const newThread = async (client: WireClient, name = `thread ${++seq}`) =>
+const newThread = async (client: WireClientShape, name = `thread ${++seq}`) =>
   run(client.createThread(name));
 
 /** A raw socket (no client machinery) for protocol-level assertions. */

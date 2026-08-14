@@ -10,16 +10,15 @@ import { NodeFileSystem } from "@effect/platform-node";
 import { Effect, FileSystem, Option } from "effect";
 
 import { KvStore } from "@saku/store";
-import { makeHubRegistry, type HubRegistryShape } from "../src/index.ts";
+import { HubRegistry, type HubRegistryShape } from "../src/index.ts";
 
-const run = <A, E extends Error>(effect: Effect.Effect<A, E, never>) =>
-  Effect.runPromise(effect);
+const run = <A, E extends Error>(effect: Effect.Effect<A, E, never>) => Effect.runPromise(effect);
 
 let registry: HubRegistryShape;
 let home: string;
 
 beforeEach(async () => {
-  registry = await run(makeHubRegistry().pipe(Effect.provide(KvStore.memory())));
+  registry = await run(HubRegistry.make().pipe(Effect.provide(KvStore.memory())));
   home = "";
 });
 
@@ -38,7 +37,7 @@ afterEach(async () => {
   }
 });
 
-describe("makeHubRegistry", () => {
+describe("HubRegistry.make", () => {
   it("creates records with the env axis pinned by mode", async () => {
     const local = await run(registry.create({ name: "local thread" }));
     expect(local).toMatchObject({
@@ -107,12 +106,12 @@ describe("makeHubRegistry", () => {
     home = dir;
     const runFile = <A, E>(effect: Effect.Effect<A, E, KvStore>) =>
       run(effect.pipe(Effect.provide(KvStore.file(fs, home))));
-    const first = await runFile(makeHubRegistry());
+    const first = await runFile(HubRegistry.make());
     const record = await run(first.create({ name: "durable", cwd: "/work", autoName: true }));
     await run(first.setEnv(record.id, "ready"));
     await run(first.update(record.id, { sessionId: "sess-9" }));
     // A fresh registry over the same store sees the same records.
-    const second = await runFile(makeHubRegistry());
+    const second = await runFile(HubRegistry.make());
     const reloaded = Option.getOrNull(await run(second.get(record.id)));
     expect(reloaded).toMatchObject({
       name: "durable",

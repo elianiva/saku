@@ -22,13 +22,13 @@
 
 import { Effect, Match, Option } from "effect";
 import {
-  makeHub,
-  makeHubRegistry,
-  makeHubRelayCore,
-  makeSkillsStore,
-  makeProvisioner,
-  makeWireCore,
-  makeBoxApi,
+  Hub,
+  HubRegistry,
+  HubRelayCore,
+  SkillsStore,
+  Provisioner,
+  WireCore,
+  BoxApi,
   workerdSocket,
   HubError,
   type EnvProvisioner,
@@ -51,8 +51,8 @@ export const IDLE_STOP_DEFAULT_MS = 300_000;
 /** The Box provisioner with the deployment's key and embedded bundle.
  * Box is incomplete (ADR 0008) — kept selectable until Freestyle lands. */
 const boxProvisioner = (env: DeploymentEnv) =>
-  makeProvisioner({
-    boxApi: makeBoxApi({ apiKey: env.BOX_API_KEY }),
+  Provisioner.make({
+    boxApi: BoxApi.make({ apiKey: env.BOX_API_KEY }),
     // The env daemon bundle is embedded at build time (scripts/
     // embed-env-bundle.ts): a DO cannot read the filesystem.
     readBundle: () =>
@@ -128,9 +128,9 @@ export class SakuHubDO {
       10,
     );
     return Effect.fn("buildHubShape")(function* () {
-      return yield* makeHub({
-        registry: yield* makeHubRegistry(),
-        skills: yield* makeSkillsStore(),
+      return yield* Hub.make({
+        registry: yield* HubRegistry.make(),
+        skills: yield* SkillsStore.make(),
         workerRef: threadWorkerRef(env),
         provisioner: yield* provisionerFor(env),
         idleStopMs,
@@ -159,11 +159,11 @@ export class SakuHubDO {
   private async wireCore() {
     if (this.wire === undefined) {
       // A DO has no process: the hello_ok pid is 0. The runSync is safe
-      // because makeWireCore performs no blocking async work (its
+      // because WireCore.make performs no blocking async work (its
       // Effect.gen only builds Refs); only the hub shape above is
       // awaited, since the registry and skills store read DO storage.
       this.wire = Effect.runSync(
-        makeWireCore({ hub: await this.hubShape(), token: this.env.DEPLOYMENT_SECRET, pid: 0 }),
+        WireCore.make({ hub: await this.hubShape(), token: this.env.DEPLOYMENT_SECRET, pid: 0 }),
       );
     }
     return this.wire;
@@ -171,7 +171,7 @@ export class SakuHubDO {
 
   private relayCore() {
     if (this.relay === undefined) {
-      this.relay = Effect.runSync(makeHubRelayCore({ token: this.env.DEPLOYMENT_SECRET }));
+      this.relay = Effect.runSync(HubRelayCore.make({ token: this.env.DEPLOYMENT_SECRET }));
     }
     return this.relay;
   }

@@ -1,7 +1,7 @@
 /**
  * Remote-host tests: the M4 worker shape proven today — a real
  * `SessionHost` whose hands are a real `RemoteEnv` over the env protocol
- * to a real `makeEnvDaemon` (ADR 0003). The agent's tools (`bash`) execute
+ * to a real `EnvDaemon.make` (ADR 0003). The agent's tools (`bash`) execute
  * on the daemon, and the trail records real tool calls — the data plane
  * end to end, no stubs between the host and the daemon.
  *
@@ -18,7 +18,7 @@ import { NodeFileSystem } from "@effect/platform-node";
 import { Effect, Exit, FileSystem, Schema, Scope } from "effect";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
-import { makeEnvDaemon, nodeSocket, RemoteEnv, type EnvDaemonShape } from "@saku/env";
+import { EnvDaemon, nodeSocket, RemoteEnv, type EnvDaemonShape } from "@saku/env";
 import { KvStore } from "@saku/store";
 
 import { SessionHost, type HostEventSink } from "../src/session-host.ts";
@@ -88,7 +88,7 @@ describe("SessionHost over RemoteEnv", () => {
       Effect.gen(function* () {
         scope = yield* Scope.make();
         const fs = yield* FileSystem.FileSystem;
-        const daemon = yield* makeEnvDaemon({ token: ENV_TOKEN, fs, cwd: workdir }).pipe(
+        const daemon = yield* EnvDaemon.make({ token: ENV_TOKEN, fs, cwd: workdir }).pipe(
           Effect.provideService(Scope.Scope, scope),
         );
         return { daemon, fs };

@@ -3,7 +3,7 @@
  * touch, daemon bootstrap through the box's one-shot commands/files API,
  * health-probe before `ready`, resume after idle-stop, release on thread
  * deletion. The Box API is a scripted stub; the env daemon on the far
- * side is REAL (a `makeEnvDaemon` on a random port whose URL the stub's
+ * side is REAL (a `EnvDaemon.make` on a random port whose URL the stub's
  * `host.url` returns) — so the probe, the token hand-off, and the resume
  * re-probe are exercised over a real env protocol connection.
  */
@@ -14,11 +14,11 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect, Exit, FileSystem, Option, Scope } from "effect";
-import { makeEnvDaemon, type EnvDaemonShape } from "@saku/env";
+import { EnvDaemon, type EnvDaemonShape } from "@saku/env";
 
 import {
-  makeProvisioner,
-  type BoxApi,
+  Provisioner,
+  type BoxApiShape,
   type BoxInfo,
   type CommandResult,
   type EnvProvisioner,
@@ -34,7 +34,7 @@ const TOKEN = "box-env-token";
  */
 const fakeBox = (deps: {
   daemonUrl: () => string | null;
-}): BoxApi & {
+}): BoxApiShape & {
   readonly commands: string[];
   readonly stopped: string[];
   readonly resumed: string[];
@@ -98,7 +98,7 @@ const fakeBox = (deps: {
   };
 };
 
-describe("makeProvisioner", () => {
+describe("Provisioner.make", () => {
   let workdir: string;
   let daemon: EnvDaemonShape;
   let scope: Scope.Scope;
@@ -123,14 +123,14 @@ describe("makeProvisioner", () => {
       Effect.gen(function* () {
         scope = yield* Scope.make();
         const fs = yield* FileSystem.FileSystem;
-        return yield* makeEnvDaemon({ token: TOKEN, fs, cwd: workdir }).pipe(
+        return yield* EnvDaemon.make({ token: TOKEN, fs, cwd: workdir }).pipe(
           Effect.provideService(Scope.Scope, scope),
         );
       }).pipe(Effect.provide(NodeFileSystem.layer)),
     );
     daemonUrl = daemon.url;
     box = fakeBox({ daemonUrl: () => daemonUrl });
-    provisioner = makeProvisioner({
+    provisioner = Provisioner.make({
       boxApi: box,
       readBundle: () => Effect.succeed("// bundle"),
       envToken: () => TOKEN,
@@ -191,7 +191,7 @@ describe("makeProvisioner", () => {
       Effect.gen(function* () {
         const scope = yield* Scope.make();
         const fs = yield* FileSystem.FileSystem;
-        const restarted = yield* makeEnvDaemon({ token: TOKEN, fs, cwd: workdir }).pipe(
+        const restarted = yield* EnvDaemon.make({ token: TOKEN, fs, cwd: workdir }).pipe(
           Effect.provideService(Scope.Scope, scope),
         );
         return { restarted, scope };

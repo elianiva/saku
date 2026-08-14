@@ -11,20 +11,19 @@ import { Effect, Schema } from "effect";
 import { KvStore } from "@saku/store";
 import { GetEntriesResponse } from "@saku/wire";
 
-import { makeHubError } from "../src/hub-error.ts";
+import { HubError } from "../src/hub-error.ts";
 
 import {
-  makeHub,
-  makeHubRegistry,
-  makeSkillsStore,
+  Hub,
+  HubRegistry,
+  SkillsStore,
   type EnvProvisioner,
   type HubEvent,
   type HubShape,
 } from "../src/index.ts";
 import { scriptedProvisioner, scriptedWorker, type ScriptedWorker } from "./mock-worker.ts";
 
-const run = <A, E extends Error>(effect: Effect.Effect<A, E, never>) =>
-  Effect.runPromise(effect);
+const run = <A, E extends Error>(effect: Effect.Effect<A, E, never>) => Effect.runPromise(effect);
 
 /** A polling assertion that gave up (the async fork hadn't landed in time). */
 class TestError extends Schema.TaggedError<TestError>()("TestError", {
@@ -51,10 +50,10 @@ interface World {
 const makeWorld = (provisioner: EnvProvisioner = scriptedProvisioner()) =>
   Effect.runPromise(
     Effect.gen(function* () {
-      const registry = yield* makeHubRegistry().pipe(Effect.provide(KvStore.memory()));
-      const skills = yield* makeSkillsStore().pipe(Effect.provide(KvStore.memory()));
+      const registry = yield* HubRegistry.make().pipe(Effect.provide(KvStore.memory()));
+      const skills = yield* SkillsStore.make().pipe(Effect.provide(KvStore.memory()));
       const worker = scriptedWorker();
-      const hub = yield* makeHub({ registry, skills, workerRef: worker.ref, provisioner });
+      const hub = yield* Hub.make({ registry, skills, workerRef: worker.ref, provisioner });
       worker.attach(hub.events);
       const events: HubEvent[] = [];
       hub.subscribe((event) => events.push(event));
@@ -70,7 +69,9 @@ const changedIds = (events: HubEvent[]) =>
 const scriptPrompt = (world: World, text: string, tailSeq = 1) => {
   world.worker.onCommand((threadId, command) => {
     if (command._tag !== "prompt") {
-      return Effect.fail(makeHubError("command", `unscripted command: ${command._tag}`));
+      return Effect.fail(
+        new HubError({ kind: "command", message: `unscripted command: ${command._tag}` }),
+      );
     }
     world.worker.report(threadId, { state: "working" });
     world.worker.emit(
@@ -84,7 +85,7 @@ const scriptPrompt = (world: World, text: string, tailSeq = 1) => {
   });
 };
 
-describe("makeHub — threads", () => {
+describe("Hub.make — threads", () => {
   it("creates a thread, creates its worker, and broadcasts", async () => {
     const world = await makeWorld();
     const thread = await run(world.hub.createThread({ name: "hello world" }));
@@ -101,7 +102,7 @@ describe("makeHub — threads", () => {
 
   it("rolls back when the worker cannot be created", async () => {
     const world = await makeWorld();
-    world.worker.failCreateWith(makeHubError("worker", "no worker namespace"));
+    world.worker.failCreateWith(new HubError({ kind: "worker", message: "no worker namespace" }));
     await expect(run(world.hub.createThread({ name: "doomed" }))).rejects.toMatchObject({
       message: "failed to create worker: no worker namespace",
     });
@@ -140,7 +141,7 @@ describe("makeHub — threads", () => {
   });
 });
 
-describe("makeHub — sessions and the env gate", () => {
+describe("Hub.make — sessions and the env gate", () => {
   it("forwards session commands to the worker and caches tailSeq", async () => {
     const world = await makeWorld();
     const thread = await run(world.hub.createThread({ name: "t" }));
@@ -237,7 +238,7 @@ describe("makeHub — sessions and the env gate", () => {
   });
 });
 
-describe("makeHub — worker reports", () => {
+describe("Hub.make — worker reports", () => {
   it("applies auto-title while the name is auto-generated", async () => {
     const world = await makeWorld();
     const thread = await run(world.hub.createThread({ name: "quick start", autoName: true }));
@@ -281,7 +282,7 @@ describe("makeHub — worker reports", () => {
   });
 });
 
-describe("makeHub — skills", () => {
+describe("Hub.make — skills", () => {
   it("imports, lists, and deletes skills", async () => {
     const world = await makeWorld();
     const skill = await run(world.hub.importSkill("https://github.com/foo/bar-baz.git"));
@@ -305,7 +306,7 @@ describe("makeHub — skills", () => {
   });
 });
 
-describe("makeHub — resolution", () => {
+describe("Hub.make — resolution", () => {
   it("resolves session commands by name and unambiguous prefix", async () => {
     const world = await makeWorld();
     const a = await run(world.hub.createThread({ name: "alpha" }));

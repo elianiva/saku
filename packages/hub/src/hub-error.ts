@@ -5,8 +5,7 @@
  * a `response {ok: false, error}` frame; the server never sees its shape.
  *
  * `kind` discriminates the failure category (house model: `WireError`'s
- * `code` literals). Every construction site passes one (prefer the
- * `makeHubError(kind, message, cause?)` helper).
+ * `code` literals). Every construction site passes one.
  */
 
 import { Schema } from "effect";
@@ -39,7 +38,3 @@ export class HubError extends Schema.TaggedError<HubError>()("HubError", {
   message: Schema.String,
   cause: Schema.optional(Schema.Unknown),
 }) {}
-
-/** Construct a hub error with its category (required at new sites). */
-export const makeHubError = (kind: HubErrorKind, message: string, cause?: unknown) =>
-  new HubError({ kind, message, cause });

@@ -7,22 +7,22 @@
  * registry and skills store over the `KvStore` seam, the Box API client
  * and provisioner (injectable fetch), the wire and relay connection cores
  * over the `SocketLike` surface, and the worker-seam types. The node
- * WebSocket servers (server.ts, relay.ts's `makeHubRelay`) live in the
+ * WebSocket servers (server.ts, relay.ts's `HubRelay.make`) live in the
  * package's main entry; a DO feeds the cores its accepted sockets and
  * passes its own storage and secrets.
  */
 
 export { HubError, messageOf } from "./hub-error.ts";
 export {
-  makeIdleStop,
-  type IdleStop,
+  IdleStop,
+  type IdleStopShape,
   type IdleStopController,
   type IdleStopDeps,
 } from "./idle-stop.ts";
-export { makeHubRegistry, type HubRecord, type HubRegistryShape } from "./registry.ts";
-export { makeSkillsStore, skillNameFromSource, type SkillsStoreShape } from "./skills.ts";
+export { HubRegistry, type HubRecord, type HubRegistryShape } from "./registry.ts";
+export { SkillsStore, skillNameFromSource, type SkillsStoreShape } from "./skills.ts";
 export {
-  makeProvisioner,
+  Provisioner,
   boxSystemdUnit,
   boxRunScript,
   boxEnsureNodeCommand,
@@ -34,21 +34,21 @@ export {
   type ProvisionerDeps,
 } from "./provisioner.ts";
 export {
-  makeBoxApi,
+  BoxApi,
   pollUntilReady,
   BoxError,
-  type BoxApi,
+  type BoxApiShape,
   type BoxInfo,
   type BoxApiDeps,
   type CommandResult,
 } from "./box.ts";
 export {
-  makeHubRelayCore,
+  HubRelayCore,
   type HubRelayCoreShape,
   type HubRelayShape,
   type RelayServerOptions,
 } from "./relay-core.ts";
-export { makeWireCore, type WireCoreOptions, type WireCoreShape } from "./wire-core.ts";
+export { WireCore, type WireCoreOptions, type WireCoreShape } from "./wire-core.ts";
 export { workerdSocket, type SocketLike, type WorkerdWebSocketLike } from "./socket.ts";
 export {
   type HubEventSink,
@@ -56,4 +56,4 @@ export {
   type WorkerCommandResult,
   type WorkerReport,
 } from "./worker-ref.ts";
-export { makeHub, type HubDeps, type HubEvent, type HubListener, type HubShape } from "./hub.ts";
+export { Hub, type HubDeps, type HubEvent, type HubListener, type HubShape } from "./hub.ts";

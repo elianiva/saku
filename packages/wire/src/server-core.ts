@@ -18,7 +18,7 @@
  * hub's `SocketLike` adapters satisfy `ServerSocket` structurally.
  */
 
-import { Effect, Ref, Result, Schema, Scope } from "effect";
+import { Context, Effect, Ref, Result, Schema, Scope } from "effect";
 
 import {
   ErrorEvent,
@@ -102,170 +102,165 @@ const isSessionCommand = (
   c: SessionCommandType | ThreadCommand | SkillCommand | PiSessionCommand,
 ): c is SessionCommandType => Schema.is(SessionCommand)(c);
 
-export const makeWireServer = Effect.fn("makeWireServer")(function* (options: WireServerOptions) {
-  const pid = options.pid ?? (typeof process !== "undefined" ? process.pid : 0);
-  const clientsRef = yield* Ref.make<ReadonlySet<Client>>(new Set());
+/** The wire's server core: the shared transport-free connection discipline. */
+export class WireServer extends Context.Service<WireServer, WireServerShape>()("WireServer", {
+  make: Effect.fn("WireServer.make")(function* (options: WireServerOptions) {
+    const pid = options.pid ?? (typeof process !== "undefined" ? process.pid : 0);
+    const clientsRef = yield* Ref.make<ReadonlySet<Client>>(new Set());
 
-  const log = (message: string) =>
-    options.log === undefined ? Effect.void : options.log(message);
+    const log = (message: string) =>
+      options.log === undefined ? Effect.void : options.log(message);
 
-  const send = Effect.fn("send")(function* (client: Client, event: WireEvent) {
-    // A socket that closed between the check and the send is a no-op;
-    // the close handler cleans the client up.
-    const sent = Result.try(() => client.socket.send(serializeFrame(event)));
-    if (Result.isFailure(sent)) {
-      yield* log(`send failed: ${String(sent.failure)}`);
-    }
-  });
+    const send = Effect.fn("send")(function* (client: Client, event: WireEvent) {
+      // A socket that closed between the check and the send is a no-op;
+      // the close handler cleans the client up.
+      const sent = Result.try(() => client.socket.send(serializeFrame(event)));
+      if (Result.isFailure(sent)) {
+        yield* log(`send failed: ${String(sent.failure)}`);
+      }
+    });
 
-  const broadcast = (event: WireEvent) =>
-    Ref.get(clientsRef).pipe(
-      Effect.flatMap((clients) =>
-        Effect.forEach(
-          clients,
-          (client) =>
-            Ref.get(client.authed).pipe(
-              Effect.flatMap((authed) => (authed ? send(client, event) : Effect.void)),
-            ),
-          { discard: true },
+    const broadcast = (event: WireEvent) =>
+      Ref.get(clientsRef).pipe(
+        Effect.flatMap((clients) =>
+          Effect.forEach(
+            clients,
+            (client) =>
+              Ref.get(client.authed).pipe(
+                Effect.flatMap((authed) => (authed ? send(client, event) : Effect.void)),
+              ),
+            { discard: true },
+          ),
         ),
-      ),
-    );
-
-  const handleHello = Effect.fn("handleHello")(function* (client: Client, hello: Hello) {
-    if (hello.version !== WIRE_VERSION) {
-      yield* send(
-        client,
-        ErrorEvent.make({ message: `version mismatch: expected ${WIRE_VERSION}` }),
       );
-      client.socket.close();
-      return;
-    }
-    const expected = yield* options.token();
-    if (hello.token !== expected) {
-      yield* send(client, ErrorEvent.make({ message: "invalid token" }));
-      client.socket.close();
-      return;
-    }
-    yield* Ref.set(client.authed, true);
-    yield* send(client, HelloOk.make({ pid, version: WIRE_VERSION }));
-  });
 
-  const respond = (
-    client: Client,
-    id: string | undefined,
-    payload: ResponsePayload,
-  ) => {
-    if (id === undefined) return Effect.void;
-    return send(client, ResponseOk.make({ id, ok: true, payload }));
-  };
-
-  const respondCommandFailure = (
-    client: Client,
-    id: string | undefined,
-    error: unknown,
-  ) => {
-    const message = messageOf(error);
-    if (id === undefined) return send(client, ErrorEvent.make({ message }));
-    return send(client, ResponseError.make({ id, ok: false, error: message }));
-  };
-
-  const handleCommand = Effect.fn("handleCommand")(function* (
-    client: Client,
-    command: WireCommand,
-  ) {
-    const authed = yield* Ref.get(client.authed);
-    if (!authed) {
-      yield* send(client, ErrorEvent.make({ message: "hello first" }));
-      return;
-    }
-    const id = command.id;
-    // Routing by command kind: session commands are thread-scoped; threads
-    // and skills are hub-level. A session command without a threadId is a
-    // protocol error, not a hub command.
-    let run: Effect.Effect<unknown, unknown, never>;
-    if (isSessionCommand(command.command)) {
-      if (command.threadId === undefined) {
-        run = Effect.fail(
-          new WireServerError({
-            code: "missing_thread_id",
-            message: "session command without a threadId",
-          }),
+    const handleHello = Effect.fn("handleHello")(function* (client: Client, hello: Hello) {
+      if (hello.version !== WIRE_VERSION) {
+        yield* send(
+          client,
+          ErrorEvent.make({ message: `version mismatch: expected ${WIRE_VERSION}` }),
         );
-      } else {
-        run = options.handlers.runSessionCommand(command.threadId, command.command);
+        client.socket.close();
+        return;
       }
-    } else {
-      run = options.handlers.runHubCommand(command.command);
-    }
-    // matchEffect: the success/failure arms are Effects (respond/send);
-    // handler failures are stringified at this frame boundary.
-    yield* Effect.matchEffect(run, {
-      onSuccess: (payload) => respond(client, id, payload as ResponsePayload),
-      onFailure: (error) => respondCommandFailure(client, id, error),
+      const expected = yield* options.token();
+      if (hello.token !== expected) {
+        yield* send(client, ErrorEvent.make({ message: "invalid token" }));
+        client.socket.close();
+        return;
+      }
+      yield* Ref.set(client.authed, true);
+      yield* send(client, HelloOk.make({ pid, version: WIRE_VERSION }));
     });
-  });
 
-  const runConnection = Effect.fn("runConnection")(function* (socket: ServerSocket) {
-    const authed = yield* Ref.make(false);
-    const client: Client = { socket, authed };
-    yield* Ref.update(clientsRef, (clients) => new Set(clients).add(client));
-    yield* Effect.addFinalizer(() =>
-      Ref.update(clientsRef, (clients) => {
-        const next = new Set(clients);
-        next.delete(client);
-        return next;
-      }),
-    );
-    const onMessage = (data: unknown) => {
-      const value = Result.try(() => parseFrame(decodeFrame(data)));
-      if (Result.isFailure(value)) {
-        void Effect.runFork(send(client, ErrorEvent.make({ message: "malformed JSON frame" })));
-        return;
-      }
-      const decoded = Result.try(() => DECODE_COMMAND(value.success));
-      if (Result.isFailure(decoded)) {
-        void Effect.runFork(send(client, ErrorEvent.make({ message: "undecodable message" })));
-        return;
-      }
-      if (decoded.success._tag === "hello") {
-        void Effect.runFork(handleHello(client, decoded.success));
-      } else {
-        void Effect.runFork(handleCommand(client, decoded.success));
-      }
+    const respond = (client: Client, id: string | undefined, payload: ResponsePayload) => {
+      if (id === undefined) return Effect.void;
+      return send(client, ResponseOk.make({ id, ok: true, payload }));
     };
-    const onError = (error: unknown) => {
-      // The socket callback is outside the Effect runtime: fork the log.
-      void Effect.runFork(
-        log(`socket error: ${error instanceof Error ? error.message : String(error)}`),
+
+    const respondCommandFailure = (client: Client, id: string | undefined, error: unknown) => {
+      const message = messageOf(error);
+      if (id === undefined) return send(client, ErrorEvent.make({ message }));
+      return send(client, ResponseError.make({ id, ok: false, error: message }));
+    };
+
+    const handleCommand = Effect.fn("handleCommand")(function* (
+      client: Client,
+      command: WireCommand,
+    ) {
+      const authed = yield* Ref.get(client.authed);
+      if (!authed) {
+        yield* send(client, ErrorEvent.make({ message: "hello first" }));
+        return;
+      }
+      const id = command.id;
+      // Routing by command kind: session commands are thread-scoped; threads
+      // and skills are hub-level. A session command without a threadId is a
+      // protocol error, not a hub command.
+      let run: Effect.Effect<unknown, unknown, never>;
+      if (isSessionCommand(command.command)) {
+        if (command.threadId === undefined) {
+          run = Effect.fail(
+            new WireServerError({
+              code: "missing_thread_id",
+              message: "session command without a threadId",
+            }),
+          );
+        } else {
+          run = options.handlers.runSessionCommand(command.threadId, command.command);
+        }
+      } else {
+        run = options.handlers.runHubCommand(command.command);
+      }
+      // matchEffect: the success/failure arms are Effects (respond/send);
+      // handler failures are stringified at this frame boundary.
+      yield* Effect.matchEffect(run, {
+        onSuccess: (payload) => respond(client, id, payload as ResponsePayload),
+        onFailure: (error) => respondCommandFailure(client, id, error),
+      });
+    });
+
+    const runConnection = Effect.fn("runConnection")(function* (socket: ServerSocket) {
+      const authed = yield* Ref.make(false);
+      const client: Client = { socket, authed };
+      yield* Ref.update(clientsRef, (clients) => new Set(clients).add(client));
+      yield* Effect.addFinalizer(() =>
+        Ref.update(clientsRef, (clients) => {
+          const next = new Set(clients);
+          next.delete(client);
+          return next;
+        }),
       );
-    };
-    socket.on("message", onMessage);
-    socket.on("error", onError);
-    // Resolve when the socket closes; the scope's finalizer then drops the client.
-    yield* Effect.callback<void>((resume) => {
-      const onClose = () => {
-        resume(Effect.void);
+      const onMessage = (data: unknown) => {
+        const value = Result.try(() => parseFrame(decodeFrame(data)));
+        if (Result.isFailure(value)) {
+          void Effect.runFork(send(client, ErrorEvent.make({ message: "malformed JSON frame" })));
+          return;
+        }
+        const decoded = Result.try(() => DECODE_COMMAND(value.success));
+        if (Result.isFailure(decoded)) {
+          void Effect.runFork(send(client, ErrorEvent.make({ message: "undecodable message" })));
+          return;
+        }
+        if (decoded.success._tag === "hello") {
+          void Effect.runFork(handleHello(client, decoded.success));
+        } else {
+          void Effect.runFork(handleCommand(client, decoded.success));
+        }
       };
-      socket.once("close", onClose);
-      return Effect.sync(() => socket.off("close", onClose));
+      const onError = (error: unknown) => {
+        // The socket callback is outside the Effect runtime: fork the log.
+        void Effect.runFork(
+          log(`socket error: ${error instanceof Error ? error.message : String(error)}`),
+        );
+      };
+      socket.on("message", onMessage);
+      socket.on("error", onError);
+      // Resolve when the socket closes; the scope's finalizer then drops the client.
+      yield* Effect.callback<void>((resume) => {
+        const onClose = () => {
+          resume(Effect.void);
+        };
+        socket.once("close", onClose);
+        return Effect.sync(() => socket.off("close", onClose));
+      });
     });
-  });
 
-  const closeClients = Effect.fn("closeClients")(function* () {
-    const clients = yield* Ref.get(clientsRef);
-    yield* Effect.forEach(clients, (client) => Effect.sync(() => client.socket.close()), {
-      discard: true,
+    const closeClients = Effect.fn("closeClients")(function* () {
+      const clients = yield* Ref.get(clientsRef);
+      yield* Effect.forEach(clients, (client) => Effect.sync(() => client.socket.close()), {
+        discard: true,
+      });
+      yield* Ref.set(clientsRef, new Set());
     });
-    yield* Ref.set(clientsRef, new Set());
-  });
 
-  return {
-    runConnection,
-    broadcast,
-    close: closeClients,
-  };
-});
+    return {
+      runConnection,
+      broadcast,
+      close: closeClients,
+    };
+  }),
+}) {}
 
 // The node-only WebSocket server transport — part of the `@saku/wire/server`
 // subpath, never the main entry (the frontend bundles the main entry for

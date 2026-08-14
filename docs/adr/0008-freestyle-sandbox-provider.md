@@ -36,7 +36,7 @@ usage is ~5–6 h/day of agent runtime (~165 active hours/month). A research pas
 ### The freestyle backend (in preparation)
 
 The hub's `EnvProvisioner` seam is unchanged — the backend maps onto it 1:1, the same
-way `makeProvisioner` (Box) does:
+way `Provisioner.make` (Box) does:
 
 1. **ensure (fresh)** — lazily create one VM per sandbox thread on first use
    (`freestyle.vms.create`; default 4 vCPU / 8 GB / 20 GB; free tier allows 10

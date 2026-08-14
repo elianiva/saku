@@ -12,7 +12,7 @@
  * - `skills.ts`   — the hub-hosted skills store (list / import / delete)
  * - `envelope.ts` — top-level frames (command / response / event)
  * - `transport.ts`— JSONL framing over WebSocket
- * - `client.ts`   — `makeWireClient`, the console side of the wire (an
+ * - `client.ts`   — `WireClient.make`, the console side of the wire (an
  *     effect-machine actor)
  */
 

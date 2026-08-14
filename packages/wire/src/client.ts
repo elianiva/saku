@@ -16,13 +16,24 @@
  * The client speaks the WHATWG `WebSocket` (global in browsers and Node ≥ 22)
  * — the same code runs in the frontend and the CLI.
  *
- * `makeWireClient` spawns the actor and returns the client value;
+ * `WireClient.make` spawns the actor and returns the client value;
  * `connect` completes the handshake and returns the server's `HelloOk`;
  * `disconnect` fails pending requests, closes the socket, and drains the
  * actor.
  */
 
-import { Cause, Deferred, Effect, Match, Option, Ref, Result, Schedule, Schema } from "effect";
+import {
+  Cause,
+  Context,
+  Deferred,
+  Effect,
+  Match,
+  Option,
+  Ref,
+  Result,
+  Schedule,
+  Schema,
+} from "effect";
 import { Event, Machine, State, type MachineType } from "effect-machine";
 import type {
   CompactResult,
@@ -190,10 +201,7 @@ const narrowPi = <T>(value: unknown) => value as T;
  * command↔response pairing, so a server answering the wrong variant is a
  * decodable `decode` failure here, not an undefined read downstream.
  */
-const narrowResponse = <K extends ResponsePayload["_tag"]>(
-  payload: ResponsePayload,
-  tag: K,
-) =>
+const narrowResponse = <K extends ResponsePayload["_tag"]>(payload: ResponsePayload, tag: K) =>
   payload._tag === tag
     ? Effect.succeed(payload as SessionResponse<K>)
     : Effect.fail(
@@ -204,10 +212,7 @@ const narrowResponse = <K extends ResponsePayload["_tag"]>(
       );
 
 /** Settle the pending handshake with an outcome; a stale ref is a no-op. */
-const settleConnect = (
-  deps: ClientDeps,
-  outcome: Result.Result<HelloOk, WireError>,
-) =>
+const settleConnect = (deps: ClientDeps, outcome: Result.Result<HelloOk, WireError>) =>
   Ref.getAndSet(deps.connectRef, Option.none()).pipe(
     Effect.flatMap((pending) =>
       Option.match(pending, {
@@ -256,9 +261,7 @@ type ClientEventDef = (typeof ClientEvent)["_definition"];
  * defect. Socket listeners are wired by the `Connecting` spawn effect and
  * cast their events into the actor.
  */
-const makeMachine = (
-  deps: ClientDeps,
-) =>
+const makeMachine = (deps: ClientDeps) =>
   Machine.make({
     state: ClientState,
     event: ClientEvent,
@@ -561,7 +564,7 @@ const decodeFrameLine = Effect.fn("decodeFrameLine")(function* (deps: ClientDeps
 });
 
 /** A console's connection to the hub. Create once per process. */
-export interface WireClient {
+export interface WireClientShape {
   readonly role: ConsoleRole;
   /** Whether the handshake is complete and the connection is live. */
   readonly isConnected: boolean;
@@ -653,173 +656,177 @@ export interface WireClient {
   readonly deleteSkill: (id: string) => Effect.Effect<void, WireError, never>;
 }
 
-/** Spawn the client's actor and return the client value. */
-export const makeWireClient = Effect.fn("makeWireClient")(function* (
-  options: WorkerClientOptions,
-): Effect.fn.Return<WireClient, never, never> {
-  const pendingRef = yield* Ref.make<Pending>(new Map());
-  const connectRef = yield* Ref.make<Option.Option<ConnectDeferred>>(Option.none());
-  const seqRef = yield* Ref.make(0);
-  const listeners: ListenerMap = new Map();
-  const reconnectEnabled = options.reconnect ?? false;
-  const requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
-  const deps: ClientDeps = {
-    url: options.url,
-    token: options.token,
-    role: options.role,
-    version: options.version ?? WIRE_VERSION,
-    pendingRef,
-    connectRef,
-    listeners,
-  };
-  const actor = yield* Machine.spawn(makeMachine(deps));
-  yield* actor.start;
+/** A console's connection to the hub: `WireClient.make(options)` builds one. */
+export class WireClient extends Context.Service<WireClient, WireClientShape>()("WireClient", {
+  make: Effect.fn("WireClient.make")(function* (
+    options: WorkerClientOptions,
+  ): Effect.fn.Return<WireClientShape, never, never> {
+    const pendingRef = yield* Ref.make<Pending>(new Map());
+    const connectRef = yield* Ref.make<Option.Option<ConnectDeferred>>(Option.none());
+    const seqRef = yield* Ref.make(0);
+    const listeners: ListenerMap = new Map();
+    const reconnectEnabled = options.reconnect ?? false;
+    const requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
+    const deps: ClientDeps = {
+      url: options.url,
+      token: options.token,
+      role: options.role,
+      version: options.version ?? WIRE_VERSION,
+      pendingRef,
+      connectRef,
+      listeners,
+    };
+    const actor = yield* Machine.spawn(makeMachine(deps));
+    yield* actor.start;
 
-  const connect = Effect.fn("connect")(function* () {
-    const deferred = yield* Deferred.make<HelloOk, WireError>();
-    yield* Ref.set(connectRef, Option.some(deferred));
-    yield* actor.send(ClientEvent.ConnectRequested);
-    const hello = yield* Deferred.await(deferred).pipe(
-      Effect.ensuring(Ref.set(connectRef, Option.none())),
-    );
-    // The hello_ok transition has run, but the actor may not have landed
-    // on Connected yet; wait for the state so a command immediately after
-    // connect() sees a Connected snapshot.
-    yield* actor.waitFor((state) => ClientState.$is("Connected")(state));
-    return hello;
-  });
-
-  const waitForClose = () =>
-    actor
-      .waitFor((state) => !ClientState.$is("Connected")(state))
-      .pipe(
-        Effect.flatMap(() =>
-          Effect.fail(new WireError({ code: "disconnected", message: "connection closed" })),
-        ),
+    const connect = Effect.fn("connect")(function* () {
+      const deferred = yield* Deferred.make<HelloOk, WireError>();
+      yield* Ref.set(connectRef, Option.some(deferred));
+      yield* actor.send(ClientEvent.ConnectRequested);
+      const hello = yield* Deferred.await(deferred).pipe(
+        Effect.ensuring(Ref.set(connectRef, Option.none())),
       );
+      // The hello_ok transition has run, but the actor may not have landed
+      // on Connected yet; wait for the state so a command immediately after
+      // connect() sees a Connected snapshot.
+      yield* actor.waitFor((state) => ClientState.$is("Connected")(state));
+      return hello;
+    });
 
-  const start = () => {
-    const attempt = () =>
-      connect().pipe(Effect.flatMap(() => waitForClose()));
-    if (!reconnectEnabled) return attempt();
-    // Handshake rejections fail through — a bad token must not spin forever.
-    return attempt().pipe(
-      Effect.catchIf(
-        (error) => error.code === "handshake",
-        (error) => Effect.fail(error),
-      ),
-      Effect.retry(Schedule.exponential("200 millis", 2)),
-    );
-  };
+    const waitForClose = () =>
+      actor
+        .waitFor((state) => !ClientState.$is("Connected")(state))
+        .pipe(
+          Effect.flatMap(() =>
+            Effect.fail(new WireError({ code: "disconnected", message: "connection closed" })),
+          ),
+        );
 
-  const disconnect = Effect.fn("disconnect")(function* () {
-    yield* failAllPending(
-      deps,
-      new WireError({ code: "disconnected", message: "client disconnected" }),
-    );
-    yield* actor.send(ClientEvent.DisconnectRequested);
-    // Drain: the machine closes the socket (DisconnectRequested), then
-    // the actor stops after the queue is empty.
-    yield* actor.drain;
-  });
-
-  const on = <K extends ClientEventKind>(
-    kind: K,
-    listener: (payload: ClientEvents[K]) => void,
-  ) => {
-    let set = listeners.get(kind);
-    if (set === undefined) {
-      set = new Set();
-      listeners.set(kind, set);
-    }
-    set.add(listener as Listener);
-    return () => {
-      set.delete(listener as Listener);
-    };
-  };
-
-  const nextRequestId = () =>
-    Ref.updateAndGet(seqRef, (n) => n + 1).pipe(Effect.map((n) => `req_${n}`));
-
-  const request = Effect.fn("request")(function* <
-    A extends object,
-    K extends ResponsePayload["_tag"],
-    T,
-  >(spec: CommandSpec<A, K, T>, args: A, threadId?: string) {
-    const state = yield* actor.snapshot;
-    if (!ClientState.$is("Connected")(state)) {
-      return yield* Effect.fail(new WireError({ code: "disconnected", message: "not connected" }));
-    }
-    const id = yield* nextRequestId();
-    const frame: WireCommand = {
-      _tag: "command",
-      id,
-      ...(threadId === undefined ? {} : { threadId }),
-      command: spec.schema.make(args),
-    };
-    const deferred = yield* Deferred.make<ResponsePayload, WireError>();
-    yield* Ref.update(pendingRef, (pending) => new Map(pending).set(id, deferred));
-    yield* actor.send(ClientEvent.CommandSent({ id, frame }));
-    const payload = yield* Effect.ensuring(
-      Deferred.await(deferred).pipe(
-        Effect.timeout(requestTimeoutMs),
-        Effect.mapError((error) =>
-          Cause.isTimeoutError(error)
-            ? new WireError({ code: "timeout", message: `command ${id} timed out` })
-            : error,
+    const start = () => {
+      const attempt = () => connect().pipe(Effect.flatMap(() => waitForClose()));
+      if (!reconnectEnabled) return attempt();
+      // Handshake rejections fail through — a bad token must not spin forever.
+      return attempt().pipe(
+        Effect.catchIf(
+          (error) => error.code === "handshake",
+          (error) => Effect.fail(error),
         ),
-      ),
-      // The response handler already removed the entry on success; this
-      // covers timeout and interruption.
-      Ref.update(pendingRef, (pending) => {
-        const next = new Map(pending);
-        next.delete(id);
-        return next;
-      }),
-    );
-    const variant = yield* narrowResponse(payload, spec.tag);
-    return spec.extract(variant);
-  });
+        Effect.retry(Schedule.exponential("200 millis", 2)),
+      );
+    };
 
-  return {
-    role: options.role,
-    get isConnected() {
-      return actor.sync.matches("Connected");
-    },
-    connect,
-    start,
-    disconnect,
-    on,
-    listThreads: () => request(COMMANDS.listThreads, {}),
-    createThread: (name, options) => request(COMMANDS.createThread, { name, ...options }),
-    getThread: (threadId) => request(COMMANDS.getThread, { threadId }),
-    renameThread: (threadId, name) => request(COMMANDS.renameThread, { threadId, name }),
-    deleteThread: (threadId) => request(COMMANDS.deleteThread, { threadId }),
-    prompt: (threadId, text, images) => request(COMMANDS.prompt, { text, images }, threadId),
-    steer: (threadId, text) => request(COMMANDS.steer, { text }, threadId),
-    followUp: (threadId, text) => request(COMMANDS.followUp, { text }, threadId),
-    abort: (threadId) => request(COMMANDS.abort, {}, threadId),
-    setSteeringMode: (threadId, mode) => request(COMMANDS.setSteeringMode, { mode }, threadId),
-    setFollowUpMode: (threadId, mode) => request(COMMANDS.setFollowUpMode, { mode }, threadId),
-    compact: (threadId, customInstructions) =>
-      request(COMMANDS.compact, { customInstructions }, threadId),
-    setAutoCompaction: (threadId, enabled) =>
-      request(COMMANDS.setAutoCompaction, { enabled }, threadId),
-    getAvailableModels: (threadId) => request(COMMANDS.getAvailableModels, {}, threadId),
-    setModel: (threadId, provider, modelId) =>
-      request(COMMANDS.setModel, { provider, modelId }, threadId),
-    getAvailableThinkingLevels: (threadId) =>
-      request(COMMANDS.getAvailableThinkingLevels, {}, threadId),
-    setThinkingLevel: (threadId, level) => request(COMMANDS.setThinkingLevel, { level }, threadId),
-    getEntries: (threadId, sinceSeq) => request(COMMANDS.getEntries, { sinceSeq }, threadId),
-    branch: (threadId, entryId) => request(COMMANDS.branch, { entryId }, threadId),
-    getSessionStats: (threadId) => request(COMMANDS.getSessionStats, {}, threadId),
-    setSessionName: (threadId, name) => request(COMMANDS.setSessionName, { name }, threadId),
-    getState: (threadId) => request(COMMANDS.getState, {}, threadId),
-    listSkills: () => request(COMMANDS.listSkills, {}),
-    importSkill: (source, scope) => request(COMMANDS.importSkill, { source, scope }),
-    deleteSkill: (id) => request(COMMANDS.deleteSkill, { id }),
-    listPiSessions: () => request(COMMANDS.listPiSessions, {}),
-    importPiSession: (path) => request(COMMANDS.importPiSession, { path }),
-  };
-});
+    const disconnect = Effect.fn("disconnect")(function* () {
+      yield* failAllPending(
+        deps,
+        new WireError({ code: "disconnected", message: "client disconnected" }),
+      );
+      yield* actor.send(ClientEvent.DisconnectRequested);
+      // Drain: the machine closes the socket (DisconnectRequested), then
+      // the actor stops after the queue is empty.
+      yield* actor.drain;
+    });
+
+    const on = <K extends ClientEventKind>(
+      kind: K,
+      listener: (payload: ClientEvents[K]) => void,
+    ) => {
+      let set = listeners.get(kind);
+      if (set === undefined) {
+        set = new Set();
+        listeners.set(kind, set);
+      }
+      set.add(listener as Listener);
+      return () => {
+        set.delete(listener as Listener);
+      };
+    };
+
+    const nextRequestId = () =>
+      Ref.updateAndGet(seqRef, (n) => n + 1).pipe(Effect.map((n) => `req_${n}`));
+
+    const request = Effect.fn("request")(function* <
+      A extends object,
+      K extends ResponsePayload["_tag"],
+      T,
+    >(spec: CommandSpec<A, K, T>, args: A, threadId?: string) {
+      const state = yield* actor.snapshot;
+      if (!ClientState.$is("Connected")(state)) {
+        return yield* Effect.fail(
+          new WireError({ code: "disconnected", message: "not connected" }),
+        );
+      }
+      const id = yield* nextRequestId();
+      const frame: WireCommand = {
+        _tag: "command",
+        id,
+        ...(threadId === undefined ? {} : { threadId }),
+        command: spec.schema.make(args),
+      };
+      const deferred = yield* Deferred.make<ResponsePayload, WireError>();
+      yield* Ref.update(pendingRef, (pending) => new Map(pending).set(id, deferred));
+      yield* actor.send(ClientEvent.CommandSent({ id, frame }));
+      const payload = yield* Effect.ensuring(
+        Deferred.await(deferred).pipe(
+          Effect.timeout(requestTimeoutMs),
+          Effect.mapError((error) =>
+            Cause.isTimeoutError(error)
+              ? new WireError({ code: "timeout", message: `command ${id} timed out` })
+              : error,
+          ),
+        ),
+        // The response handler already removed the entry on success; this
+        // covers timeout and interruption.
+        Ref.update(pendingRef, (pending) => {
+          const next = new Map(pending);
+          next.delete(id);
+          return next;
+        }),
+      );
+      const variant = yield* narrowResponse(payload, spec.tag);
+      return spec.extract(variant);
+    });
+
+    return {
+      role: options.role,
+      get isConnected() {
+        return actor.sync.matches("Connected");
+      },
+      connect,
+      start,
+      disconnect,
+      on,
+      listThreads: () => request(COMMANDS.listThreads, {}),
+      createThread: (name, options) => request(COMMANDS.createThread, { name, ...options }),
+      getThread: (threadId) => request(COMMANDS.getThread, { threadId }),
+      renameThread: (threadId, name) => request(COMMANDS.renameThread, { threadId, name }),
+      deleteThread: (threadId) => request(COMMANDS.deleteThread, { threadId }),
+      prompt: (threadId, text, images) => request(COMMANDS.prompt, { text, images }, threadId),
+      steer: (threadId, text) => request(COMMANDS.steer, { text }, threadId),
+      followUp: (threadId, text) => request(COMMANDS.followUp, { text }, threadId),
+      abort: (threadId) => request(COMMANDS.abort, {}, threadId),
+      setSteeringMode: (threadId, mode) => request(COMMANDS.setSteeringMode, { mode }, threadId),
+      setFollowUpMode: (threadId, mode) => request(COMMANDS.setFollowUpMode, { mode }, threadId),
+      compact: (threadId, customInstructions) =>
+        request(COMMANDS.compact, { customInstructions }, threadId),
+      setAutoCompaction: (threadId, enabled) =>
+        request(COMMANDS.setAutoCompaction, { enabled }, threadId),
+      getAvailableModels: (threadId) => request(COMMANDS.getAvailableModels, {}, threadId),
+      setModel: (threadId, provider, modelId) =>
+        request(COMMANDS.setModel, { provider, modelId }, threadId),
+      getAvailableThinkingLevels: (threadId) =>
+        request(COMMANDS.getAvailableThinkingLevels, {}, threadId),
+      setThinkingLevel: (threadId, level) =>
+        request(COMMANDS.setThinkingLevel, { level }, threadId),
+      getEntries: (threadId, sinceSeq) => request(COMMANDS.getEntries, { sinceSeq }, threadId),
+      branch: (threadId, entryId) => request(COMMANDS.branch, { entryId }, threadId),
+      getSessionStats: (threadId) => request(COMMANDS.getSessionStats, {}, threadId),
+      setSessionName: (threadId, name) => request(COMMANDS.setSessionName, { name }, threadId),
+      getState: (threadId) => request(COMMANDS.getState, {}, threadId),
+      listSkills: () => request(COMMANDS.listSkills, {}),
+      importSkill: (source, scope) => request(COMMANDS.importSkill, { source, scope }),
+      deleteSkill: (id) => request(COMMANDS.deleteSkill, { id }),
+      listPiSessions: () => request(COMMANDS.listPiSessions, {}),
+      importPiSession: (path) => request(COMMANDS.importPiSession, { path }),
+    };
+  }),
+}) {}

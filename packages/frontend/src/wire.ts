@@ -28,8 +28,8 @@ import {
   SessionWireEvent,
   ThreadInfo,
   WireClient,
+  WireClientShape,
   WireError,
-  makeWireClient,
 } from "@saku/wire";
 
 import { defaultConfig, resolveConfig } from "./config.ts";
@@ -43,7 +43,7 @@ export type BridgeEvent =
 
 export interface WireShape {
   /** The current client; always a settled, connectable value. */
-  readonly client: WireClient;
+  readonly client: WireClientShape;
   /** Re-resolve the bootstrap, swap the client when the endpoint changed, connect. */
   readonly connect: () => Effect.Effect<HelloOk, WireError, never>;
   /** Wire events from the current client, forwarded across client swaps. */
@@ -66,7 +66,7 @@ export const WireLive = Layer.effect(
     // connect() re-resolves and swaps it as the daemon's endpoint moves.
     const boot = yield* resolveConfig;
     const bootEndpoint = boot._tag === "offline" ? defaultConfig() : boot.endpoint;
-    let current = yield* makeWireClient({
+    let current = yield* WireClient.make({
       url: bootEndpoint.url,
       token: bootEndpoint.token,
       role: "cli",
@@ -77,7 +77,7 @@ export const WireLive = Layer.effect(
     // `attach` replaces the listener set; the layer is its only caller.
     const pubsub = yield* PubSub.unbounded<BridgeEvent>();
     let detach: () => void = () => {};
-    const attach = (client: WireClient) =>
+    const attach = (client: WireClientShape) =>
       Effect.sync(() => {
         detach();
         const offs = [
@@ -116,7 +116,7 @@ export const WireLive = Layer.effect(
         // The daemon restarted on a new port; the stale client's socket
         // can never come back. Dispose it and swap in a fresh one.
         yield* current.disconnect();
-        current = yield* makeWireClient({
+        current = yield* WireClient.make({
           url: endpoint.url,
           token: endpoint.token,
           role: "cli",

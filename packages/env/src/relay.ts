@@ -15,7 +15,7 @@
  */
 
 import { WebSocket } from "ws";
-import { Effect, Fiber, Ref, Result, Scope } from "effect";
+import { Context, Effect, Fiber, Ref, Result, Scope } from "effect";
 
 import { serializeFrame } from "@saku/wire";
 import { ENV_VERSION, RelayHello, type EnvHello } from "./protocol.ts";
@@ -97,40 +97,39 @@ const runRegistration = Effect.fn("runRegistration")(function* (
   return true;
 });
 
-/**
- * The reconnect loop: register, serve, wait out the backoff on drop, and
- * repeat until stopped. Runs inside the caller's scope (the entry process
- * keeps it in an `Effect.never`).
- */
-export const makeEnvRelayClient = Effect.fn("makeEnvRelayClient")(function* (
-  options: RelayClientOptions,
-) {
-  const log = options.log ?? (() => Effect.void);
-  const ctx: EnvConnectionContext = {
-    token: options.hello.token,
-    cwd: options.hello.cwd ?? process.cwd(),
-    fs: options.fs,
-    log,
-  };
-  const runningRef = yield* Ref.make(true);
-  const connectedRef = yield* Ref.make(false);
-  const loop = Effect.gen(function* () {
-    while (yield* Ref.get(runningRef)) {
-      const registered = yield* runRegistration(options, ctx);
-      yield* Ref.set(connectedRef, registered);
-      if (!(yield* Ref.get(runningRef))) return;
-      yield* log("relay disconnected; reconnecting");
-      yield* Effect.sleep(`${BACKOFF_MS} millis`);
-    }
-  });
-  // The loop fiber: forked scoped — the scope's exit interrupts it.
-  const fiber = yield* Effect.forkScoped(loop);
-  yield* Effect.addFinalizer(() => Fiber.interrupt(fiber));
-  return {
-    connected: () => Ref.get(connectedRef),
-    stop: Effect.fn("stop")(function* () {
-      yield* Ref.set(runningRef, false);
-      yield* Fiber.interrupt(fiber);
+/** The reconnect loop: `EnvRelayClient.make(options)` starts it in the caller's scope. */
+export class EnvRelayClient extends Context.Service<EnvRelayClient, RelayClientShape>()(
+  "EnvRelayClient",
+  {
+    make: Effect.fn("EnvRelayClient.make")(function* (options: RelayClientOptions) {
+      const log = options.log ?? (() => Effect.void);
+      const ctx: EnvConnectionContext = {
+        token: options.hello.token,
+        cwd: options.hello.cwd ?? process.cwd(),
+        fs: options.fs,
+        log,
+      };
+      const runningRef = yield* Ref.make(true);
+      const connectedRef = yield* Ref.make(false);
+      const loop = Effect.gen(function* () {
+        while (yield* Ref.get(runningRef)) {
+          const registered = yield* runRegistration(options, ctx);
+          yield* Ref.set(connectedRef, registered);
+          if (!(yield* Ref.get(runningRef))) return;
+          yield* log("relay disconnected; reconnecting");
+          yield* Effect.sleep(`${BACKOFF_MS} millis`);
+        }
+      });
+      // The loop fiber: forked scoped — the scope's exit interrupts it.
+      const fiber = yield* Effect.forkScoped(loop);
+      yield* Effect.addFinalizer(() => Fiber.interrupt(fiber));
+      return {
+        connected: () => Ref.get(connectedRef),
+        stop: Effect.fn("stop")(function* () {
+          yield* Ref.set(runningRef, false);
+          yield* Fiber.interrupt(fiber);
+        }),
+      };
     }),
-  };
-});
+  },
+) {}

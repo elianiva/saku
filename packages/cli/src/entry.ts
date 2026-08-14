@@ -13,12 +13,12 @@
 import { Effect, Logger, Match, Option, Result } from "effect";
 
 import {
-  makeWireClient,
+  WireClient,
   WireError,
   shortThreadId,
   resolveThread,
   type ThreadMode,
-  type WireClient,
+  type WireClientShape,
 } from "@saku/wire";
 
 import { CliError } from "./cli-error.ts";
@@ -52,7 +52,7 @@ const CliLogger = Logger.withConsoleLog(
 const connect = Effect.gen(function* () {
   const lifecycle = yield* workerLifecycle();
   const connection = yield* ensure(lifecycle);
-  const client = yield* makeWireClient({
+  const client = yield* WireClient.make({
     url: connection.url,
     token: connection.token,
     role: "cli",
@@ -72,10 +72,7 @@ const fail = (error: unknown) => {
 };
 
 /** Give connection-refused errors a steer, keep everything else as-is. */
-const run = <T>(
-  effect: Effect.Effect<T, WireError, never>,
-  label: string,
-) =>
+const run = <T>(effect: Effect.Effect<T, WireError, never>, label: string) =>
   effect.pipe(
     Effect.catchIf(
       (error): error is WireError => error instanceof WireError && error.code === "refused",

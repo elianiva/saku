@@ -7,7 +7,7 @@
  * additive later.
  */
 
-import { Effect, Ref } from "effect";
+import { Context, Effect, Ref } from "effect";
 import type { SkillInfo, SkillScope } from "@saku/wire";
 
 import { HubError } from "./hub-error.ts";
@@ -26,11 +26,9 @@ export interface SkillsStoreShape {
 
 const skillKey = (id: string) => `skills/${id}`;
 
-const encodeSkill = (skill: SkillInfo) =>
-  new TextEncoder().encode(`${JSON.stringify(skill)}\n`);
+const encodeSkill = (skill: SkillInfo) => new TextEncoder().encode(`${JSON.stringify(skill)}\n`);
 
-const decodeSkill = (value: Uint8Array) =>
-  JSON.parse(new TextDecoder().decode(value)) as SkillInfo;
+const decodeSkill = (value: Uint8Array) => JSON.parse(new TextDecoder().decode(value)) as SkillInfo;
 
 /** The default name for an imported repo: `owner/repo` → `repo`. */
 export const skillNameFromSource = (source: string) =>
@@ -39,50 +37,53 @@ export const skillNameFromSource = (source: string) =>
     .pop()
     ?.replace(/\.git$/u, "") ?? "skill";
 
-export const makeSkillsStore = Effect.fn("makeSkillsStore")(function* () {
-  const kv = yield* KvStore;
-  const entries = yield* kv.list({ prefix: "skills/" });
-  const loaded = yield* Effect.forEach(entries, (entry) =>
-    Effect.try(() => decodeSkill(entry.value)).pipe(
-      Effect.catch((error) =>
-        // Corrupt record: skip (the key stays on disk for inspection).
-        Effect.logWarning(`[hub] skipping corrupt skill record: ${String(error)}`).pipe(
-          Effect.as(undefined),
+/** The hub's skills store (ADR 0007): `SkillsStore.make` builds one over the `KvStore`. */
+export class SkillsStore extends Context.Service<SkillsStore, SkillsStoreShape>()("SkillsStore", {
+  make: Effect.fn("SkillsStore.make")(function* () {
+    const kv = yield* KvStore;
+    const entries = yield* kv.list({ prefix: "skills/" });
+    const loaded = yield* Effect.forEach(entries, (entry) =>
+      Effect.try(() => decodeSkill(entry.value)).pipe(
+        Effect.catch((error) =>
+          // Corrupt record: skip (the key stays on disk for inspection).
+          Effect.logWarning(`[hub] skipping corrupt skill record: ${String(error)}`).pipe(
+            Effect.as(undefined),
+          ),
         ),
       ),
-    ),
-  ).pipe(Effect.map((skills) => skills.filter((skill) => skill !== undefined)));
-  const skillsRef = yield* Ref.make<ReadonlyMap<string, SkillInfo>>(
-    new Map(loaded.map((skill) => [skill.id, skill])),
-  );
+    ).pipe(Effect.map((skills) => skills.filter((skill) => skill !== undefined)));
+    const skillsRef = yield* Ref.make<ReadonlyMap<string, SkillInfo>>(
+      new Map(loaded.map((skill) => [skill.id, skill])),
+    );
 
-  return {
-    list: () =>
-      Ref.get(skillsRef).pipe(
-        Effect.map((skills) => [...skills.values()].sort((a, b) => a.name.localeCompare(b.name))),
-      ),
-    import: Effect.fn("import")(function* (input) {
-      const skill: SkillInfo = {
-        id: crypto.randomUUID().replaceAll("-", ""),
-        name: skillNameFromSource(input.source),
-        scope: input.scope ?? "personal",
-        source: input.source,
-        version: null,
-      };
-      yield* kv.put(skillKey(skill.id), encodeSkill(skill));
-      yield* Ref.update(skillsRef, (skills) => new Map(skills).set(skill.id, skill));
-      return skill;
-    }),
-    delete: Effect.fn("delete")(function* (id) {
-      const skills = yield* Ref.get(skillsRef);
-      if (!skills.has(id)) return false;
-      yield* Ref.update(skillsRef, (skills) => {
-        const next = new Map(skills);
-        next.delete(id);
-        return next;
-      });
-      yield* kv.delete(skillKey(id));
-      return true;
-    }),
-  };
-});
+    return {
+      list: () =>
+        Ref.get(skillsRef).pipe(
+          Effect.map((skills) => [...skills.values()].sort((a, b) => a.name.localeCompare(b.name))),
+        ),
+      import: Effect.fn("import")(function* (input) {
+        const skill: SkillInfo = {
+          id: crypto.randomUUID().replaceAll("-", ""),
+          name: skillNameFromSource(input.source),
+          scope: input.scope ?? "personal",
+          source: input.source,
+          version: null,
+        };
+        yield* kv.put(skillKey(skill.id), encodeSkill(skill));
+        yield* Ref.update(skillsRef, (skills) => new Map(skills).set(skill.id, skill));
+        return skill;
+      }),
+      delete: Effect.fn("delete")(function* (id) {
+        const skills = yield* Ref.get(skillsRef);
+        if (!skills.has(id)) return false;
+        yield* Ref.update(skillsRef, (skills) => {
+          const next = new Map(skills);
+          next.delete(id);
+          return next;
+        });
+        yield* kv.delete(skillKey(id));
+        return true;
+      }),
+    };
+  }),
+}) {}

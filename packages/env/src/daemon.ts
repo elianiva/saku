@@ -12,9 +12,9 @@
  *
  * The same connection handler serves two transports:
  *
- * - the local WebSocket server (`makeEnvDaemon`) — behind the Box host's
+ * - the local WebSocket server (`EnvDaemon.make`) — behind the Box host's
  *   `host --private` URL, or the loopback for direct connections
- * - the outbound relay socket (`makeEnvRelayClient` in relay.ts) — the
+ * - the outbound relay socket (`EnvRelayClient.make` in relay.ts) — the
  *   user's machine has no open ports, so the daemon dials the hub and the
  *   hub pipes a worker's connection onto this socket
  *
@@ -24,7 +24,7 @@
  */
 
 import { WebSocketServer, type WebSocket } from "ws";
-import { Effect, FileSystem, Match, Result, Schema, Scope } from "effect";
+import { Context, Effect, FileSystem, Match, Result, Schema, Scope } from "effect";
 import type {
   ExecutionEnv,
   ExecutionError,
@@ -349,43 +349,45 @@ export const handleEnvConnection = Effect.fn("handleEnvConnection")(function* (
   for (const abort of aborters.values()) abort();
 });
 
-/** Build the daemon: listen, then serve connections until close. */
-export const makeEnvDaemon = Effect.fn("makeEnvDaemon")(function* (options: EnvDaemonOptions) {
-  const { token, fs } = options;
-  const log = options.log ?? (() => Effect.void);
-  const ctx: EnvConnectionContext = {
-    token,
-    cwd: options.cwd ?? process.cwd(),
-    fs,
-    log,
-  };
-  const server = yield* Effect.callback<WebSocketServer, Error>((resume) => {
-    const server = new WebSocketServer({
-      host: options.host ?? "127.0.0.1",
-      port: options.port ?? 0,
+/** The env daemon: `EnvDaemon.make(options)` builds the token-gated server. */
+export class EnvDaemon extends Context.Service<EnvDaemon, EnvDaemonShape>()("EnvDaemon", {
+  make: Effect.fn("EnvDaemon.make")(function* (options: EnvDaemonOptions) {
+    const { token, fs } = options;
+    const log = options.log ?? (() => Effect.void);
+    const ctx: EnvConnectionContext = {
+      token,
+      cwd: options.cwd ?? process.cwd(),
+      fs,
+      log,
+    };
+    const server = yield* Effect.callback<WebSocketServer, Error>((resume) => {
+      const server = new WebSocketServer({
+        host: options.host ?? "127.0.0.1",
+        port: options.port ?? 0,
+      });
+      server.on("connection", (socket) => {
+        void Effect.runFork(Effect.scoped(handleEnvConnection(socket, ctx)));
+      });
+      server.on("error", (error) => {
+        // The socket callback is outside the Effect runtime: fork the log.
+        void Effect.runFork(log(`server error: ${error.message}`));
+        resume(Effect.fail(error));
+      });
+      server.on("listening", () => resume(Effect.succeed(server)));
+      return Effect.sync(() => {
+        server.close();
+      });
     });
-    server.on("connection", (socket) => {
-      void Effect.runFork(Effect.scoped(handleEnvConnection(socket, ctx)));
-    });
-    server.on("error", (error) => {
-      // The socket callback is outside the Effect runtime: fork the log.
-      void Effect.runFork(log(`server error: ${error.message}`));
-      resume(Effect.fail(error));
-    });
-    server.on("listening", () => resume(Effect.succeed(server)));
-    return Effect.sync(() => {
-      server.close();
-    });
-  });
-  const address = server.address();
-  const url =
-    address !== null && typeof address !== "string"
-      ? `ws://${address.address}:${address.port}`
-      : "";
-  const close = () =>
-    Effect.callback<void>((resume) => {
-      server.close(() => resume(Effect.void));
-      return Effect.void;
-    });
-  return { url, close };
-});
+    const address = server.address();
+    const url =
+      address !== null && typeof address !== "string"
+        ? `ws://${address.address}:${address.port}`
+        : "";
+    const close = () =>
+      Effect.callback<void>((resume) => {
+        server.close(() => resume(Effect.void));
+        return Effect.void;
+      });
+    return { url, close };
+  }),
+}) {}

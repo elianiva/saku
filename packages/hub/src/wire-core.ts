@@ -11,7 +11,7 @@
  * the hub's own thread/skills/session handlers.
  */
 
-import { Effect, Match, Scope } from "effect";
+import { Context, Effect, Match, Scope } from "effect";
 
 import {
   CreateThreadResponse,
@@ -30,9 +30,9 @@ import {
   type ThreadCommand,
   type WireEvent,
 } from "@saku/wire";
-import { makeWireServer } from "@saku/wire/server";
+import { WireServer } from "@saku/wire/server";
 
-import { HubError, makeHubError } from "./hub-error.ts";
+import { HubError } from "./hub-error.ts";
 import type { HubEvent, HubShape } from "./hub.ts";
 import type { SocketLike } from "./socket.ts";
 
@@ -90,46 +90,55 @@ const runHubCommand =
         // serves these (the mirror of the daemon's skills_not_served).
         list_pi_sessions: () =>
           Effect.fail(
-            makeHubError("pi_sessions", "pi sessions are served by the local daemon, not the hub"),
+            new HubError({
+              kind: "pi_sessions",
+              message: "pi sessions are served by the local daemon, not the hub",
+            }),
           ),
         import_pi_session: () =>
           Effect.fail(
-            makeHubError("pi_sessions", "pi sessions are served by the local daemon, not the hub"),
+            new HubError({
+              kind: "pi_sessions",
+              message: "pi sessions are served by the local daemon, not the hub",
+            }),
           ),
       }),
     );
 
-export const makeWireCore = Effect.fn("makeWireCore")(function* (options: WireCoreOptions) {
-  const { hub, token } = options;
-  const pid = options.pid ?? (typeof process !== "undefined" ? process.pid : 0);
-  const core = yield* makeWireServer({
-    token: () => Effect.succeed(token),
-    pid,
-    log: (message) => Effect.logWarning(`[saku-hub] ${message}`),
-    handlers: {
-      runHubCommand: runHubCommand(hub),
-      runSessionCommand: (threadId, command) => hub.runSessionCommand(threadId, command),
-    },
-  });
+/** The hub's wire connection core: a thin adapter over `WireServer.make`. */
+export class WireCore extends Context.Service<WireCore, WireCoreShape>()("WireCore", {
+  make: Effect.fn("WireCore.make")(function* (options: WireCoreOptions) {
+    const { hub, token } = options;
+    const pid = options.pid ?? (typeof process !== "undefined" ? process.pid : 0);
+    const core = yield* WireServer.make({
+      token: () => Effect.succeed(token),
+      pid,
+      log: (message) => Effect.logWarning(`[saku-hub] ${message}`),
+      handlers: {
+        runHubCommand: runHubCommand(hub),
+        runSessionCommand: (threadId, command) => hub.runSessionCommand(threadId, command),
+      },
+    });
 
-  /** The hub's events → wire frames (the fan-out). */
-  const onHubEvent = (event: HubEvent) => {
-    const frame: WireEvent =
-      event.type === "thread_changed"
-        ? ThreadChanged.make({ thread: event.thread })
-        : EventFrame.make({ threadId: event.threadId, event: event.event });
-    void Effect.runFork(core.broadcast(frame));
-  };
+    /** The hub's events → wire frames (the fan-out). */
+    const onHubEvent = (event: HubEvent) => {
+      const frame: WireEvent =
+        event.type === "thread_changed"
+          ? ThreadChanged.make({ thread: event.thread })
+          : EventFrame.make({ threadId: event.threadId, event: event.event });
+      void Effect.runFork(core.broadcast(frame));
+    };
 
-  // The hub subscription lives for the core's lifetime (the node server
-  // closes it on teardown; a DO keeps it for the instance's lifetime).
-  const unsubscribe = hub.subscribe(onHubEvent);
+    // The hub subscription lives for the core's lifetime (the node server
+    // closes it on teardown; a DO keeps it for the instance's lifetime).
+    const unsubscribe = hub.subscribe(onHubEvent);
 
-  return {
-    runConnection: (socket) => core.runConnection(socket),
-    close: Effect.fn(function* () {
-      unsubscribe();
-      yield* core.close();
-    }),
-  } satisfies WireCoreShape;
-});
+    return {
+      runConnection: (socket) => core.runConnection(socket),
+      close: Effect.fn(function* () {
+        unsubscribe();
+        yield* core.close();
+      }),
+    } satisfies WireCoreShape;
+  }),
+}) {}

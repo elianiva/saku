@@ -1,5 +1,5 @@
 /**
- * The wire's server fixture (hub-fixture.ts): the shipped `makeWireServer`
+ * The wire's server fixture (hub-fixture.ts): the shipped `WireServer.make`
  * core — the same implementation the hub and the local daemon run — served
  * over a real WebSocket server via `listenWs`, with scripted in-memory
  * handlers standing in for the hub's registry, sessions, and skills store.
@@ -55,7 +55,7 @@ import {
   type ThreadMode,
   type PiSessionCommand,
 } from "../src/index.ts";
-import { makeWireServer, listenWs, wsUrlOf } from "../src/server-core.ts";
+import { WireServer, listenWs, wsUrlOf } from "../src/server-core.ts";
 
 /** The token the fixture accepts (clients use the same constant). */
 export const TEST_TOKEN = "test-secret";
@@ -114,7 +114,7 @@ export const startHubFixture = Effect.fn("startHubFixture")(function* () {
 
   const record = (tag: string) => Effect.sync(() => calls.push(tag));
 
-  const core = yield* makeWireServer({
+  const core = yield* WireServer.make({
     token: () => Effect.succeed(TEST_TOKEN),
     handlers: {
       runHubCommand: (command) =>
@@ -182,9 +182,7 @@ export const startHubFixture = Effect.fn("startHubFixture")(function* () {
     yield* core.broadcast(EventFrame.make({ threadId: thread.id, event: { type: "settled" } }));
   });
 
-  const runHubCommand = (
-    command: ThreadCommand | SkillCommand | PiSessionCommand,
-  ) =>
+  const runHubCommand = (command: ThreadCommand | SkillCommand | PiSessionCommand) =>
     Match.value(command).pipe(
       Match.withReturnType<Effect.Effect<ResponsePayload, FixtureError, never>>(),
       Match.tagsExhaustive({

@@ -7,7 +7,7 @@
  *
  * Two suites: the hub-level transitions (below) over real timers with a
  * short window (60 ms), and the policy's contract directly (the second
- * describe) — `makeIdleStop` driven with scripted fakes and a fake
+ * describe) — `IdleStop.make` driven with scripted fakes and a fake
  * controller, covering the arm/disarm/reset/fire transitions without
  * clock flakiness.
  */
@@ -18,17 +18,17 @@ import { Effect, Option, Schema } from "effect";
 import type { EnvHandle } from "@saku/env";
 import type { ThreadEnvState, ThreadInfo, ThreadMode, ThreadState } from "@saku/wire";
 
-import { makeHubError } from "../src/hub-error.ts";
+import { HubError } from "../src/hub-error.ts";
 
 import {
-  makeHub,
-  makeHubRegistry,
-  makeIdleStop,
-  makeSkillsStore,
+  Hub,
+  HubRegistry,
+  IdleStop,
+  SkillsStore,
   type HubEvent,
   type HubRecord,
   type HubShape,
-  type IdleStop,
+  type IdleStopShape,
   type IdleStopController,
 } from "../src/index.ts";
 import { scriptedProvisioner, scriptedWorker } from "./mock-worker.ts";
@@ -41,8 +41,7 @@ class TestError extends Schema.TaggedError<TestError>()("TestError", {
   message: Schema.String,
 }) {}
 
-const run = <A, E extends Error>(effect: Effect.Effect<A, E, never>) =>
-  Effect.runPromise(effect);
+const run = <A, E extends Error>(effect: Effect.Effect<A, E, never>) => Effect.runPromise(effect);
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -65,11 +64,11 @@ interface World {
 const makeWorld = async () => {
   const world = await Effect.runPromise(
     Effect.gen(function* () {
-      const registry = yield* makeHubRegistry().pipe(Effect.provide(KvStore.memory()));
-      const skills = yield* makeSkillsStore().pipe(Effect.provide(KvStore.memory()));
+      const registry = yield* HubRegistry.make().pipe(Effect.provide(KvStore.memory()));
+      const skills = yield* SkillsStore.make().pipe(Effect.provide(KvStore.memory()));
       const worker = scriptedWorker();
       const provisioner = scriptedProvisioner();
-      const hub = yield* makeHub({
+      const hub = yield* Hub.make({
         registry,
         skills,
         workerRef: worker.ref,
@@ -89,7 +88,9 @@ const makeWorld = async () => {
 const scriptPrompt = (world: World, _text: string) => {
   world.worker.onCommand((threadId, command) => {
     if (command._tag !== "prompt") {
-      return Effect.fail(makeHubError("command", `unscripted command: ${command._tag}`));
+      return Effect.fail(
+        new HubError({ kind: "command", message: `unscripted command: ${command._tag}` }),
+      );
     }
     world.worker.report(threadId, { state: "working" });
     world.worker.emit(threadId, { type: "settled" }, 1);
@@ -161,17 +162,17 @@ describe("idle-stop", () => {
 });
 
 /**
- * The policy's contract, driven directly (no hub): `makeIdleStop` with
+ * The policy's contract, driven directly (no hub): `IdleStop.make` with
  * scripted registry/provisioner/workerRef fakes and a fake controller
  * (the thread DO's durable-alarm seam) — the arm gates, the reset, and
  * the fire path, without the hub's wiring in between.
  */
-describe("makeIdleStop — the policy directly", () => {
+describe("IdleStop.make — the policy directly", () => {
   const THREAD = "thread_policy";
   const HANDLE: EnvHandle = { url: "ws://127.0.0.1:1", token: "env-token", boxId: "bx_policy" };
 
   interface PolicyWorld {
-    readonly idleStop: IdleStop;
+    readonly idleStop: IdleStopShape;
     readonly released: Array<{ threadId: string; handle: EnvHandle | null }>;
     readonly handles: Array<{ threadId: string; handle: EnvHandle | null }>;
     readonly envs: Array<{ threadId: string; env: ThreadEnvState }>;
@@ -224,7 +225,7 @@ describe("makeIdleStop — the policy directly", () => {
         }),
     };
     return run(
-      makeIdleStop({
+      IdleStop.make({
         registry,
         provisioner: {
           release: (threadId, handle) =>
@@ -241,7 +242,9 @@ describe("makeIdleStop — the policy directly", () => {
         infoOf: Effect.fn("infoOf")(function* (threadId) {
           const info = yield* registry.toInfo(threadId);
           if (Option.isNone(info)) {
-            return yield* Effect.fail(makeHubError("registry", `unknown thread: ${threadId}`));
+            return yield* Effect.fail(
+              new HubError({ kind: "registry", message: `unknown thread: ${threadId}` }),
+            );
           }
           return info.value;
         }),

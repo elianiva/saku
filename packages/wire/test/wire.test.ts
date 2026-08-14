@@ -1,6 +1,6 @@
 /**
  * The wire's integration tests: the whole protocol proven end to end
- * against the shipped server implementation — `makeWireServer` (the same
+ * against the shipped server implementation — `WireServer.make` (the same
  * core the hub and the local daemon run) over a real WebSocket server, via
  * a scripted in-memory fixture.
  *
@@ -19,11 +19,11 @@ import {
   Hello,
   WIRE_VERSION,
   decodeFrame,
-  makeWireClient,
+  WireClient,
   parseFrame,
   serializeFrame,
   WireError,
-  type WireClient,
+  type WireClientShape,
   type WorkerClientOptions,
 } from "../src/index.ts";
 import { MOCK_MODEL, startHubFixture, TEST_TOKEN, type HubFixture } from "./hub-fixture.ts";
@@ -52,9 +52,9 @@ afterEach(async () => {
 });
 
 const connect = (options?: Partial<WorkerClientOptions>) =>
-  run(makeWireClient({ url: hub.url, token: TEST_TOKEN, role: "cli", ...options }));
+  run(WireClient.make({ url: hub.url, token: TEST_TOKEN, role: "cli", ...options }));
 
-const newThread = async (client: WireClient, name = `thread ${++seq}`) => {
+const newThread = async (client: WireClientShape, name = `thread ${++seq}`) => {
   const thread = await run(client.createThread(name, { cwd: "/tmp/work" }));
   return thread.id;
 };
@@ -82,8 +82,7 @@ const isTaggedFrame = (frame: unknown): frame is { readonly _tag: string } =>
   typeof frame === "object" && frame !== null && "_tag" in frame;
 
 /** The `_tag` of a decoded frame, for order-insensitive assertions. */
-const tagOf = (frame: unknown) =>
-  isTaggedFrame(frame) ? frame._tag : undefined;
+const tagOf = (frame: unknown) => (isTaggedFrame(frame) ? frame._tag : undefined);
 
 describe("handshake", () => {
   it("completes and reports the wire version", async () => {

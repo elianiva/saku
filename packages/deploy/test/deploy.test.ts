@@ -31,8 +31,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { makeEnvDaemon, makeEnvRelayClient, nodeSocket, RemoteEnv } from "@saku/env";
-import { makeWireClient, type WireClient } from "@saku/wire";
+import { EnvDaemon, EnvRelayClient, nodeSocket, RemoteEnv } from "@saku/env";
+import { WireClient, type WireClientShape } from "@saku/wire";
 
 import { makeStack } from "../alchemy.run.ts";
 
@@ -72,7 +72,7 @@ const daemonFs = await Effect.runPromise(
 );
 const daemonWorkdir = await mkdtemp(join(tmpdir(), "saku-deploy-"));
 const daemon = await Effect.runPromise(
-  makeEnvDaemon({ token: ENV_TOKEN, fs: daemonFs, cwd: daemonWorkdir }).pipe(
+  EnvDaemon.make({ token: ENV_TOKEN, fs: daemonFs, cwd: daemonWorkdir }).pipe(
     Effect.provideService(Scope.Scope, daemonScope),
   ),
 );
@@ -113,7 +113,7 @@ const consoleFor = Effect.fn("consoleFor")(
     if (url === undefined) {
       return yield* Effect.die(new DeployTestError({ message: "stack deployed without a url" }));
     }
-    const client = yield* makeWireClient({ url: `${url}/ws`, token: TOKEN, role: "cli" });
+    const client = yield* WireClient.make({ url: `${url}/ws`, token: TOKEN, role: "cli" });
     yield* client.connect();
     return client;
   },
@@ -143,7 +143,7 @@ const waitFor = <A>(
   return loop();
 };
 
-const entriesOf = Effect.fn("entriesOf")(function* (client: WireClient, threadId: string) {
+const entriesOf = Effect.fn("entriesOf")(function* (client: WireClientShape, threadId: string) {
   const result = yield* client.getEntries(threadId, 0).pipe(Effect.orDie);
   return [...result.entries];
 });
@@ -170,7 +170,7 @@ const entryText = (entry: unknown) => {
 };
 
 /** The thread_changed events seen so far (the fan-out proves the hub DO). */
-const makeThreadWatcher = (client: WireClient) => {
+const makeThreadWatcher = (client: WireClientShape) => {
   const events: Array<{ state: string; env: string }> = [];
   const off = client.on("thread_changed", (payload) => {
     const thread = payload as unknown as { state?: string; env?: string };
@@ -267,7 +267,7 @@ t(
     const { url } = yield* stack;
     const scope = yield* Scope.make();
     const fs = yield* FileSystem.FileSystem.pipe(Effect.provide(NodeFileSystem.layer));
-    const relay = yield* makeEnvRelayClient({
+    const relay = yield* EnvRelayClient.make({
       url: `${url}/relay`,
       envId: "relay-test-env",
       token: TOKEN,

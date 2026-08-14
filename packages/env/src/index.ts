@@ -50,7 +50,7 @@ export type {
 } from "./protocol.ts";
 export { LocalEnv } from "./local-env.ts";
 export {
-  makeEnvDaemon,
+  EnvDaemon,
   handleEnvConnection,
   type EnvDaemonOptions,
   type EnvDaemonShape,
@@ -64,5 +64,5 @@ export {
   type SocketLike,
   type WorkerdWebSocketLike,
 } from "./socket.ts";
-export { makeEnvRelayClient, type RelayClientOptions, type RelayClientShape } from "./relay.ts";
+export { EnvRelayClient, type RelayClientOptions, type RelayClientShape } from "./relay.ts";
 export * from "./paths.ts";

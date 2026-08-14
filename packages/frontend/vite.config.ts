@@ -19,7 +19,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { Effect } from "effect";
-import { makeWireClient } from "@saku/wire";
+import { WireClient } from "@saku/wire";
 import { foldkit } from "@foldkit/vite-plugin";
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig, type Plugin } from "vite";
@@ -37,7 +37,7 @@ const readMaybe = (path: string) =>
 const probeDaemon = (url: string, token: string) =>
   Effect.runPromise(
     Effect.gen(function* () {
-      const client = yield* makeWireClient({
+      const client = yield* WireClient.make({
         url,
         token,
         role: "cli",

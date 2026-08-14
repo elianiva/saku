@@ -21,8 +21,8 @@ import { NodeFileSystem } from "@effect/platform-node";
 import { Effect, FileSystem } from "effect";
 
 import { getEnvUrlPath } from "./paths.ts";
-import { makeEnvDaemon } from "./daemon.ts";
-import { makeEnvRelayClient } from "./relay.ts";
+import { EnvDaemon } from "./daemon.ts";
+import { EnvRelayClient } from "./relay.ts";
 
 /** Minimal flag parsing: `--name value` pairs; no deps, no surprises. */
 const flags = (args: readonly string[]) => {
@@ -43,10 +43,9 @@ const program = Effect.gen(function* () {
   const cwd = args.get("--cwd") ?? process.cwd();
   const port = Number(args.get("--port") ?? "0");
   const fs = yield* FileSystem.FileSystem;
-  const log = (message: string) =>
-    Effect.logInfo(`[saku-env] ${message}`);
+  const log = (message: string) => Effect.logInfo(`[saku-env] ${message}`);
 
-  const daemon = yield* makeEnvDaemon({
+  const daemon = yield* EnvDaemon.make({
     token,
     cwd,
     fs,
@@ -75,7 +74,7 @@ const program = Effect.gen(function* () {
     if (envId === undefined || hubToken === undefined) {
       yield* log("--hub requires --env-id and --hub-token; skipping relay registration");
     } else {
-      yield* makeEnvRelayClient({
+      yield* EnvRelayClient.make({
         url: hub,
         envId,
         token: hubToken,

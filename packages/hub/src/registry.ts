@@ -18,7 +18,7 @@
  * Consoles only ever see the registry through the wire (`toInfo`).
  */
 
-import { Effect, Option, Ref } from "effect";
+import { Context, Effect, Option, Ref } from "effect";
 import type { EnvHandle } from "@saku/env";
 import type { ThreadEnvState, ThreadInfo, ThreadMode, ThreadState } from "@saku/wire";
 
@@ -80,8 +80,7 @@ export interface HubRegistryShape {
 
 const recordKey = (threadId: string) => `threads/${threadId}/record`;
 
-const encodeRecord = (record: HubRecord) =>
-  new TextEncoder().encode(`${JSON.stringify(record)}\n`);
+const encodeRecord = (record: HubRecord) => new TextEncoder().encode(`${JSON.stringify(record)}\n`);
 
 const decodeRecord = (value: Uint8Array) =>
   JSON.parse(new TextDecoder().decode(value)) as HubRecord;
@@ -105,116 +104,117 @@ const load = Effect.fn("load")(function* (kv: KvStoreShape) {
   ).pipe(Effect.map((records) => records.filter((record) => record !== undefined)));
 });
 
-/**
- * The live registry: loaded from the store when built, persisted on every
+/** The live registry: loaded from the store when built, persisted on every
  * mutation. Requires the `KvStore` service — the DO adapter and the tests
- * provide the backend layer at the boundary.
- */
-export const makeHubRegistry = Effect.fn("makeHubRegistry")(function* (): Effect.fn.Return<
-  HubRegistryShape,
-  HubError,
-  KvStore
-> {
-  const kv = yield* KvStore;
-  const loaded = yield* load(kv);
-  const recordsRef = yield* Ref.make<ReadonlyMap<string, HubRecord>>(
-    new Map(loaded.map((record) => [record.id, record])),
-  );
-  const statesRef = yield* Ref.make<ReadonlyMap<string, ThreadState>>(
-    new Map(loaded.map((record) => [record.id, "idle" as ThreadState])),
-  );
-  const tailSeqsRef = yield* Ref.make<ReadonlyMap<string, number>>(new Map());
+ * provide the backend layer at the boundary. */
+export class HubRegistry extends Context.Service<HubRegistry, HubRegistryShape>()("HubRegistry", {
+  make: Effect.fn("HubRegistry.make")(function* (): Effect.fn.Return<
+    HubRegistryShape,
+    HubError,
+    KvStore
+  > {
+    const kv = yield* KvStore;
+    const loaded = yield* load(kv);
+    const recordsRef = yield* Ref.make<ReadonlyMap<string, HubRecord>>(
+      new Map(loaded.map((record) => [record.id, record])),
+    );
+    const statesRef = yield* Ref.make<ReadonlyMap<string, ThreadState>>(
+      new Map(loaded.map((record) => [record.id, "idle" as ThreadState])),
+    );
+    const tailSeqsRef = yield* Ref.make<ReadonlyMap<string, number>>(new Map());
 
-  const patch = Effect.fn("patch")(function* (
-    threadId: string,
-    fn: (record: HubRecord) => HubRecord,
-  ) {
-    const records = yield* Ref.get(recordsRef);
-    const record = records.get(threadId);
-    if (record === undefined) return Option.none();
-    const next = fn(record);
-    yield* persist(kv, next);
-    yield* Ref.update(recordsRef, (records) => new Map(records).set(threadId, next));
-    return Option.some(next);
-  });
-
-  return {
-    list: () =>
-      Ref.get(recordsRef).pipe(
-        Effect.map((records) => [...records.values()].sort((a, b) => a.createdAt - b.createdAt)),
-      ),
-    get: (threadId) =>
-      Ref.get(recordsRef).pipe(
-        Effect.map((records) => Option.fromNullishOr(records.get(threadId))),
-      ),
-    create: Effect.fn("create")(function* (input) {
-      const record: HubRecord = {
-        id: crypto.randomUUID().replaceAll("-", ""),
-        name: input.name,
-        // Sandbox threads have no local directory (ADR 0003); local
-        // threads default to none until the env daemon reports one.
-        cwd: input.mode === "sandbox" ? null : (input.cwd ?? null),
-        mode: input.mode ?? "local",
-        autoName: input.autoName === true,
-        createdAt: Date.now(),
-        sessionId: null,
-        // A Box is not provisioned until the first prompt (lazy, ADR 0003).
-        env: input.mode === "sandbox" ? "stopped" : "ready",
-        envHandle: null,
-      };
-      yield* persist(kv, record);
-      yield* Ref.update(recordsRef, (records) => new Map(records).set(record.id, record));
-      yield* Ref.update(statesRef, (states) => new Map(states).set(record.id, "idle"));
-      yield* Ref.update(tailSeqsRef, (tailSeqs) => new Map(tailSeqs).set(record.id, 0));
-      return record;
-    }),
-    update: (threadId, patch_) => patch(threadId, (record) => ({ ...record, ...patch_ })),
-    setEnv: (threadId, env) => patch(threadId, (record) => ({ ...record, env })),
-    setEnvHandle: (threadId, envHandle) => patch(threadId, (record) => ({ ...record, envHandle })),
-    setState: (threadId, state) =>
-      Ref.update(statesRef, (states) => new Map(states).set(threadId, state)),
-    setTailSeq: (threadId, tailSeq) =>
-      Ref.update(tailSeqsRef, (tailSeqs) => new Map(tailSeqs).set(threadId, tailSeq)),
-    delete: Effect.fn("delete")(function* (threadId) {
+    const patch = Effect.fn("patch")(function* (
+      threadId: string,
+      fn: (record: HubRecord) => HubRecord,
+    ) {
       const records = yield* Ref.get(recordsRef);
-      if (!records.has(threadId)) return false;
-      yield* Ref.update(recordsRef, (records) => {
-        const next = new Map(records);
-        next.delete(threadId);
-        return next;
-      });
-      yield* Ref.update(statesRef, (states) => {
-        const next = new Map(states);
-        next.delete(threadId);
-        return next;
-      });
-      yield* Ref.update(tailSeqsRef, (tailSeqs) => {
-        const next = new Map(tailSeqs);
-        next.delete(threadId);
-        return next;
-      });
-      yield* kv.delete(recordKey(threadId));
-      return true;
-    }),
-    toInfo: Effect.fn("toInfo")(function* (threadId) {
-      const record = yield* Ref.get(recordsRef).pipe(
-        Effect.map((records) => records.get(threadId)),
-      );
+      const record = records.get(threadId);
       if (record === undefined) return Option.none();
-      const [state, tailSeq] = yield* Effect.all([
-        Ref.get(statesRef).pipe(Effect.map((states) => states.get(threadId) ?? "idle")),
-        Ref.get(tailSeqsRef).pipe(Effect.map((tailSeqs) => tailSeqs.get(threadId) ?? 0)),
-      ]);
-      return Option.some({
-        id: record.id,
-        name: record.name,
-        cwd: record.cwd,
-        mode: record.mode,
-        state,
-        env: record.env,
-        sessionId: record.sessionId,
-        tailSeq,
-      } satisfies ThreadInfo);
-    }),
-  };
-});
+      const next = fn(record);
+      yield* persist(kv, next);
+      yield* Ref.update(recordsRef, (records) => new Map(records).set(threadId, next));
+      return Option.some(next);
+    });
+
+    return {
+      list: () =>
+        Ref.get(recordsRef).pipe(
+          Effect.map((records) => [...records.values()].sort((a, b) => a.createdAt - b.createdAt)),
+        ),
+      get: (threadId) =>
+        Ref.get(recordsRef).pipe(
+          Effect.map((records) => Option.fromNullishOr(records.get(threadId))),
+        ),
+      create: Effect.fn("create")(function* (input) {
+        const record: HubRecord = {
+          id: crypto.randomUUID().replaceAll("-", ""),
+          name: input.name,
+          // Sandbox threads have no local directory (ADR 0003); local
+          // threads default to none until the env daemon reports one.
+          cwd: input.mode === "sandbox" ? null : (input.cwd ?? null),
+          mode: input.mode ?? "local",
+          autoName: input.autoName === true,
+          createdAt: Date.now(),
+          sessionId: null,
+          // A Box is not provisioned until the first prompt (lazy, ADR 0003).
+          env: input.mode === "sandbox" ? "stopped" : "ready",
+          envHandle: null,
+        };
+        yield* persist(kv, record);
+        yield* Ref.update(recordsRef, (records) => new Map(records).set(record.id, record));
+        yield* Ref.update(statesRef, (states) => new Map(states).set(record.id, "idle"));
+        yield* Ref.update(tailSeqsRef, (tailSeqs) => new Map(tailSeqs).set(record.id, 0));
+        return record;
+      }),
+      update: (threadId, patch_) => patch(threadId, (record) => ({ ...record, ...patch_ })),
+      setEnv: (threadId, env) => patch(threadId, (record) => ({ ...record, env })),
+      setEnvHandle: (threadId, envHandle) =>
+        patch(threadId, (record) => ({ ...record, envHandle })),
+      setState: (threadId, state) =>
+        Ref.update(statesRef, (states) => new Map(states).set(threadId, state)),
+      setTailSeq: (threadId, tailSeq) =>
+        Ref.update(tailSeqsRef, (tailSeqs) => new Map(tailSeqs).set(threadId, tailSeq)),
+      delete: Effect.fn("delete")(function* (threadId) {
+        const records = yield* Ref.get(recordsRef);
+        if (!records.has(threadId)) return false;
+        yield* Ref.update(recordsRef, (records) => {
+          const next = new Map(records);
+          next.delete(threadId);
+          return next;
+        });
+        yield* Ref.update(statesRef, (states) => {
+          const next = new Map(states);
+          next.delete(threadId);
+          return next;
+        });
+        yield* Ref.update(tailSeqsRef, (tailSeqs) => {
+          const next = new Map(tailSeqs);
+          next.delete(threadId);
+          return next;
+        });
+        yield* kv.delete(recordKey(threadId));
+        return true;
+      }),
+      toInfo: Effect.fn("toInfo")(function* (threadId) {
+        const record = yield* Ref.get(recordsRef).pipe(
+          Effect.map((records) => records.get(threadId)),
+        );
+        if (record === undefined) return Option.none();
+        const [state, tailSeq] = yield* Effect.all([
+          Ref.get(statesRef).pipe(Effect.map((states) => states.get(threadId) ?? "idle")),
+          Ref.get(tailSeqsRef).pipe(Effect.map((tailSeqs) => tailSeqs.get(threadId) ?? 0)),
+        ]);
+        return Option.some({
+          id: record.id,
+          name: record.name,
+          cwd: record.cwd,
+          mode: record.mode,
+          state,
+          env: record.env,
+          sessionId: record.sessionId,
+          tailSeq,
+        } satisfies ThreadInfo);
+      }),
+    };
+  }),
+}) {}

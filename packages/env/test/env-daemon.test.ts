@@ -4,7 +4,7 @@
  * (read/write/bash/edit primitives), streamed exec output, abort, error
  * mapping back into pi's own classes, and workspace-relative paths.
  *
- * Every test runs against a real `makeEnvDaemon` on a random port with a
+ * Every test runs against a real `EnvDaemon.make` on a random port with a
  * real `RemoteEnv` client — no stubs, no mocks; the protocol itself is the
  * integration seam, exactly like the wire's tests.
  */
@@ -17,7 +17,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect, Exit, FileSystem, Scope } from "effect";
 import { FileError } from "@earendil-works/pi-agent-core";
-import { makeEnvDaemon, nodeSocket, RemoteEnv, type EnvDaemonShape } from "../src/index.ts";
+import { EnvDaemon, nodeSocket, RemoteEnv, type EnvDaemonShape } from "../src/index.ts";
 
 const TOKEN = "test-token";
 
@@ -33,7 +33,7 @@ describe("env daemon", () => {
       Effect.gen(function* () {
         scope = yield* Scope.make();
         const fs = yield* FileSystem.FileSystem;
-        return yield* makeEnvDaemon({ token: TOKEN, fs, cwd: workdir }).pipe(
+        return yield* EnvDaemon.make({ token: TOKEN, fs, cwd: workdir }).pipe(
           Effect.provideService(Scope.Scope, scope),
         );
       }).pipe(Effect.provide(NodeFileSystem.layer)),

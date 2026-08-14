@@ -18,7 +18,7 @@
  * pulls the trigger).
  */
 
-import { Effect, Option, Ref } from "effect";
+import { Context, Effect, Option, Ref } from "effect";
 import type { ThreadInfo } from "@saku/wire";
 
 import type { HubError } from "./hub-error.ts";
@@ -53,7 +53,7 @@ export interface IdleStopDeps {
   readonly controller?: IdleStopController | undefined;
 }
 
-export interface IdleStop {
+export interface IdleStopShape {
   /** Arm the window: sandbox + env ready + state idle → timer/alarm. */
   readonly arm: (threadId: string) => Effect.Effect<void, HubError, never>;
   /** Clear the window (any activity, thread teardown, before fire). */
@@ -64,84 +64,87 @@ export interface IdleStop {
   readonly close: Effect.Effect<void, never>;
 }
 
-export const makeIdleStop = Effect.fn("makeIdleStop")(function* (deps: IdleStopDeps) {
-  const { registry, provisioner, workerRef, infoOf, emitThreadChanged } = deps;
-  const controller = deps.controller;
-  const timersRef = yield* Ref.make<Map<string, NodeJS.Timeout>>(new Map());
+/** The idle-stop policy: `IdleStop.make(deps)` arms the window per sandbox thread. */
+export class IdleStop extends Context.Service<IdleStop, IdleStopShape>()("IdleStop", {
+  make: Effect.fn("IdleStop.make")(function* (deps: IdleStopDeps) {
+    const { registry, provisioner, workerRef, infoOf, emitThreadChanged } = deps;
+    const controller = deps.controller;
+    const timersRef = yield* Ref.make<Map<string, NodeJS.Timeout>>(new Map());
 
-  const arm = Effect.fn("arm")(function* (threadId: string) {
-    const record = yield* registry.get(threadId);
-    if (Option.isNone(record)) return;
-    // Local envs never stop (ADR 0003).
-    if (record.value.mode !== "sandbox" || record.value.env !== "ready") return;
-    // Never while a run is in flight: the run's own reports re-arm.
-    const state = yield* registry.toInfo(threadId);
-    if (Option.isSome(state) && state.value.state !== "idle") return;
-    if (controller !== undefined) {
-      // The thread DO's durable alarm: setAlarm replaces, clears, fires.
-      yield* controller.arm(threadId);
-      return;
-    }
-    // Any activity resets the window: clear and re-arm.
-    const timers = yield* Ref.get(timersRef);
-    const existing = timers.get(threadId);
-    if (existing !== undefined) clearTimeout(existing);
-    const timer = setTimeout(() => {
-      // The forked fire is best-effort from the timer's perspective: a
-      // failing fire (release/handle errors are already swallowed inside)
-      // must not surface as an unhandled fiber error.
-      void Effect.runFork(fire(threadId).pipe(Effect.catch(() => Effect.void)));
-    }, deps.idleStopMs);
-    yield* Ref.update(timersRef, (timers) => new Map(timers).set(threadId, timer));
-  });
-
-  const disarm = Effect.fn("disarm")(function* (threadId: string) {
-    if (controller !== undefined) {
-      yield* controller.disarm(threadId);
-      return;
-    }
-    const timers = yield* Ref.get(timersRef);
-    const timer = timers.get(threadId);
-    if (timer === undefined) return;
-    clearTimeout(timer);
-    yield* Ref.update(timersRef, (timers) => {
-      const next = new Map(timers);
-      next.delete(threadId);
-      return next;
+    const arm = Effect.fn("arm")(function* (threadId: string) {
+      const record = yield* registry.get(threadId);
+      if (Option.isNone(record)) return;
+      // Local envs never stop (ADR 0003).
+      if (record.value.mode !== "sandbox" || record.value.env !== "ready") return;
+      // Never while a run is in flight: the run's own reports re-arm.
+      const state = yield* registry.toInfo(threadId);
+      if (Option.isSome(state) && state.value.state !== "idle") return;
+      if (controller !== undefined) {
+        // The thread DO's durable alarm: setAlarm replaces, clears, fires.
+        yield* controller.arm(threadId);
+        return;
+      }
+      // Any activity resets the window: clear and re-arm.
+      const timers = yield* Ref.get(timersRef);
+      const existing = timers.get(threadId);
+      if (existing !== undefined) clearTimeout(existing);
+      const timer = setTimeout(() => {
+        // The forked fire is best-effort from the timer's perspective: a
+        // failing fire (release/handle errors are already swallowed inside)
+        // must not surface as an unhandled fiber error.
+        void Effect.runFork(fire(threadId).pipe(Effect.catch(() => Effect.void)));
+      }, deps.idleStopMs);
+      yield* Ref.update(timersRef, (timers) => new Map(timers).set(threadId, timer));
     });
-  });
 
-  /** The idle-stop trigger: stop the Box, flip the env axis, broadcast. */
-  const fire = Effect.fn("fire")(function* (threadId: string) {
-    yield* disarm(threadId);
-    const record = yield* registry.get(threadId);
-    if (Option.isNone(record)) return;
-    // Never mid-run: a command could have started between the timer
-    // firing and this effect running.
-    const info = yield* registry.toInfo(threadId);
-    if (Option.isSome(info) && info.value.state !== "idle") {
-      yield* arm(threadId);
-      return;
-    }
-    if (record.value.mode !== "sandbox" || record.value.env !== "ready") return;
-    yield* provisioner
-      .release(threadId, Option.fromNullishOr(record.value.envHandle))
-      .pipe(Effect.catch(() => Effect.void));
-    // The worker's env connection is dead with the Box: clear it.
-    yield* workerRef.setEnvHandle(threadId, null).pipe(Effect.catch(() => Effect.void));
-    yield* registry.setEnv(threadId, "stopped");
-    const after = yield* infoOf(threadId);
-    yield* emitThreadChanged(after);
-  });
+    const disarm = Effect.fn("disarm")(function* (threadId: string) {
+      if (controller !== undefined) {
+        yield* controller.disarm(threadId);
+        return;
+      }
+      const timers = yield* Ref.get(timersRef);
+      const timer = timers.get(threadId);
+      if (timer === undefined) return;
+      clearTimeout(timer);
+      yield* Ref.update(timersRef, (timers) => {
+        const next = new Map(timers);
+        next.delete(threadId);
+        return next;
+      });
+    });
 
-  const close: Effect.Effect<void, never> = Ref.get(timersRef).pipe(
-    Effect.tap((timers) =>
-      Effect.sync(() => {
-        for (const timer of timers.values()) clearTimeout(timer);
-      }),
-    ),
-    Effect.andThen(Ref.set(timersRef, new Map())),
-  );
+    /** The idle-stop trigger: stop the Box, flip the env axis, broadcast. */
+    const fire = Effect.fn("fire")(function* (threadId: string) {
+      yield* disarm(threadId);
+      const record = yield* registry.get(threadId);
+      if (Option.isNone(record)) return;
+      // Never mid-run: a command could have started between the timer
+      // firing and this effect running.
+      const info = yield* registry.toInfo(threadId);
+      if (Option.isSome(info) && info.value.state !== "idle") {
+        yield* arm(threadId);
+        return;
+      }
+      if (record.value.mode !== "sandbox" || record.value.env !== "ready") return;
+      yield* provisioner
+        .release(threadId, Option.fromNullishOr(record.value.envHandle))
+        .pipe(Effect.catch(() => Effect.void));
+      // The worker's env connection is dead with the Box: clear it.
+      yield* workerRef.setEnvHandle(threadId, null).pipe(Effect.catch(() => Effect.void));
+      yield* registry.setEnv(threadId, "stopped");
+      const after = yield* infoOf(threadId);
+      yield* emitThreadChanged(after);
+    });
 
-  return { arm, disarm, fire, close };
-});
+    const close: Effect.Effect<void, never> = Ref.get(timersRef).pipe(
+      Effect.tap((timers) =>
+        Effect.sync(() => {
+          for (const timer of timers.values()) clearTimeout(timer);
+        }),
+      ),
+      Effect.andThen(Ref.set(timersRef, new Map())),
+    );
+
+    return { arm, disarm, fire, close };
+  }),
+}) {}

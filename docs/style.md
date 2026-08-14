@@ -86,8 +86,9 @@ platform's raw errors passed through untouched (`resume(Effect.fail(wsError))`).
 
 ## Services
 
-`Context.Service` class + static `Layer.Layer` factories — `KvStore`
-(`store/src/kv.ts`: `memory()`/`file()`/`doStorage()`) is the pattern.
+`Context.Service` class + static `make`/layer factories — `KvStore`
+(`store/src/kv.ts`: `memory()`/`file()`/`doStorage()`), `SakuDaemon`
+(`worker/src/daemon.ts`: `make` + `SakuDaemonLive`) are the patterns.
 
 **Why**: `KvStore` used to be a constructor argument threaded through `makeHub*`
 factories with every call wrapped in `Effect.tryPromise`. A service with layer
@@ -98,6 +99,13 @@ consumers just `yield* KvStore`.
 boundary; backends built lazily and fresh per build (`Layer.sync`) so two provides
 never share state; the shape travels as a value type (`KvStoreShape`) into
 promise-seam classes that can't `yield*`.
+
+Constructors are named `make` and attached to the service class — `Hub.make`,
+`WireServer.make`, `WireClient.make`, `EnvDaemon.make` — never free `makeHub`-
+style functions. Effect-returning constructors ride the `Context.Service`
+`{ make }` option (the class doubles as a tag); plain closures get a
+`static readonly make`. The Effect convention this follows: `Foo.make(...)`,
+never `makeFoo(...)`.
 
 **Don't**: pass storage/host dependencies as constructor arguments through layers
 of factories; module-level mutable singletons.

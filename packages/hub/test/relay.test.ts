@@ -3,8 +3,8 @@
  * (no open ports); a worker's `RemoteEnv` attaches and the hub pipes the
  * two sockets — the env protocol flows through the hub uninterpreted.
  *
- * Real sockets throughout: `makeHubRelay` on a random port, a real env
- * daemon registered through its `makeEnvRelayClient`, and a real
+ * Real sockets throughout: `HubRelay.make` on a random port, a real env
+ * daemon registered through its `EnvRelayClient.make`, and a real
  * `RemoteEnv` attached through the relay. Covers registration, attach,
  * exec through the pipe, auth failures, and unknown envs.
  */
@@ -15,15 +15,9 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect, Exit, FileSystem, Schema, Scope } from "effect";
-import {
-  makeEnvDaemon,
-  makeEnvRelayClient,
-  nodeSocket,
-  RemoteEnv,
-  type EnvDaemonShape,
-} from "@saku/env";
+import { EnvDaemon, EnvRelayClient, nodeSocket, RemoteEnv, type EnvDaemonShape } from "@saku/env";
 
-import { makeHubRelay, type HubRelayShape } from "../src/index.ts";
+import { HubRelay, type HubRelayShape } from "../src/index.ts";
 
 /** A polling assertion that gave up (the async fork hadn't landed in time). */
 class TestError extends Schema.TaggedError<TestError>()("TestError", {
@@ -49,10 +43,10 @@ describe("hub relay", () => {
       Effect.gen(function* () {
         const scope = yield* Scope.make();
         const fs = yield* FileSystem.FileSystem;
-        const daemon = yield* makeEnvDaemon({ token: ENV_TOKEN, fs, cwd: workdir }).pipe(
+        const daemon = yield* EnvDaemon.make({ token: ENV_TOKEN, fs, cwd: workdir }).pipe(
           Effect.provideService(Scope.Scope, scope),
         );
-        const relay = yield* makeHubRelay({ token: RELAY_TOKEN }).pipe(
+        const relay = yield* HubRelay.make({ token: RELAY_TOKEN }).pipe(
           Effect.provideService(Scope.Scope, scope),
         );
         return { scope, daemon, relay };
@@ -77,7 +71,7 @@ describe("hub relay", () => {
       Effect.gen(function* () {
         const scope = yield* Scope.make();
         const fs = yield* FileSystem.FileSystem;
-        yield* makeEnvRelayClient({
+        yield* EnvRelayClient.make({
           url: relay.url,
           envId: ENV_ID,
           token: RELAY_TOKEN,
@@ -146,7 +140,7 @@ describe("hub relay", () => {
       Effect.gen(function* () {
         const scope = yield* Scope.make();
         const fs = yield* FileSystem.FileSystem;
-        yield* makeEnvRelayClient({
+        yield* EnvRelayClient.make({
           url: relay.url,
           envId: "env_bad",
           token: "wrong",

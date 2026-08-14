@@ -16,9 +16,9 @@ import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 import { Paths, PathsTest, type PathsShape } from "@saku/worker";
 import { KvStore } from "@saku/store";
-import { makeWireClient, type ThreadInfo, type WireClient } from "@saku/wire";
+import { WireClient, type ThreadInfo, type WireClientShape } from "@saku/wire";
 
-import { makeHub, makeHubRegistry, makeHubServer, makeSkillsStore } from "../src/index.ts";
+import { Hub, HubRegistry, HubServer, SkillsStore } from "../src/index.ts";
 import { inProcessWorker } from "./in-process-worker.ts";
 import { scriptedProvisioner } from "./mock-worker.ts";
 import {
@@ -30,8 +30,7 @@ import {
 
 const TEST_TOKEN = "hub-test-secret";
 
-const run = <A, E extends Error>(effect: Effect.Effect<A, E, never>) =>
-  Effect.runPromise(effect);
+const run = <A, E extends Error>(effect: Effect.Effect<A, E, never>) => Effect.runPromise(effect);
 
 /** A scripted stream that emits one assistant message immediately. */
 const oneShotStream = (text: string) => {
@@ -63,22 +62,22 @@ beforeEach(async () => {
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const paths = yield* Paths;
-      const registry = yield* makeHubRegistry().pipe(Effect.provide(KvStore.memory()));
-      const skills = yield* makeSkillsStore().pipe(Effect.provide(KvStore.memory()));
+      const registry = yield* HubRegistry.make().pipe(Effect.provide(KvStore.memory()));
+      const skills = yield* SkillsStore.make().pipe(Effect.provide(KvStore.memory()));
       const worker = yield* inProcessWorker({
         fs,
         paths,
         catalog: workerCatalog(),
         streamFn: oneShotStream("a canned response"),
       });
-      const hub = yield* makeHub({
+      const hub = yield* Hub.make({
         registry,
         skills,
         workerRef: worker.ref,
         provisioner: scriptedProvisioner(),
       });
       worker.attach(hub.events);
-      const server = yield* makeHubServer({ hub, token: TEST_TOKEN }).pipe(
+      const server = yield* HubServer.make({ hub, token: TEST_TOKEN }).pipe(
         Effect.provideService(Scope.Scope, scope),
       );
       return { fs, paths, url: server.url };
@@ -96,8 +95,7 @@ afterEach(async () => {
   await Effect.runPromise(Scope.close(world.scope, Exit.void));
 });
 
-const connect = () =>
-  run(makeWireClient({ url: world.url, token: TEST_TOKEN, role: "cli" }));
+const connect = () => run(WireClient.make({ url: world.url, token: TEST_TOKEN, role: "cli" }));
 
 /** A polling assertion that gave up (the async fork hadn't landed in time). */
 class TestError extends Schema.TaggedError<TestError>()("TestError", {

@@ -22,7 +22,7 @@ import { join } from "node:path";
 
 import { Effect } from "effect";
 import { Runtime } from "foldkit";
-import { makeWireClient } from "@saku/wire";
+import { WireClient } from "@saku/wire";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 const e2eHome = process.env.SAKU_E2E_HOME;
@@ -31,11 +31,7 @@ const available = e2eHome !== undefined && existsSync(join(e2eHome, "worker.url"
 const token = available ? readFileSync(join(e2eHome!, "auth"), "utf8").trim() : "";
 const daemonUrl = available ? readFileSync(join(e2eHome!, "worker.url"), "utf8").trim() : "";
 
-const waitFor = async (
-  predicate: () => boolean,
-  what: string,
-  timeoutMs = 20000,
-) => {
+const waitFor = async (predicate: () => boolean, what: string, timeoutMs = 20000) => {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (predicate()) return;
@@ -67,7 +63,7 @@ afterAll(async () => {
   if (available && createdThreadId !== null) {
     await Effect.runPromise(
       Effect.gen(function* () {
-        const client = yield* makeWireClient({ url: daemonUrl, token, role: "cli" });
+        const client = yield* WireClient.make({ url: daemonUrl, token, role: "cli" });
         yield* client.connect();
         yield* client.deleteThread(createdThreadId as string);
         yield* client.disconnect();
