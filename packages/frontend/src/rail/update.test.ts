@@ -15,17 +15,15 @@
 
 import { describe, expect, it } from "vitest";
 import { Option } from "effect";
+import * as Dialog from "@foldkit/ui/dialog";
 import { WireError, type PiSessionInfo, type ProjectInfo, type ThreadInfo } from "@saku/wire";
 import fc from "fast-check";
 
 import { ThreadsRoute, ThreadRoute } from "../route.ts";
 import { update, informRouteChanged } from "./update.ts";
-import { initialModel, projectSessions, projects } from "./model.ts";
+import { browseEntries, initialModel, initialPicker, projectSessions, projects } from "./model.ts";
 import {
   ActiveViewRequested,
-  AddProjectCancelled,
-  AddProjectCommitted,
-  AddProjectDraftChanged,
   AddProjectRequested,
   ArchiveFailed,
   ArchiveRequested,
@@ -33,7 +31,15 @@ import {
   ClickedThread,
   DeleteFailed,
   DeleteRequested,
+  GotPickerDialogMessage,
   ListFailed,
+  PickerAddRequested,
+  PickerBrowseFailed,
+  PickerBrowseListed,
+  PickerDirChosen,
+  PickerFilterChanged,
+  PickerHighlightMoved,
+  PickerUpRequested,
   PiSessionAdoptFailed,
   PiSessionAdopted,
   PiSessionClicked,
@@ -89,9 +95,9 @@ const projectArb: fc.Arbitrary<ProjectInfo> = fc.record({
   addedAt: fc.integer(),
 });
 
-const wireErrorArb = fc.string({ maxLength: 24 }).map(
-  (message) => new WireError({ code: "command_failed", message }),
-);
+const wireErrorArb = fc
+  .string({ maxLength: 24 })
+  .map((message) => new WireError({ code: "command_failed", message }));
 
 /** Fold ThreadsListed, then one more update, returning the next model. */
 const listed = (threads: readonly ThreadInfo[]) =>
@@ -126,11 +132,17 @@ describe("rail update", () => {
 
   it("refresh re-lists the registry and the projects — never pi sessions", () => {
     fc.assert(
-      fc.property(fc.oneof(fc.constant(initialModel()), listArb.map((threads) => listed(threads))), (model) => {
-        const [next, commands] = update(model, RefreshRequested());
-        expect(next).toEqual(model);
-        expect(commands).toHaveLength(2);
-      }),
+      fc.property(
+        fc.oneof(
+          fc.constant(initialModel()),
+          listArb.map((threads) => listed(threads)),
+        ),
+        (model) => {
+          const [next, commands] = update(model, RefreshRequested());
+          expect(next).toEqual(model);
+          expect(commands).toHaveLength(2);
+        },
+      ),
     );
   });
 
@@ -255,43 +267,122 @@ describe("rail update", () => {
       expanded: { "/a": true, "/b": false },
     };
     const [landed] = update(model, ProjectsListed({ projects: [project("/a"), project("/b")] }));
-    expect(landed.projects).toEqual(
-      projects.Success({ data: [project("/a"), project("/b")] }),
-    );
+    expect(landed.projects).toEqual(projects.Success({ data: [project("/a"), project("/b")] }));
     const [, commands] = update(landed, RefreshRequested());
     // Threads + projects + the one expanded project's sessions.
     expect(commands).toHaveLength(3);
   });
 
-  it("adding a project expands it, fetches its sessions, and closes the input", () => {
-    const [added, commands] = update(
-      initialModel(),
-      ProjectAdded({ project: project("/a") }),
-    );
-    expect(added.adding).toBe(false);
-    expect(added.addDraft).toBe("");
-    expect(added.expanded["/a"]).toBe(true);
-    expect(commands).toHaveLength(1);
+  it("adding a project expands it, fetches its sessions, and closes the picker", () => {
+    const [opened, openCommands] = update(initialModel(), AddProjectRequested());
+    expect(opened.dialog.isOpen).toBe(true);
+    // The dialog opens (its ShowDialog command wrapped) and the tree
+    // starts at its default root.
+    expect(openCommands.map((command) => command.name)).toEqual([
+      "ShowDialog",
+      "BrowseProjectDirs",
+    ]);
 
-    // The draft flow: open → type → commit (empty commits are no-ops).
+    const [added, commands] = update(opened, ProjectAdded({ project: project("/a") }));
+    expect(added.dialog.isOpen).toBe(false);
+    expect(added.picker).toEqual(initialPicker());
+    expect(added.expanded["/a"]).toBe(true);
+    expect(commands.map((command) => command.name)).toEqual(["CloseDialog", "ListProjectSessions"]);
+  });
+
+  it("the picker: browse levels land, and descend/up move the tree", () => {
     const [opened] = update(initialModel(), AddProjectRequested());
-    expect(opened.adding).toBe(true);
-    const [typed] = update(opened, AddProjectDraftChanged({ text: "/a" }));
-    const [committed, commitCommands] = update(typed, AddProjectCommitted());
-    expect(commitCommands).toHaveLength(1);
-    const [empty] = update(typed, AddProjectDraftChanged({ text: "  " }));
-    const [, emptyCommands] = update(empty, AddProjectCommitted());
-    expect(emptyCommands).toHaveLength(0);
-    const [cancelled] = update(typed, AddProjectCancelled());
-    expect(cancelled.adding).toBe(false);
-    expect(cancelled.addDraft).toBe("");
+    const level = {
+      path: "/a",
+      parent: "/",
+      entries: [
+        { name: "b", path: "/a/b", hasPiSessions: true },
+        { name: "c", path: "/a/c", hasPiSessions: false },
+      ],
+    };
+    const [landed] = update(opened, PickerBrowseListed(level));
+    expect(landed.picker.path).toBe("/a");
+    expect(landed.picker.parent).toBe("/");
+    expect(landed.picker.entries).toEqual(browseEntries.Success({ data: level.entries }));
+    expect(landed.picker.filter).toBe("");
+    // The first directory row (not the up row) is highlighted.
+    expect(landed.picker.highlight).toBe(1);
+
+    // Descend into the highlighted dir; ascend back to the parent.
+    const [, downCommands] = update(landed, PickerDirChosen({ path: "/a/b" }));
+    expect(downCommands.map((command) => command.name)).toEqual(["BrowseProjectDirs"]);
+    const [, upCommands] = update(landed, PickerUpRequested());
+    expect(upCommands.map((command) => command.name)).toEqual(["BrowseProjectDirs"]);
+
+    // At the filesystem root the up gesture is a no-op.
+    const [atRoot] = update(landed, PickerBrowseListed({ path: "/", parent: null, entries: [] }));
+    const [stillRoot] = update(atRoot, PickerUpRequested());
+    expect(stillRoot.picker).toBe(atRoot.picker);
+  });
+
+  it("the picker: the filter narrows rows and resets the highlight; arrows move it, clamped", () => {
+    const [opened] = update(initialModel(), AddProjectRequested());
+    const level = {
+      path: "/a",
+      parent: "/",
+      entries: [
+        { name: "alpha", path: "/a/alpha", hasPiSessions: true },
+        { name: "beta", path: "/a/beta", hasPiSessions: false },
+        { name: "gamma", path: "/a/gamma", hasPiSessions: false },
+      ],
+    };
+    const [landed] = update(opened, PickerBrowseListed(level));
+
+    const [moved] = update(landed, PickerHighlightMoved({ delta: 2 }));
+    expect(moved.picker.highlight).toBe(3);
+    // Clamped: 3 rows (up + alpha + beta + gamma) — the highlight cannot
+    // pass the last row.
+    const [clamped] = update(moved, PickerHighlightMoved({ delta: 1 }));
+    expect(clamped.picker.highlight).toBe(3);
+    const [clampedDown] = update(clamped, PickerHighlightMoved({ delta: -4 }));
+    expect(clampedDown.picker.highlight).toBe(0);
+
+    // Filtering resets the highlight to the first matching directory.
+    const [filtered] = update(clampedDown, PickerFilterChanged({ text: "BETA" }));
+    expect(filtered.picker.filter).toBe("BETA");
+    expect(filtered.picker.highlight).toBe(1);
+  });
+
+  it("the picker: add is guarded until a level lands, then fires the command", () => {
+    const [opened] = update(initialModel(), AddProjectRequested());
+    // Nothing landed yet: the commit is a no-op.
+    const [unlanded] = update(opened, PickerAddRequested({ path: "/a" }));
+    expect(unlanded).toBe(opened);
+
+    const [landed] = update(opened, PickerBrowseListed({ path: "/a", parent: "/", entries: [] }));
+    const [, commands] = update(landed, PickerAddRequested({ path: "/a" }));
+    expect(commands.map((command) => command.name)).toEqual(["AddProject"]);
+
+    // A failed browse surfaces inline and keeps the dialog usable.
+    const [failed] = update(
+      landed,
+      PickerBrowseFailed({ error: new WireError({ code: "command_failed", message: "nope" }) }),
+    );
+    expect(failed.picker.entries._tag).toBe("Failure");
+  });
+
+  it("the picker: closing the dialog resets the tree state", () => {
+    const [opened] = update(initialModel(), AddProjectRequested());
+    const [landed] = update(
+      opened,
+      PickerBrowseListed({
+        path: "/a",
+        parent: "/",
+        entries: [{ name: "b", path: "/a/b", hasPiSessions: true }],
+      }),
+    );
+    const [closed] = update(landed, GotPickerDialogMessage({ message: Dialog.RequestedClose() }));
+    expect(closed.dialog.isOpen).toBe(false);
+    expect(closed.picker).toEqual(initialPicker());
   });
 
   it("expanding a project fetches its sessions once; collapsing and removing clean up", () => {
-    const withProjects = update(
-      initialModel(),
-      ProjectsListed({ projects: [project("/a")] }),
-    )[0];
+    const withProjects = update(initialModel(), ProjectsListed({ projects: [project("/a")] }))[0];
     const [expanded, commands] = update(withProjects, ProjectExpanded({ path: "/a" }));
     expect(expanded.expanded["/a"]).toBe(true);
     expect(commands).toHaveLength(1);
@@ -365,10 +456,7 @@ describe("rail update", () => {
         expect(adopted.adopting).toBeNull();
         expect(out).toEqual(Option.some({ _tag: "OpenedThread", id: thread.id }));
 
-        const model = update(
-          initialModel(),
-          ProjectsListed({ projects: [project("/a")] }),
-        )[0];
+        const model = update(initialModel(), ProjectsListed({ projects: [project("/a")] }))[0];
         const [failed, failedCommands] = update(
           { ...model, adopting: "/a/s1" },
           PiSessionAdoptFailed({ error }),
@@ -384,7 +472,10 @@ describe("rail update", () => {
   it("informRouteChanged tracks the pinned thread for the row highlight", () => {
     fc.assert(
       fc.property(
-        fc.oneof(fc.constant(initialModel()), listArb.map((threads) => listed(threads))),
+        fc.oneof(
+          fc.constant(initialModel()),
+          listArb.map((threads) => listed(threads)),
+        ),
         fc.string({ maxLength: 24 }),
         (model, id) => {
           expect(informRouteChanged(model, ThreadsRoute()).selectedId).toBeNull();

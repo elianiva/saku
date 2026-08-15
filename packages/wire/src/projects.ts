@@ -36,15 +36,20 @@ export const AddProjectCommand = S.TaggedStruct("add_project", {
 export const RemoveProjectCommand = S.TaggedStruct("remove_project", {
   path: S.String,
 });
-/** The picker's source (CONTEXT.md: Add project): every cwd pi has sessions
- *  for, decoded lossily from the session dir names (no file reads). */
-export const ListProjectCandidatesCommand = S.TaggedStruct("list_project_candidates", {});
+/** Browse the add-project tree (CONTEXT.md: Add project): list one
+ *  directory's subdirectories so the picker can be traversed level by
+ *  level. `path` is the directory to list; "" opens the picker's default
+ *  root (the deepest common ancestor of every cwd pi has sessions for,
+ *  else the home directory). */
+export const BrowseProjectDirsCommand = S.TaggedStruct("browse_project_dirs", {
+  path: S.String,
+});
 
 export const ProjectCommand = S.Union([
   ListProjectsCommand,
   AddProjectCommand,
   RemoveProjectCommand,
-  ListProjectCandidatesCommand,
+  BrowseProjectDirsCommand,
 ]);
 export type ProjectCommand = S.Schema.Type<typeof ProjectCommand>;
 
@@ -53,14 +58,28 @@ export const ListProjectsResponse = S.TaggedStruct("list_projects", {
 });
 export const AddProjectResponse = S.TaggedStruct("add_project", { project: ProjectInfo });
 export const RemoveProjectResponse = S.TaggedStruct("remove_project", {});
-export const ListProjectCandidatesResponse = S.TaggedStruct("list_project_candidates", {
-  candidates: S.Array(S.String),
+/** One subdirectory of the browsed path (the tree's current level). */
+export const ProjectDirEntry = S.Struct({
+  name: S.String,
+  /** The resolved absolute path of the subdirectory. */
+  path: S.String,
+  /** True when pi has sessions for this exact cwd (the candidate marker). */
+  hasPiSessions: S.Boolean,
 });
+export type ProjectDirEntry = S.Schema.Type<typeof ProjectDirEntry>;
+export const BrowseProjectDirsResponse = S.TaggedStruct("browse_project_dirs", {
+  /** The resolved directory that was listed. */
+  path: S.String,
+  /** Its parent directory; null at the filesystem root (no up row). */
+  parent: S.NullOr(S.String),
+  entries: S.Array(ProjectDirEntry),
+});
+export type BrowseProjectDirsResult = S.Schema.Type<typeof BrowseProjectDirsResponse>;
 
 export const ProjectResponse = S.Union([
   ListProjectsResponse,
   AddProjectResponse,
   RemoveProjectResponse,
-  ListProjectCandidatesResponse,
+  BrowseProjectDirsResponse,
 ]);
 export type ProjectResponse = S.Schema.Type<typeof ProjectResponse>;

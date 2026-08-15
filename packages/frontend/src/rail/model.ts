@@ -7,12 +7,14 @@
  * (CONTEXT.md: Pi sessions, Project) rides alongside: the added projects as
  * AsyncData, one lazy session list per project path (loaded on first
  * expand — never at connect), per-project expand/show-more state, and the
- * add-project/rename inline-input drafts.
+ * add-project picker — a modal dialog (the foldkit Dialog submodel) whose
+ * tree state (the level being traversed) is the rail's own.
  */
 
 import { Schema as S } from "effect";
 import { AsyncData } from "foldkit";
-import { PiSessionInfo, ProjectInfo, ThreadInfo, WireError } from "@saku/wire";
+import * as Dialog from "@foldkit/ui/dialog";
+import { PiSessionInfo, ProjectDirEntry, ProjectInfo, ThreadInfo, WireError } from "@saku/wire";
 
 /** The registry list `listThreads()` returns, held as AsyncData. */
 export const ThreadList = AsyncData.Schema(S.Array(ThreadInfo), WireError);
@@ -26,10 +28,35 @@ export const projects = Projects;
 export const ProjectSessions = AsyncData.Schema(S.Array(PiSessionInfo), WireError);
 export const projectSessions = ProjectSessions;
 
-/** The add-project picker's source (CONTEXT.md: Add project): every cwd pi
- *  has sessions for, as AsyncData (fetched when the input opens). */
-export const ProjectCandidates = AsyncData.Schema(S.Array(S.String), WireError);
-export const projectCandidates = ProjectCandidates;
+/** One browse level's entries `browseProjectDirs(path)` returns (the
+ *  add-project tree's current level), as AsyncData. */
+export const BrowseEntries = AsyncData.Schema(S.Array(ProjectDirEntry), WireError);
+export const browseEntries = BrowseEntries;
+
+/** The add-project picker's tree state: the level being listed, its parent
+ *  (the up row), the filter narrowing the rows, and the highlighted row
+ *  (an index into the visible rows: up row first, then the filtered dirs).
+ *  The dialog shell itself is the foldkit Dialog submodel. */
+export const PickerModel = S.Struct({
+  /** The directory currently listed ("" until the first browse lands). */
+  path: S.String,
+  /** The listed directory's parent; null at the filesystem root. */
+  parent: S.NullOr(S.String),
+  entries: BrowseEntries.schema,
+  /** Narrows the current level's rows by basename. */
+  filter: S.String,
+  /** The highlighted row within the visible rows. */
+  highlight: S.Number,
+});
+export type PickerModel = S.Schema.Type<typeof PickerModel>;
+
+export const initialPicker = (): PickerModel => ({
+  path: "",
+  parent: null,
+  entries: BrowseEntries.Idle(),
+  filter: "",
+  highlight: 0,
+});
 
 export const Model = S.Struct({
   list: ThreadList.schema,
@@ -49,13 +76,12 @@ export const Model = S.Struct({
   threadShowMore: S.Boolean,
   /** The rail's list: active threads + the projects window, or archived. */
   view: S.Literals(["active", "archived"]),
+  /** The add-project dialog (the foldkit Dialog submodel). */
+  dialog: Dialog.Model,
+  /** The dialog's tree state (the level being traversed). */
+  picker: PickerModel,
   /** A pi adoption is in flight (guards double adoptions); null when clean. */
   adopting: S.NullOr(S.String),
-  /** The add-project input is open (CONTEXT.md: Add project). */
-  adding: S.Boolean,
-  addDraft: S.String,
-  /** The picker's candidates while the add-project input is open. */
-  candidates: ProjectCandidates.schema,
   /** An inline rename is in flight (the thread id + draft text). */
   renaming: S.NullOr(S.Struct({ id: S.String, value: S.String })),
 });
@@ -71,9 +97,8 @@ export const initialModel = (): Model => ({
   sessionShowMore: {},
   threadShowMore: false,
   view: "active",
+  dialog: Dialog.init({ id: "project-picker" }),
+  picker: initialPicker(),
   adopting: null,
-  adding: false,
-  addDraft: "",
-  candidates: ProjectCandidates.Idle(),
   renaming: null,
 });

@@ -350,7 +350,7 @@ export const startHubFixture = Effect.fn("startHubFixture")(function* () {
               message: "projects are served by the local daemon, not the hub",
             }),
           ),
-        list_project_candidates: () =>
+        browse_project_dirs: () =>
           Effect.fail(
             new FixtureError({
               kind: "projects_not_served",

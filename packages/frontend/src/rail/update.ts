@@ -19,18 +19,20 @@
 
 import { Match as M, Option } from "effect";
 import { Command } from "foldkit";
+import * as Dialog from "@foldkit/ui/dialog";
 import { evo } from "foldkit/struct";
 import type { ProjectInfo, ThreadInfo } from "@saku/wire";
 
 import type { AppRoute } from "../route.ts";
 import { OpenedThread } from "../root/message.ts";
+import { pickerRows } from "../presentation.ts";
 import { Wire } from "../wire.ts";
 import {
   AdoptPiSessionCmd,
   AddProjectCmd,
   ArchiveThreadCmd,
+  BrowseProjectDirsCmd,
   DeleteThreadCmd,
-  ListProjectCandidatesCmd,
   ListProjectSessionsCmd,
   ListProjectsCmd,
   ListThreadsCmd,
@@ -38,13 +40,41 @@ import {
   RenameThreadCmd,
   UnarchiveThreadCmd,
 } from "./command.ts";
-import { DeletedThread, type RailMessage, type RailOutMessage } from "./message.ts";
-import { Model, projectCandidates, projectSessions, projects, threadList } from "./model.ts";
+import {
+  DeletedThread,
+  GotPickerDialogMessage,
+  PickerAddRequested,
+  PickerBrowseFailed,
+  PickerBrowseListed,
+  PickerDirChosen,
+  PickerFilterChanged,
+  PickerHighlightMoved,
+  PickerUpRequested,
+  type RailMessage,
+  type RailOutMessage,
+} from "./message.ts";
+import {
+  browseEntries,
+  initialPicker,
+  Model,
+  projectSessions,
+  projects,
+  threadList,
+} from "./model.ts";
 
 export type Commands = ReadonlyArray<Command.Command<RailMessage, never, Wire>>;
 export type UpdateReturn = readonly [Model, Commands, Option.Option<RailOutMessage>];
 
 const none: Commands = [];
+
+/** The picker dialog's message boundary: wrap its commands back into rail
+ *  messages (the informing convention, mirroring the root's Got*Message). */
+const wrapDialogCommand = (message: Dialog.Message) => GotPickerDialogMessage({ message });
+
+/** The dialog closed: reset the picker's tree state so the next open
+ *  starts at the default root again. */
+const pickerClosed = (maybeOut: Option.Option<Dialog.OutMessage>) =>
+  Option.isSome(maybeOut) && maybeOut.value._tag === "Closed";
 
 /** Upsert a thread into the list (broadcast order is registry order). The
  *  list holds every thread; the views filter by `archivedAt`. */
@@ -83,7 +113,9 @@ const reloadExpanded = (model: Model): Commands =>
  *  adoption); undefined when the window does not contain it. */
 const projectOfPath = (model: Model, path: string) =>
   model.projects._tag === "Success"
-    ? model.projects.data.find((project) => path.startsWith(`${project.path}/`) || path === project.path)
+    ? model.projects.data.find(
+        (project) => path.startsWith(`${project.path}/`) || path === project.path,
+      )
     : undefined;
 
 export const update = (model: Model, message: RailMessage) =>
@@ -150,11 +182,7 @@ export const update = (model: Model, message: RailMessage) =>
         if (model.list._tag !== "Success") return [model, none, Option.none()];
         const thread = model.list.data.find((t) => t.id === id);
         if (thread === undefined) return [model, none, Option.none()];
-        return [
-          evo(model, { renaming: (_) => ({ id, value: thread.name }) }),
-          none,
-          Option.none(),
-        ];
+        return [evo(model, { renaming: (_) => ({ id, value: thread.name }) }), none, Option.none()];
       },
       ThreadRenameDraftChanged: ({ text }) => {
         const renaming = model.renaming;
@@ -193,19 +221,28 @@ export const update = (model: Model, message: RailMessage) =>
         none,
         Option.none(),
       ],
-      ProjectAdded: ({ project }) => [
-        evo(model, {
-          adding: (_) => false,
-          addDraft: (_) => "",
-          projects: (_) => upsertProject(model, project).projects,
-          expanded: (expanded) => ({ ...expanded, [project.path]: true }),
-        }),
-        // Immediate feedback: the new project opens with its sessions.
-        [ListProjectSessionsCmd({ path: project.path })],
-        Option.none(),
-      ],
+      ProjectAdded: ({ project }) => {
+        // The add landed: close the picker dialog (its Closed out-message
+        // resets the tree state), and open the new project's sessions.
+        const [dialog, dialogCommands, maybeOut] = Dialog.close(model.dialog);
+        return [
+          evo(model, {
+            dialog: () => dialog,
+            picker: () => (pickerClosed(maybeOut) ? initialPicker() : model.picker),
+            projects: (_) => upsertProject(model, project).projects,
+            expanded: (expanded) => ({ ...expanded, [project.path]: true }),
+          }),
+          [
+            ...Command.mapMessages(dialogCommands, wrapDialogCommand),
+            // Immediate feedback: the new project opens with its sessions.
+            ListProjectSessionsCmd({ path: project.path }),
+          ],
+          Option.none(),
+        ];
+      },
       ProjectAddFailed: ({ error }) => [
-        evo(model, { adding: (_) => false, notice: (_) => error.message }),
+        // The dialog stays open — the user can pick another folder.
+        evo(model, { notice: (_) => error.message }),
         none,
         Option.none(),
       ],
@@ -286,41 +323,94 @@ export const update = (model: Model, message: RailMessage) =>
       ArchivedViewRequested: () => [evo(model, { view: (_) => "archived" }), none, Option.none()],
       ActiveViewRequested: () => [evo(model, { view: (_) => "active" }), none, Option.none()],
 
-      // The add-project gesture: open the input (and fetch the picker's
-      // candidates), draft it, commit on Enter.
-      AddProjectRequested: () => [
-        evo(model, { adding: (_) => true }),
-        [ListProjectCandidatesCmd()],
-        Option.none(),
-      ],
-      ProjectCandidatesListed: ({ candidates }) => [
+      // The add-project picker: a modal dialog (the foldkit Dialog
+      // submodel) over a traversable directory tree (CONTEXT.md: Add
+      // project). Open issues the browse of the default root; each level
+      // lands in `picker`, and descend/up/filter/commit are pure state
+      // moves plus one BrowseProjectDirsCmd per level.
+      AddProjectRequested: () => {
+        if (model.dialog.isOpen) return [model, none, Option.none()];
+        const [dialog, dialogCommands] = Dialog.open(model.dialog);
+        return [
+          evo(model, { dialog: () => dialog }),
+          [
+            ...Command.mapMessages(dialogCommands, wrapDialogCommand),
+            // Start the tree at its default root (the daemon picks it:
+            // the deepest common ancestor of the candidates).
+            BrowseProjectDirsCmd({ path: "" }),
+          ],
+          Option.none(),
+        ];
+      },
+      GotPickerDialogMessage: ({ message }) => {
+        const [dialog, dialogCommands, maybeOut] = Dialog.update(model.dialog, message);
+        const closed = pickerClosed(maybeOut);
+        return [
+          closed
+            ? evo(model, { dialog: () => dialog, picker: () => initialPicker() })
+            : evo(model, { dialog: () => dialog }),
+          Command.mapMessages(dialogCommands, wrapDialogCommand),
+          Option.none(),
+        ];
+      },
+      PickerBrowseListed: ({ path, parent, entries }) => [
         evo(model, {
-          candidates: (_) =>
-            projectCandidates.Success({ data: [...candidates].sort() }),
+          picker: (picker) => ({
+            ...picker,
+            path,
+            parent,
+            entries: browseEntries.Success({ data: entries }),
+            filter: "",
+            // Land on the first directory row — Enter goes deeper, not up.
+            highlight: parent === null ? 0 : 1,
+          }),
         }),
         none,
         Option.none(),
       ],
-      ProjectCandidatesListFailed: ({ error }) => [
-        evo(model, { candidates: (_) => projectCandidates.Failure({ error }) }),
+      PickerBrowseFailed: ({ error }) => [
+        evo(model, {
+          picker: (picker) => ({ ...picker, entries: browseEntries.Failure({ error }) }),
+        }),
         none,
         Option.none(),
       ],
-      AddProjectDraftChanged: ({ text }) => [
-        evo(model, { addDraft: (_) => text }),
+      PickerDirChosen: ({ path }) => [model, [BrowseProjectDirsCmd({ path })], Option.none()],
+      PickerUpRequested: () => {
+        const parent = model.picker.parent;
+        if (parent === null) return [model, none, Option.none()];
+        return [model, [BrowseProjectDirsCmd({ path: parent })], Option.none()];
+      },
+      PickerFilterChanged: ({ text }) => [
+        evo(model, {
+          picker: (picker) => {
+            const rows = pickerRows({ ...picker, filter: text });
+            // Land on the first matching directory (not the up row), so
+            // typing then Enter descends into the match.
+            const firstDir = picker.parent === null ? 0 : 1;
+            const last = Math.max(rows.length - 1, 0);
+            return { ...picker, filter: text, highlight: Math.min(firstDir, last) };
+          },
+        }),
         none,
         Option.none(),
       ],
-      AddProjectCommitted: () => {
-        const path = model.addDraft.trim();
-        if (path.length === 0) return [model, none, Option.none()];
+      PickerHighlightMoved: ({ delta }) => {
+        const rows = pickerRows(model.picker);
+        if (rows.length === 0) return [model, none, Option.none()];
+        const next = Math.min(Math.max(model.picker.highlight + delta, 0), rows.length - 1);
+        if (next === model.picker.highlight) return [model, none, Option.none()];
+        return [
+          evo(model, { picker: (picker) => ({ ...picker, highlight: next }) }),
+          none,
+          Option.none(),
+        ];
+      },
+      PickerAddRequested: ({ path }) => {
+        // Guarded: nothing to commit until a level actually landed.
+        if (model.picker.entries._tag !== "Success") return [model, none, Option.none()];
         return [model, [AddProjectCmd({ path })], Option.none()];
       },
-      AddProjectCancelled: () => [
-        evo(model, { adding: (_) => false, addDraft: (_) => "" }),
-        none,
-        Option.none(),
-      ],
       RemoveProjectRequested: ({ path }) => [model, [RemoveProjectCmd({ path })], Option.none()],
 
       // The pi section (CONTEXT.md: Pi sessions). A row clicked: adoption is
@@ -329,11 +419,7 @@ export const update = (model: Model, message: RailMessage) =>
       PiSessionClicked: ({ path }) =>
         model.adopting !== null
           ? [model, none, Option.none()]
-          : [
-              evo(model, { adopting: (_) => path }),
-              [AdoptPiSessionCmd({ path })],
-              Option.none(),
-            ],
+          : [evo(model, { adopting: (_) => path }), [AdoptPiSessionCmd({ path })], Option.none()],
       PiSessionAdopted: ({ thread }) => [
         evo(model, {
           adopting: (_) => null,

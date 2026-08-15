@@ -96,11 +96,12 @@ import {
 } from "./pi-sessions.ts";
 import {
   AddProjectCommand,
-  ListProjectCandidatesCommand,
+  BrowseProjectDirsCommand,
   ListProjectsCommand,
   ProjectCommand,
   ProjectInfo,
   RemoveProjectCommand,
+  type BrowseProjectDirsResult,
 } from "./projects.ts";
 import { WIRE_VERSION } from "./version.ts";
 
@@ -515,12 +516,7 @@ const COMMANDS = {
   listProjects: command(false, "list_projects", ListProjectsCommand, (p) => [...p.projects]),
   addProject: command(false, "add_project", AddProjectCommand, (p) => p.project),
   removeProject: command(false, "remove_project", RemoveProjectCommand, () => undefined),
-  listProjectCandidates: command(
-    false,
-    "list_project_candidates",
-    ListProjectCandidatesCommand,
-    (p) => [...p.candidates],
-  ),
+  browseProjectDirs: command(false, "browse_project_dirs", BrowseProjectDirsCommand, (p) => p),
 };
 
 /** Resolve a correlated request; a late/abandoned id is a no-op. */
@@ -621,8 +617,10 @@ export interface WireClientShape {
   readonly listProjects: () => Effect.Effect<ProjectInfo[], WireError, never>;
   readonly addProject: (path: string) => Effect.Effect<ProjectInfo, WireError, never>;
   readonly removeProject: (path: string) => Effect.Effect<void, WireError, never>;
-  /** Every cwd pi has sessions for (the add-project picker's source). */
-  readonly listProjectCandidates: () => Effect.Effect<string[], WireError, never>;
+  /** One level of the add-project tree: a directory's subdirectories. */
+  readonly browseProjectDirs: (
+    path: string,
+  ) => Effect.Effect<BrowseProjectDirsResult, WireError, never>;
   readonly prompt: (
     threadId: string,
     text: string,
@@ -864,7 +862,7 @@ export class WireClient extends Context.Service<WireClient, WireClientShape>()("
       listProjects: () => request(COMMANDS.listProjects, {}),
       addProject: (path) => request(COMMANDS.addProject, { path }),
       removeProject: (path) => request(COMMANDS.removeProject, { path }),
-      listProjectCandidates: () => request(COMMANDS.listProjectCandidates, {}),
+      browseProjectDirs: (path) => request(COMMANDS.browseProjectDirs, { path }),
     };
   }),
 }) {}

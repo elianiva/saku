@@ -34,7 +34,8 @@
  * line — better than a thread that breaks on first touch.
  */
 
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { homedir } from "node:os";
 import { Effect, FileSystem, Option, Result, Schema } from "effect";
 import {
   JsonlSessionRepo,
@@ -183,10 +184,7 @@ const V3_ENTRY_TYPES = new Set([
 ]);
 
 /** The cheap list view of a v3 file (name/count/first message — no tree). */
-const scanV3Lines = (
-  path: string,
-  lines: readonly string[],
-) => {
+const scanV3Lines = (path: string, lines: readonly string[]) => {
   const header = parseV3Header(parseLine(lines[0] ?? "") ?? {});
   if (header === undefined) return undefined;
   let name: string | undefined;
@@ -221,10 +219,7 @@ const scanV3Lines = (
  * input; `PiSessionsError` carries the offending line when the chain cannot
  * be replayed (broken parent, duplicate id).
  */
-const parseV3 = (
-  path: string,
-  lines: readonly string[],
-) =>
+const parseV3 = (path: string, lines: readonly string[]) =>
   Result.try({
     try: () => {
       const header = parseV3Header(parseLine(lines[0] ?? "") ?? {});
@@ -496,24 +491,22 @@ const jsonlFsOf = (fs: FileSystem.FileSystem): JsonlSessionRepoFileSystem => {
         Result.isSuccess(outcome) ? ok(outcome.success) : err(fail(path, outcome.failure)),
       ),
     listDir: (path) =>
-      Effect.runPromise(fs.readDirectory(path).pipe(Effect.result)).then(
-        (outcome) =>
-          Result.isSuccess(outcome)
-            ? ok(
-                outcome.success.map((name) => ({
-                  name,
-                  path: `${path}/${name}`,
-                  kind: "file" as const,
-                  size: 0,
-                  mtimeMs: 0,
-                })),
-              )
-            : err(fail(path, outcome.failure)),
+      Effect.runPromise(fs.readDirectory(path).pipe(Effect.result)).then((outcome) =>
+        Result.isSuccess(outcome)
+          ? ok(
+              outcome.success.map((name) => ({
+                name,
+                path: `${path}/${name}`,
+                kind: "file" as const,
+                size: 0,
+                mtimeMs: 0,
+              })),
+            )
+          : err(fail(path, outcome.failure)),
       ),
     exists: (path) =>
-      Effect.runPromise(fs.exists(path).pipe(Effect.result)).then(
-        (outcome) =>
-          Result.isSuccess(outcome) ? ok(outcome.success) : err(fail(path, outcome.failure)),
+      Effect.runPromise(fs.exists(path).pipe(Effect.result)).then((outcome) =>
+        Result.isSuccess(outcome) ? ok(outcome.success) : err(fail(path, outcome.failure)),
       ),
     createDir: (path, options) =>
       Effect.runPromise(
@@ -552,10 +545,7 @@ const logItemToMutation = (item: {
 };
 
 /** The cheap list view of a v4 file (the header line is already decoded). */
-const scanV4Lines = (
-  header: Record<string, unknown>,
-  lines: readonly string[],
-) => {
+const scanV4Lines = (header: Record<string, unknown>, lines: readonly string[]) => {
   if (typeof header.id !== "string" || typeof header.cwd !== "string") return undefined;
   let name: string | undefined;
   let messageCount = 0;
@@ -614,14 +604,16 @@ const scanFile = Effect.fn("scanFile")(function* (fs: FileSystem.FileSystem, pat
 const underProjects = (cwd: string, projects: readonly { path: string }[]) => {
   if (cwd.length === 0) return true;
   const resolved = resolve(cwd);
-  return projects.some((project) => resolved === project.path || resolved.startsWith(`${project.path}/`));
+  return projects.some(
+    (project) => resolved === project.path || resolved.startsWith(`${project.path}/`),
+  );
 };
 
-/** The add-project picker's source (CONTEXT.md: Add project): every cwd pi
- *  has sessions for, decoded lossily from the session dir names (the
- *  encoding can't distinguish dashes from separators — good enough for a
- *  picker; the added path is what the user commits). No file reads. */
-export const listProjectCandidates = Effect.fn("listProjectCandidates")(function* (
+/** The picker's candidate cwds: every cwd pi has sessions for, decoded
+ *  lossily from the session dir names (the encoding can't distinguish
+ *  dashes from separators — good enough for a picker; the added path is
+ *  what the user commits). No file reads. */
+const listProjectCandidates = Effect.fn("listProjectCandidates")(function* (
   fs: FileSystem.FileSystem,
   paths: PathsShape,
 ): Effect.fn.Return<readonly string[], PiSessionsError, never> {
@@ -633,6 +625,82 @@ export const listProjectCandidates = Effect.fn("listProjectCandidates")(function
     .map((dir) => `/${dir.slice(2, -2).replace(/-/g, "/")}`)
     .filter((decoded) => decoded !== "/" && decoded.length > 1)
     .sort();
+});
+
+/** The deepest common ancestor of a set of absolute paths (the picker's
+ *  opening level); undefined when the set is empty. */
+const commonRootOf = (paths: readonly string[]) => {
+  const segments = paths.map((path) => path.split("/").filter(Boolean));
+  const common: string[] = [];
+  const first = segments[0];
+  if (first === undefined) return undefined;
+  for (let index = 0; index < first.length; index++) {
+    const segment = first[index];
+    if (segment !== undefined && segments.every((parts) => parts[index] === segment)) {
+      common.push(segment);
+    } else break;
+  }
+  return common.length === 0 ? "/" : `/${common.join("/")}`;
+};
+
+/** The picker's opening level: the deepest common ancestor of the
+ *  candidates (their projects are one or two levels down, badges visible),
+ *  or the home directory when pi has no sessions yet. */
+const defaultRootOf = (candidates: readonly string[], home: string) => {
+  if (candidates.length === 0) return home;
+  const single = candidates.length === 1 ? candidates[0] : undefined;
+  return single !== undefined ? dirname(single) : (commonRootOf(candidates) ?? home);
+};
+
+/** One level of the add-project tree (CONTEXT.md: Add project): the
+ *  subdirectories of `input` ("" opens the picker's default root), each
+ *  marked with whether pi has sessions for that exact cwd. The tree is
+ *  traversed level by level from the picker — the daemon never returns the
+ *  whole tree, only the level asked for. */
+export const browseProjectDirs = Effect.fn("browseProjectDirs")(function* (
+  fs: FileSystem.FileSystem,
+  paths: PathsShape,
+  input: string,
+): Effect.fn.Return<
+  {
+    readonly path: string;
+    readonly parent: string | null;
+    readonly entries: readonly {
+      readonly name: string;
+      readonly path: string;
+      readonly hasPiSessions: boolean;
+    }[];
+  },
+  PiSessionsError,
+  never
+> {
+  const candidates = yield* listProjectCandidates(fs, paths);
+  const candidateSet = new Set(candidates);
+  const root =
+    input.trim().length === 0 ? defaultRootOf(candidates, homedir()) : resolve(input.trim());
+  const names = yield* fs.readDirectory(root).pipe(
+    Effect.mapError(
+      (error) =>
+        new PiSessionsError({
+          kind: "scan",
+          message: `cannot list ${root}: ${error instanceof Error ? error.message : String(error)}`,
+          cause: error,
+        }),
+    ),
+  );
+  const entries: {
+    name: string;
+    path: string;
+    hasPiSessions: boolean;
+  }[] = [];
+  for (const name of names) {
+    const path = join(root, name);
+    const stat = yield* fs.stat(path).pipe(Effect.catch(() => Effect.succeed(undefined)));
+    if (stat === undefined || stat.type !== "Directory") continue;
+    entries.push({ name, path, hasPiSessions: candidateSet.has(path) });
+  }
+  entries.sort((a, b) => a.name.localeCompare(b.name));
+  return { path: root, parent: root === "/" ? null : dirname(root), entries };
 });
 
 /**

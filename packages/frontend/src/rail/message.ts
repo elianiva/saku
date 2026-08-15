@@ -9,7 +9,8 @@
 
 import { Schema as S } from "effect";
 import { Message } from "foldkit";
-import { PiSessionInfo, ProjectInfo, ThreadInfo, WireError } from "@saku/wire";
+import * as Dialog from "@foldkit/ui/dialog";
+import { PiSessionInfo, ProjectDirEntry, ProjectInfo, ThreadInfo, WireError } from "@saku/wire";
 
 /** A fresh list landed from the wire (a ListThreads result). */
 export const ThreadsListed = Message.m("ThreadsListed", { threads: S.Array(ThreadInfo) });
@@ -70,18 +71,29 @@ export const ThreadShowLess = Message.m("ThreadShowLess");
 export const ArchivedViewRequested = Message.m("ArchivedViewRequested");
 export const ActiveViewRequested = Message.m("ActiveViewRequested");
 
-/** The add-project gesture: open the input, draft it, commit it. */
+/** The add-project gesture: open the picker dialog and start its tree. */
 export const AddProjectRequested = Message.m("AddProjectRequested");
-export const AddProjectDraftChanged = Message.m("AddProjectDraftChanged", { text: S.String });
-export const AddProjectCommitted = Message.m("AddProjectCommitted");
-export const AddProjectCancelled = Message.m("AddProjectCancelled");
-/** The picker's candidates landed (every cwd pi has sessions for). */
-export const ProjectCandidatesListed = Message.m("ProjectCandidatesListed", {
-  candidates: S.Array(S.String),
+/** The picker dialog's own message (the foldkit Dialog submodel). */
+export const GotPickerDialogMessage = Message.m("GotPickerDialogMessage", {
+  message: Dialog.Message,
 });
-export const ProjectCandidatesListFailed = Message.m("ProjectCandidatesListFailed", {
-  error: WireError,
+/** One browse level landed (browse_project_dirs). */
+export const PickerBrowseListed = Message.m("PickerBrowseListed", {
+  path: S.String,
+  parent: S.NullOr(S.String),
+  entries: S.Array(ProjectDirEntry),
 });
+export const PickerBrowseFailed = Message.m("PickerBrowseFailed", { error: WireError });
+/** A directory row was activated: descend into it. */
+export const PickerDirChosen = Message.m("PickerDirChosen", { path: S.String });
+/** The up row / back gesture: ascend to the parent level. */
+export const PickerUpRequested = Message.m("PickerUpRequested");
+/** The filter input changed (narrows the current level's rows). */
+export const PickerFilterChanged = Message.m("PickerFilterChanged", { text: S.String });
+/** Arrow keys moved the highlight. */
+export const PickerHighlightMoved = Message.m("PickerHighlightMoved", { delta: S.Number });
+/** Add a directory as a project (the footer button, or ⌘/Ctrl+Enter). */
+export const PickerAddRequested = Message.m("PickerAddRequested", { path: S.String });
 export const RemoveProjectRequested = Message.m("RemoveProjectRequested", { path: S.String });
 
 /** A pi session row was clicked: adopt it as a thread, then open it. */
@@ -128,11 +140,14 @@ export const RailMessage = S.Union([
   ArchivedViewRequested,
   ActiveViewRequested,
   AddProjectRequested,
-  AddProjectDraftChanged,
-  AddProjectCommitted,
-  AddProjectCancelled,
-  ProjectCandidatesListed,
-  ProjectCandidatesListFailed,
+  GotPickerDialogMessage,
+  PickerBrowseListed,
+  PickerBrowseFailed,
+  PickerDirChosen,
+  PickerUpRequested,
+  PickerFilterChanged,
+  PickerHighlightMoved,
+  PickerAddRequested,
   RemoveProjectRequested,
   PiSessionClicked,
   PiSessionAdopted,

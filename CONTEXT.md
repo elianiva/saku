@@ -94,7 +94,7 @@ A cwd the user has explicitly added to the session window (the t3code-style "add
 _Avoid_: workspace, repo, folder
 
 **Add project**:
-The explicit gesture that registers a cwd in the session window — the rail's `＋` input (a typed path) or `saku project add <path>`. Adding is idempotent (re-adding is a no-op); the project appears expanded with its sessions loading. Sessions themselves are lazy: a project's list loads on first expand and caches — connect never reads pi session files.
+The explicit gesture that registers a cwd in the session window — the rail's `＋` opens a modal picker (a traversable directory tree: one level at a time, pi's session cwds marked, filter/arrows/Enter to move, ⌘Enter or the footer to commit) or `saku project add <path>`. Adding is idempotent (re-adding is a no-op); the project appears expanded with its sessions loading. Sessions themselves are lazy: a project's list loads on first expand and caches — connect never reads pi session files.
 _Avoid_: import-project (adoption is the only import, and it imports sessions, not projects)
 
 **Archive**:

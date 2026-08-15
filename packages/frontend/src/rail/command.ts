@@ -20,10 +20,10 @@ import {
   ListFailed,
   PiSessionAdoptFailed,
   PiSessionAdopted,
+  PickerBrowseFailed,
+  PickerBrowseListed,
   ProjectAddFailed,
   ProjectAdded,
-  ProjectCandidatesListFailed,
-  ProjectCandidatesListed,
   ProjectRemoveFailed,
   ProjectRemoved,
   ProjectSessionsListFailed,
@@ -110,17 +110,25 @@ export const ListProjectSessionsCmd = Command.define("ListProjectSessions", {
     ),
 });
 
-/** The add-project picker's source: every cwd pi has sessions for. */
-export const ListProjectCandidatesCmd = Command.define("ListProjectCandidates", {
-  messages: [ProjectCandidatesListed, ProjectCandidatesListFailed],
-  execute: catchWireError(
-    Effect.gen(function* () {
-      const { client } = yield* Wire;
-      const candidates = yield* client.listProjectCandidates();
-      return ProjectCandidatesListed({ candidates });
-    }),
-    (error) => ProjectCandidatesListFailed({ error }),
-  ),
+/** One level of the add-project tree (CONTEXT.md: Add project): the
+ *  subdirectories of `path` — "" opens the picker's default root (the
+ *  deepest common ancestor of every cwd pi has sessions for). */
+export const BrowseProjectDirsCmd = Command.define("BrowseProjectDirs", {
+  args: { path: S.String },
+  messages: [PickerBrowseListed, PickerBrowseFailed],
+  execute: ({ path }) =>
+    catchWireError(
+      Effect.gen(function* () {
+        const { client } = yield* Wire;
+        const browse = yield* client.browseProjectDirs(path);
+        return PickerBrowseListed({
+          path: browse.path,
+          parent: browse.parent,
+          entries: browse.entries,
+        });
+      }),
+      (error) => PickerBrowseFailed({ error }),
+    ),
 });
 
 /** Archive a thread: visibility-only (CONTEXT.md: Archive). */

@@ -46,13 +46,13 @@ import {
 import {
   AddProjectResponse,
   ArchiveThreadResponse,
+  BrowseProjectDirsResponse,
   CreateThreadResponse,
   DeleteThreadResponse,
   EventFrame,
   GetThreadResponse,
   ImportPiSessionResponse,
   ListPiSessionsResponse,
-  ListProjectCandidatesResponse,
   ListProjectsResponse,
   ListThreadsResponse,
   RemoveProjectResponse,
@@ -103,7 +103,7 @@ import {
 import { SessionHost, SessionHostError } from "./session-host.ts";
 import { runSessionCommand } from "./session-commands.ts";
 import { DoSessionRepo } from "./do-session.ts";
-import { listPiSessions, listProjectCandidates, readPiSession } from "./pi-sessions.ts";
+import { browseProjectDirs, listPiSessions, readPiSession } from "./pi-sessions.ts";
 import { addProject, listProjects, removeProject } from "./projects.ts";
 
 export interface DaemonOptions {
@@ -341,8 +341,10 @@ export class SakuDaemon extends Context.Service<SakuDaemon, SakuDaemonShape>()("
             yield* removeProject(fs, paths, command.path);
             return RemoveProjectResponse.make({});
           }),
-          list_project_candidates: Effect.fn("list_project_candidates")(function* () {
-            const candidates = yield* listProjectCandidates(fs, paths).pipe(
+          browse_project_dirs: Effect.fn("browse_project_dirs")(function* (command) {
+            // One level of the add-project tree (CONTEXT.md: Add project):
+            // the subdirectories of the requested path, candidates marked.
+            const browse = yield* browseProjectDirs(fs, paths, command.path).pipe(
               Effect.mapError(
                 (error) =>
                   new DaemonError({
@@ -352,7 +354,7 @@ export class SakuDaemon extends Context.Service<SakuDaemon, SakuDaemonShape>()("
                   }),
               ),
             );
-            return ListProjectCandidatesResponse.make({ candidates });
+            return BrowseProjectDirsResponse.make(browse);
           }),
           import_pi_session: Effect.fn("import_pi_session")(function* (command) {
             // Adoption is idempotent per pi session file: one thread per

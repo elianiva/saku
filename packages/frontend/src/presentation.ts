@@ -8,6 +8,7 @@
 
 import type {
   PiSessionInfo,
+  ProjectDirEntry,
   ThreadEnvState,
   ThreadInfo,
   ThreadMode,
@@ -27,6 +28,34 @@ const modeIcons = {
 
 /** The rail's mode icon: the hands-policy mode (CONTEXT.md: Mode). */
 export const modeIcon = (mode: ThreadMode) => modeIcons[mode];
+
+/** One row of the add-project picker's tree level: the up row (when the
+ *  level has a parent) or one subdirectory. */
+export type PickerRow =
+  | { readonly kind: "up" }
+  | { readonly kind: "dir"; readonly entry: ProjectDirEntry };
+
+/** The picker's visible rows: the up row (when the level has a parent),
+ *  then the level's subdirectories narrowed by the filter (basename
+ *  substring). The highlight index walks this list; a level that has not
+ *  landed (no Success) has no rows. */
+export const pickerRows = (picker: {
+  readonly parent: string | null;
+  readonly entries:
+    | { readonly _tag: "Success"; readonly data: readonly ProjectDirEntry[] }
+    | { readonly _tag: "Idle" | "Loading" | "Refreshing" | "Stale" | "Failure" };
+  readonly filter: string;
+}): PickerRow[] => {
+  if (picker.entries._tag !== "Success") return [];
+  const needle = picker.filter.trim().toLowerCase();
+  const rows: PickerRow[] = [];
+  if (picker.parent !== null) rows.push({ kind: "up" });
+  for (const entry of picker.entries.data) {
+    if (needle.length > 0 && !entry.name.toLowerCase().includes(needle)) continue;
+    rows.push({ kind: "dir", entry });
+  }
+  return rows;
+};
 
 /** How the rail draws a thread state: icon, tone, title. */
 export interface StatePresentation {

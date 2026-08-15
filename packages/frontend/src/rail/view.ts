@@ -2,21 +2,25 @@
  * The thread rail's view (rail/view.ts): the registry projection plus the
  * projects window (CONTEXT.md: Project, Pi sessions) — t3code-style: only a
  * few threads at a time (preview + show more), two-line rows, archive
- * (CONTEXT.md: Archive) as a separate rail view, and the projects section
- * with its explicit add gesture. Row content comes entirely from
- * `thread_changed` broadcasts and command landings; the rail never computes
- * thread state. The archived view holds the settled threads (muted rows,
- * unarchive + delete); the active view is threads + projects.
+ * (CONTEXT.md: Archive) as a separate rail view, the projects section
+ * with its explicit add gesture, and the add-project picker — a modal
+ * dialog over a traversable directory tree (CONTEXT.md: Add project). Row
+ * content comes entirely from `thread_changed` broadcasts and command
+ * landings; the rail never computes thread state. The archived view holds
+ * the settled threads (muted rows, unarchive + delete); the active view is
+ * threads + projects.
  *
  * Branded via `defineView` so it embeds under the root through
  * `h.submodel`, with `h` typed to the rail's own Message union (the lutra
- * gallery view pattern).
+ * gallery view pattern). The picker dialog embeds the foldkit Dialog
+ * submodel the same way (the website's dialog page pattern).
  */
 
 import { AsyncData, Submodel } from "foldkit";
 import { Option } from "effect";
-import type { Html, HtmlBuilder } from "foldkit/html";
-import type { PiSessionInfo, ProjectInfo, ThreadInfo } from "@saku/wire";
+import * as Dialog from "@foldkit/ui/dialog";
+import type { ChildAttribute, Html, HtmlBuilder, KeyboardModifiers } from "foldkit/html";
+import type { PiSessionInfo, ProjectDirEntry, ProjectInfo, ThreadInfo } from "@saku/wire";
 
 import { icon } from "../icon.ts";
 import {
@@ -25,22 +29,27 @@ import {
   archivedThreads,
   envPresentation,
   modeIcon,
+  pickerRows,
   previewSlice,
   projectName,
   relativeTime,
   statePresentation,
   unadoptedPiSessions,
+  type PickerRow,
 } from "../presentation.ts";
 import {
   ActiveViewRequested,
-  AddProjectCancelled,
-  AddProjectCommitted,
-  AddProjectDraftChanged,
   AddProjectRequested,
   ArchivedViewRequested,
   ArchiveRequested,
   ClickedThread,
   DeleteRequested,
+  GotPickerDialogMessage,
+  PickerAddRequested,
+  PickerDirChosen,
+  PickerFilterChanged,
+  PickerHighlightMoved,
+  PickerUpRequested,
   PiSessionClicked,
   ProjectCollapsed,
   ProjectExpanded,
@@ -62,7 +71,7 @@ import type { Model } from "./model.ts";
 export const view = Submodel.defineView<Model, RailMessage>((model, h) =>
   h.aside(
     [h.Class("w-80 shrink-0 border-r border-line bg-surface flex flex-col min-h-0")],
-    [railHeader(model, h), notice(model, h), railList(model, h)],
+    [railHeader(model, h), notice(model, h), railList(model, h), pickerDialog(model, h)],
   ),
 );
 
@@ -328,9 +337,8 @@ const projectsSection = (
               ),
             ],
           ),
-          model.adding ? addProjectInput(model, h) : null,
           ...listed.map((project) => projectRow(model, project, threads, h)),
-          listed.length === 0 && !model.adding
+          listed.length === 0
             ? h.div(
                 [h.Class("px-3 pb-2 text-[11px] text-muted")],
                 ["no projects — add one to see its pi sessions"],
@@ -340,58 +348,266 @@ const projectsSection = (
       ),
   });
 
-/** The add-project input: a path, committed on Enter (Escape/blur cancel). */
-/** The add-project input: a path, committed on Enter (Escape/blur cancel),
- *  with the picker's candidates below (click to fill the draft). */
-const addProjectInput = (model: Model, h: HtmlBuilder<RailMessage>) =>
-  h.div(
-    [h.Class("px-3 pb-2")],
-    [
-      h.input([
-        h.Class("w-full border border-line bg-base px-1.5 py-1 text-[12px] text-text outline-none"),
-        h.Placeholder("/path/to/project"),
-        h.Value(model.addDraft),
-        h.OnInput((text) => AddProjectDraftChanged({ text })),
-        h.OnKeyDownPreventDefault((key) =>
-          key === "Enter" && model.addDraft.trim().length > 0
-            ? Option.some(AddProjectCommitted())
-            : key === "Escape"
-              ? Option.some(AddProjectCancelled())
-              : Option.none(),
+/** The add-project picker (CONTEXT.md: Add project): a modal dialog — the
+ *  foldkit Dialog submodel (focus trap, Esc, backdrop click, ARIA) — over
+ *  a traversable directory tree. The tree is one level at a time: the
+ *  current directory's subdirectories, the pi-session candidates marked,
+ *  traversed by descending (click/Enter), ascending (up row / ⌫), and
+ *  filtering (t3code's local-folder browse, the same shape). */
+const pickerDialog = (model: Model, h: HtmlBuilder<RailMessage>) =>
+  h.submodel({
+    slotId: "project-picker",
+    model: model.dialog,
+    view: Dialog.view,
+    viewInputs: {
+      toView: ({
+        dialog,
+        backdrop,
+        panel,
+        title,
+        description,
+        closeButton,
+        initialFocus,
+        isVisible,
+      }) =>
+        h.dialog(
+          [...dialog, h.Class("bg-transparent p-0 m-auto open:flex items-center justify-center")],
+          isVisible
+            ? [
+                h.div([...backdrop, h.Class("fixed inset-0 bg-base/75")], []),
+                h.div(
+                  [
+                    ...panel,
+                    h.Class(
+                      "relative w-[560px] max-w-[calc(100vw-3rem)] max-h-[min(80vh,36rem)] bg-surface border border-line shadow-xl flex flex-col",
+                    ),
+                  ],
+                  [
+                    pickerHeader(model, h, title, description, closeButton),
+                    pickerPath(model, h),
+                    pickerFilter(model, h, initialFocus),
+                    pickerList(model, h),
+                    pickerFooter(model, h),
+                  ],
+                ),
+              ]
+            : [],
         ),
-        h.OnBlur(AddProjectCancelled()),
-      ]),
-      projectCandidatesList(model, h),
+    },
+    toParentMessage: (message) => GotPickerDialogMessage({ message }),
+  });
+
+const pickerHeader = (
+  model: Model,
+  h: HtmlBuilder<RailMessage>,
+  title: readonly ChildAttribute[],
+  description: readonly ChildAttribute[],
+  closeButton: readonly ChildAttribute[],
+) =>
+  h.div(
+    [h.Class("flex items-center gap-2 px-4 h-10 shrink-0 border-b border-line")],
+    [
+      h.span(
+        [...title, h.Class("flex-1 text-[11px] uppercase tracking-[0.18em] text-subtle")],
+        ["add project"],
+      ),
+      // The dialog's accessible description, visually hidden.
+      h.p([...description, h.Class("sr-only")], ["choose a folder to add as a project"]),
+      h.button(
+        [
+          ...closeButton,
+          h.Class("border border-line px-1.5 text-subtle hover:border-subtle"),
+          h.Title("close"),
+          h.AriaLabel("close"),
+        ],
+        [icon(h, "x")],
+      ),
     ],
   );
 
-/** The picker: the cwds pi has sessions for (decoded lossily daemon-side). */
-const projectCandidatesList = (model: Model, h: HtmlBuilder<RailMessage>) =>
-  AsyncData.match(model.candidates, {
-    onIdle: () => null,
-    onLoading: () => null,
-    onRefreshing: () => null,
-    onStale: () => null,
-    onFailure: () => null,
-    onSuccess: (candidates) => {
-      const shown = candidates.filter((candidate) => candidate !== model.addDraft.trim());
-      if (shown.length === 0) return null;
-      return h.div(
-        [h.Class("mt-1 max-h-40 overflow-y-auto border border-line bg-base")],
-        shown.map((candidate) =>
-          h.div(
-            [
-              h.Class(
-                "px-2 py-1 text-[11px] text-subtle cursor-pointer truncate hover:bg-overlay/60",
-              ),
-              h.OnClick(AddProjectDraftChanged({ text: candidate })),
-            ],
-            [candidate],
-          ),
+/** The current directory: an up button (disabled at the filesystem root)
+ *  and the path itself. */
+const pickerPath = (model: Model, h: HtmlBuilder<RailMessage>) =>
+  h.div(
+    [h.Class("flex items-center gap-2 px-4 py-2 shrink-0 border-b border-line")],
+    [
+      h.button(
+        [
+          h.Class("border border-line px-1.5 text-subtle hover:border-subtle shrink-0"),
+          h.Disabled(model.picker.parent === null),
+          h.OnClick(PickerUpRequested()),
+          h.Title("up a level"),
+          h.AriaLabel("up a level"),
+        ],
+        [icon(h, "arrowUp")],
+      ),
+      h.span(
+        [
+          h.Class("flex-1 min-w-0 truncate font-mono text-[11px] text-muted"),
+          h.Title(model.picker.path),
+        ],
+        [model.picker.path === "" ? "…" : model.picker.path],
+      ),
+    ],
+  );
+
+/** The filter input: narrows the current level by basename; the keyboard
+ *  drives the tree (↑↓ highlight, Enter descend / ⌘Enter add, ⌫ up). */
+const pickerFilter = (
+  model: Model,
+  h: HtmlBuilder<RailMessage>,
+  initialFocus: readonly ChildAttribute[],
+) =>
+  h.div(
+    [h.Class("px-4 pt-2 pb-1 shrink-0")],
+    [
+      h.input([
+        ...initialFocus,
+        h.Class(
+          "w-full border border-line bg-base px-2 py-1 text-[12px] text-text outline-none focus:border-subtle",
         ),
-      );
-    },
-  });
+        h.Placeholder("filter the current folder…"),
+        h.Value(model.picker.filter),
+        h.AriaLabel("filter the current folder"),
+        h.OnInput((text) => PickerFilterChanged({ text })),
+        h.OnKeyDownPreventDefault((key, modifiers) => pickerKey(key, modifiers, model)),
+      ]),
+    ],
+  );
+
+/** The keyboard map of the picker's filter input (pseudo-TUI: keys, not
+ *  clicks, drive the tree). Enter acts on the highlighted row; ⌘/Ctrl+Enter
+ *  adds it directly (t3code's browse); Backspace on an empty filter goes
+ *  up a level. Committing the current folder is the footer button's
+ *  gesture — Enter never adds anything implicitly. */
+const pickerKey = (
+  key: string,
+  modifiers: KeyboardModifiers,
+  model: Model,
+): Option.Option<RailMessage> => {
+  const rows = pickerRows(model.picker);
+  const highlighted = rows[model.picker.highlight];
+  if (key === "ArrowDown") return Option.some(PickerHighlightMoved({ delta: 1 }));
+  if (key === "ArrowUp") return Option.some(PickerHighlightMoved({ delta: -1 }));
+  if (key === "Backspace" && model.picker.filter === "") return Option.some(PickerUpRequested());
+  if (key !== "Enter") return Option.none();
+  if (highlighted === undefined) return Option.none();
+  if (modifiers.metaKey || modifiers.ctrlKey) {
+    return highlighted.kind === "dir"
+      ? Option.some(PickerAddRequested({ path: highlighted.entry.path }))
+      : Option.some(PickerUpRequested());
+  }
+  return highlighted.kind === "dir"
+    ? Option.some(PickerDirChosen({ path: highlighted.entry.path }))
+    : Option.some(PickerUpRequested());
+};
+
+/** The tree's current level: the up row, then the filtered subdirectories. */
+const pickerList = (model: Model, h: HtmlBuilder<RailMessage>) =>
+  h.div(
+    [h.Class("flex-1 min-h-0 overflow-y-auto border-t border-line")],
+    [
+      AsyncData.match(model.picker.entries, {
+        onIdle: () => pickerStatus(h, "loading…"),
+        onLoading: () => pickerStatus(h, "loading…"),
+        onRefreshing: () => pickerStatus(h, "loading…"),
+        onStale: () => pickerStatus(h, "loading…"),
+        onFailure: (error) => pickerStatus(h, `cannot list — ${error.message}`),
+        onSuccess: () => {
+          const rows = pickerRows(model.picker);
+          if (rows.length === 0)
+            return pickerStatus(
+              h,
+              model.picker.filter.trim() === "" ? "empty folder" : "no matches",
+            );
+          return h.div(
+            [],
+            rows.map((row, index) => pickerRow(model, row, index, h)),
+          );
+        },
+      }),
+    ],
+  );
+
+const pickerStatus = (h: HtmlBuilder<RailMessage>, text: string) =>
+  h.div([h.Class("px-4 py-3 text-[11px] text-muted")], [text]);
+
+/** One row: the up row (navigate to the parent level) or a subdirectory
+ *  with its badges (pi has sessions here / already added). */
+const pickerRow = (model: Model, row: PickerRow, index: number, h: HtmlBuilder<RailMessage>) => {
+  const selected = index === model.picker.highlight;
+  const rowClass = `flex items-center gap-2 px-4 py-1.5 cursor-pointer text-[12px] border-b border-line/60 ${selected ? "bg-overlay" : "hover:bg-overlay/60"}`;
+  if (row.kind === "up") {
+    return h.div(
+      [h.Class(rowClass), h.OnClick(PickerUpRequested())],
+      [
+        h.span([h.Class("text-subtle shrink-0")], [icon(h, "arrowUp")]),
+        h.span([h.Class("text-[10px] uppercase tracking-[0.14em] text-subtle")], [".."]),
+      ],
+    );
+  }
+  return h.div(
+    [
+      h.Class(rowClass),
+      h.OnClick(PickerDirChosen({ path: row.entry.path })),
+      h.Title(row.entry.path),
+    ],
+    [
+      h.span([h.Class("text-subtle shrink-0")], [icon(h, "folder")]),
+      h.span([h.Class("flex-1 min-w-0 truncate")], [row.entry.name]),
+      pickerBadges(model, row.entry, h),
+    ],
+  );
+};
+
+/** The row badges: a pi marker when pi has sessions for this exact cwd
+ *  (the picker's candidates), an added marker when the project is already
+ *  in the window. */
+const pickerBadges = (model: Model, entry: ProjectDirEntry, h: HtmlBuilder<RailMessage>) => {
+  const added =
+    model.projects._tag === "Success" &&
+    model.projects.data.some((project) => project.path === entry.path);
+  if (added) {
+    return h.span(
+      [h.Class("shrink-0 text-foam flex items-center gap-1 text-[10px]"), h.Title("already added")],
+      [icon(h, "check"), "added"],
+    );
+  }
+  if (entry.hasPiSessions) {
+    return h.span(
+      [
+        h.Class("shrink-0 text-subtle flex items-center gap-1 text-[10px]"),
+        h.Title("pi has sessions here"),
+      ],
+      [icon(h, "pi"), "pi"],
+    );
+  }
+  return null;
+};
+
+/** The footer: the key hints and the commit gesture — add the directory
+ *  currently listed (an empty new folder is a project too). */
+const pickerFooter = (model: Model, h: HtmlBuilder<RailMessage>) =>
+  h.div(
+    [h.Class("flex items-center gap-3 px-4 py-2 shrink-0 border-t border-line")],
+    [
+      h.span(
+        [h.Class("flex-1 text-[10px] uppercase tracking-[0.14em] text-subtle")],
+        ["↑↓ move · enter open · ⌘enter add · ⌫ up · esc close"],
+      ),
+      h.button(
+        [
+          h.Class(
+            "border border-line px-2 py-0.5 text-[10px] uppercase tracking-[0.14em] text-subtle hover:border-subtle",
+          ),
+          h.Disabled(model.picker.entries._tag !== "Success"),
+          h.OnClick(PickerAddRequested({ path: model.picker.path })),
+          h.Title("add this folder as a project"),
+        ],
+        ["add this folder"],
+      ),
+    ],
+  );
 
 /** One project row: name + muted path, expand/collapse, remove. The
  *  session list is lazy — fetched on first expand and cached. */

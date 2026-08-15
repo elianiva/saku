@@ -382,7 +382,7 @@ describe("projects", () => {
       () => run(client.listProjects()),
       () => run(client.addProject("/tmp/work")),
       () => run(client.removeProject("/tmp/work")),
-      () => run(client.listProjectCandidates()),
+      () => run(client.browseProjectDirs("")),
     ]) {
       await expect(attempt()).rejects.toMatchObject({
         code: "command_failed",
@@ -795,12 +795,8 @@ const lifecycleCommands = () =>
           name: fc.oneof(fc.constant(""), fc.constant("   "), fc.string({ maxLength: 12 })),
         })
         .map(({ symbol, name }) => new RenameThreadCommand(symbol, name)),
-      fc
-        .record({ symbol: symbolArb })
-        .map(({ symbol }) => new GetThreadCommand(symbol)),
-      fc
-        .record({ symbol: symbolArb })
-        .map(({ symbol }) => new DeleteThreadCommand(symbol)),
+      fc.record({ symbol: symbolArb }).map(({ symbol }) => new GetThreadCommand(symbol)),
+      fc.record({ symbol: symbolArb }).map(({ symbol }) => new DeleteThreadCommand(symbol)),
       fc.constant(new ListThreadsCommand()),
     ],
     { maxCommands: 15 },
