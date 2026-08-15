@@ -7,7 +7,8 @@
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "deploy": "bun alchemy deploy",
-    "dev": "bun alchemy dev",
+    "dev": "portless",
+    "dev:app": "bun alchemy dev",
     "destroy": "bun alchemy destroy",
     "embed:env-bundle": "node scripts/embed-env-bundle.ts"
   },
@@ -22,6 +23,10 @@
     "alchemy": "2.0.0-beta.72",
     "effect": "rc",
     "effect-machine": "0.17.1"
+  },
+  "portless": {
+    "name": "hub",
+    "script": "dev:app"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250601.0",

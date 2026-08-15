@@ -11,6 +11,9 @@ importers:
 
   .:
     devDependencies:
+      portless:
+        specifier: ^0.15.5
+        version: 0.15.5
       tsdown:
         specifier: ^0.22.12
         version: 0.22.14(typescript@5.9.3)
@@ -3703,6 +3706,12 @@ packages:
     resolution: {integrity: sha512-LKWqWJRhstyYo9pGvgor/ivk2w94eSjE3RGVuzLGlr3NmD8bf7RcYGze1mNdEHRP6TRP6rMuDHk5t44hnTRyow==}
     engines: {node: '>=14.19.0'}
 
+  portless@0.15.5:
+    resolution: {integrity: sha512-zmJu4Q8/fY54oVUT/5NnmF4Ih8wTdCvCf6JCN783dRYl9mXkJBzXSckX2lztGCLIbM70varDjCudAbGKT73XPg==}
+    engines: {node: '>=24'}
+    os: [darwin, linux, win32]
+    hasBin: true
+
   postcss@8.5.26:
     resolution: {integrity: sha512-u82N74LFzG8ca+dD8puPnplTXoGH4fTPpVGuIbt36G3qvNlkvfD0lEAZSxaly3KX8TS/L1A1gsCEmvKmBcVbkQ==}
     engines: {node: ^10 || ^12 || >=14}
@@ -7320,6 +7329,8 @@ snapshots:
   picomatch@4.0.5: {}
 
   pngjs@7.0.0: {}
+
+  portless@0.15.5: {}
 
   postcss@8.5.26:
     dependencies:

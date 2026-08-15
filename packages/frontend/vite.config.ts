@@ -76,5 +76,13 @@ const sakuDevBootstrap = () => ({
 
 export default defineConfig({
   plugins: [foldkit(), tailwindcss(), sakuDevBootstrap()],
-  server: { port: 5173 },
+  server: {
+    // Portless (the `dev` script's proxy) assigns a free 4000-4999 port and
+    // passes it as PORT; without it, the plain `dev:app` fallback stays on
+    // 5173. strictPort turns a taken port into a loud startup failure while
+    // portless drives — silent drift would break the stable URL the proxy
+    // registered.
+    port: Number(process.env.PORT ?? 5173),
+    strictPort: process.env.PORT !== undefined,
+  },
 });

@@ -108,7 +108,27 @@ Boot the console against the local daemon:
 pnpm --filter @saku/frontend dev
 ```
 
-Vite serves the console on `:5173`; its `/__saku` bootstrap reads the daemon's
+The dev servers run behind **portless**, which replaces port numbers with
+stable named URLs on the `.localhost` domain (plain HTTP — no TLS setup):
+
+| App | URL |
+| --- | --- |
+| console (`packages/frontend`) | `http://saku.localhost` |
+| local hub (`packages/deploy`) | `http://hub.localhost` |
+
+On first run, portless needs the proxy up once (binds port 80, prompts for
+sudo):
+
+```bash
+pnpm dev:proxy
+```
+
+The proxy daemon keeps running and is reused by later `pnpm dev` runs;
+`portless list` shows the live routes and their backend ports. Without
+portless (or with `PORTLESS=0 pnpm dev`), the raw commands are one script
+deeper — `pnpm --filter @saku/frontend run dev:app` serves vite on `:5173`,
+`pnpm --filter @saku/deploy run dev:app` runs `bun alchemy dev` on `:1337`.
+The console's `/__saku` bootstrap reads the daemon's
 published URL and token from `~/.saku/`, verifies them with a wire handshake
 probe, and only then hands them to the console (a killed daemon leaves a
 stale URL file behind — the console never dials it). The app connects
@@ -168,6 +188,9 @@ Details in `packages/deploy/celld/README.md`.
 
 ## Documentation
 
+- [`docs/architecture.md`](./docs/architecture.md) — the high-level architecture:
+  the cast, the wire, the relay, the trail, the env, lifecycle, end-to-end
+  walks, and the seams.
 - [`CONTEXT.md`](./CONTEXT.md) — the vocabulary: threads, workers, hub, envs,
   relay, Freestyle, idle-stop, and the rest of the domain model.
 - `docs/adr/` — architecture decision records (highlights: managed-agents

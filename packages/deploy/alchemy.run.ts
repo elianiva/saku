@@ -18,6 +18,7 @@ import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
 
 import type { SakuHubDO, SakuThreadDO } from "./src/worker.ts";
@@ -52,8 +53,18 @@ export const makeStack = (options: StackOptions = {}) =>
       // The deployment secret: a persistent random value minted once, or
       // the caller's own (the tests pass a fixed test secret).
       const secret = options.secret ?? (yield* Random("SakuDeploymentSecret")).text;
+      // The local dev server's port: portless (the `dev` script's proxy)
+      // assigns a free 4000-4999 port and passes it as PORT; without it,
+      // alchemy's default 1337 applies. strictPort makes a taken port a
+      // loud startup failure instead of a silent drift to the next free
+      // port — drift would break the stable URL the proxy registered.
+      const devPort = yield* Config.option(Config.number("PORT"));
       const worker = yield* Cloudflare.Worker("saku", {
         main: "./src/worker.ts",
+        dev: {
+          port: Option.getOrElse(devPort, () => 1337),
+          strictPort: Option.isSome(devPort),
+        },
         env: {
           HUB: Cloudflare.DurableObject<SakuHubDO>("HUB", { className: "SakuHubDO" }),
           THREAD: Cloudflare.DurableObject<SakuThreadDO>("THREAD", {

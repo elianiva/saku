@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "portless",
+    "dev:app": "vite",
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
@@ -18,6 +19,10 @@
     "effect": "rc",
     "foldkit": "0.141.2",
     "tailwindcss": "^4.3.3"
+  },
+  "portless": {
+    "name": "saku",
+    "script": "dev:app"
   },
   "devDependencies": {
     "@foldkit/vite-plugin": "^0.11.3",
