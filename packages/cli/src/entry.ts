@@ -2,7 +2,7 @@
 /**
  * The saku CLI: steward of the local worker and its threads.
  *
- *   saku daemon start|stop|status  worker lifecycle
+ *   saku daemon start|stop|restart|status  worker lifecycle
  *   saku list                      list threads
  *   saku new <name> [--cwd <dir>]  create a thread (--mode local|sandbox|any)
  *   saku rm <thread>               delete a thread and its session
@@ -257,6 +257,25 @@ const cmdDaemon = Effect.fn("cmdDaemon")(function* (sub: string | undefined) {
         );
       }),
     ),
+    // Fresh-code guarantee: a detached daemon runs the source it was
+    // spawned with, so a daemon from an earlier session serves stale
+    // code. restart stops whatever answers and boots a new daemon,
+    // waiting until it publishes a live socket (the same ensure the
+    // on-demand commands use).
+    Match.when("restart", () =>
+      Effect.gen(function* () {
+        const lifecycle = yield* workerLifecycle();
+        const stopped = yield* stop(lifecycle);
+        yield* Effect.logInfo(
+          Option.match(stopped, {
+            onNone: () => "not running — starting",
+            onSome: (value) => `stopped (pid ${value}) — starting`,
+          }),
+        );
+        const connection = yield* ensure(lifecycle);
+        yield* Effect.logInfo(`started (pid ${connection.pid}, ${connection.url})`);
+      }),
+    ),
     Match.when("status", () =>
       Effect.gen(function* () {
         const lifecycle = yield* workerLifecycle();
@@ -269,7 +288,9 @@ const cmdDaemon = Effect.fn("cmdDaemon")(function* (sub: string | undefined) {
       }),
     ),
     Match.orElse(() =>
-      Effect.fail(new CliError({ code: "usage", message: "saku daemon <start|stop|status>" })),
+      Effect.fail(
+        new CliError({ code: "usage", message: "saku daemon <start|stop|restart|status>" }),
+      ),
     ),
   );
 });
@@ -337,7 +358,7 @@ const cmdEnv = Effect.fn("cmdEnv")(function* (sub: string | undefined, hubUrl: s
 const usage = () => `saku — local software factory
 
 usage:
-  saku daemon <start|stop|status>
+  saku daemon <start|stop|restart|status>
   saku env <start|stop|status> [--hub <url>]
   saku list
   saku new <name> [--cwd <dir>] [--mode local|sandbox|any]

@@ -94,6 +94,11 @@ them with `saku daemon stop` / `saku env stop`, check them with `status`. State
 lives in `~/.saku/` (`SAKU_HOME` overrides): the worker's URL + token for
 consoles, and the thread trail.
 
+`pnpm dev` ensures the worker daemon before the dev servers come up: a
+running daemon is restarted (a detached daemon serves the source it was
+spawned with, so an older process is stale code) and a missing one is booted
+— `saku daemon restart` is the same step standalone.
+
 Drive the worker with the CLI:
 
 ```bash

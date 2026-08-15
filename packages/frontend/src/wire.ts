@@ -52,13 +52,6 @@ export interface WireShape {
 
 export class Wire extends Context.Service<Wire, WireShape>()("saku/Wire") {}
 
-/** Every connect attempt fails with this while the bootstrap reports no daemon. */
-const daemonOffline = () =>
-  new WireError({
-    code: "refused",
-    message: "the local daemon is offline — start it with: saku daemon start",
-  });
-
 export const WireLive = Layer.effect(
   Wire,
   Effect.gen(function* () {
@@ -109,7 +102,12 @@ export const WireLive = Layer.effect(
     const connect = Effect.fn("connect")(function* () {
       const resolved = yield* resolveConfig;
       if (resolved._tag === "offline") {
-        return yield* Effect.fail(daemonOffline());
+        return yield* Effect.fail(
+          new WireError({
+            code: "refused",
+            message: "the local daemon is offline — start it with: saku daemon start",
+          }),
+        );
       }
       const endpoint = resolved.endpoint;
       if (endpoint.url !== currentEndpoint.url) {
