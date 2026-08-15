@@ -43,9 +43,7 @@ const errorKindOf = (error: unknown) => {
 };
 
 /** The envelope's error for any failure crossing the fetch boundary. */
-export const rpcErrorOf = (
-  error: unknown,
-) => ({
+export const rpcErrorOf = (error: unknown) => ({
   kind: errorKindOf(error),
   message: error instanceof Error ? error.message : String(error),
 });
@@ -101,15 +99,3 @@ export const decodeSetEnvHandlePayload = Schema.decodeUnknownOption(SetEnvHandle
 export const CommandPayload = Schema.Struct({ command: SessionCommand });
 export type CommandPayload = Schema.Schema.Type<typeof CommandPayload>;
 export const decodeCommandPayload = Schema.decodeUnknownOption(CommandPayload);
-
-/** Parse a request body and decode it against a payload decoder; none on malformed JSON or shape. */
-export const readBody = <A>(
-  request: Request,
-  decode: (body: unknown) => Option.Option<A>,
-) =>
-  Effect.runPromise(
-    Effect.tryPromise({
-      try: () => request.json() as Promise<unknown>,
-      catch: () => undefined,
-    }).pipe(Effect.flatMap((body) => Effect.sync(() => decode(body)))),
-  );

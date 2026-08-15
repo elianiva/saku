@@ -46,7 +46,6 @@ import {
   decodeSetEnvHandlePayload,
   jsonError,
   jsonOk,
-  readBody,
   rpcErrorOf,
 } from "./do-protocol.ts";
 import { pushToHub } from "./rpc.ts";
@@ -56,14 +55,12 @@ const RECORD_KEY = "record";
 const THREAD_ID_KEY = "thread-id";
 const ENV_HANDLE_KEY = "env-handle";
 
-const toSessionHostError =
-  (message: string) =>
-  (error: unknown) =>
-    new SessionHostError({
-      kind: "pi_seam",
-      message: `${message}: ${error instanceof Error ? error.message : String(error)}`,
-      cause: error,
-    });
+const toSessionHostError = (message: string) => (error: unknown) =>
+  new SessionHostError({
+    kind: "pi_seam",
+    message: `${message}: ${error instanceof Error ? error.message : String(error)}`,
+    cause: error,
+  });
 
 /** The failures a session command can produce (stringified at the fetch boundary). */
 type CommandError = SessionHostError | RegistryError;
@@ -149,7 +146,12 @@ export class SakuThreadDO {
   }
 
   private async handleCreate(request: Request) {
-    const body = await readBody(request, decodeCreatePayload);
+    const body = await Effect.runPromise(
+      Effect.tryPromise({
+        try: () => request.json() as Promise<unknown>,
+        catch: () => undefined,
+      }).pipe(Effect.flatMap((body) => Effect.sync(() => decodeCreatePayload(body)))),
+    );
     if (Option.isNone(body)) return jsonError("malformed", "malformed /create payload");
     const record = body.value.record;
     await this.state.storage.put(RECORD_KEY, record);
@@ -175,7 +177,12 @@ export class SakuThreadDO {
   }
 
   private async handleSetEnvHandle(request: Request) {
-    const body = await readBody(request, decodeSetEnvHandlePayload);
+    const body = await Effect.runPromise(
+      Effect.tryPromise({
+        try: () => request.json() as Promise<unknown>,
+        catch: () => undefined,
+      }).pipe(Effect.flatMap((body) => Effect.sync(() => decodeSetEnvHandlePayload(body)))),
+    );
     if (Option.isNone(body)) return jsonError("malformed", "malformed /set-env-handle payload");
     const handle = body.value.handle;
     await this.state.storage.put(ENV_HANDLE_KEY, handle);
@@ -197,7 +204,12 @@ export class SakuThreadDO {
   }
 
   private async handleCommand(request: Request) {
-    const body = await readBody(request, decodeCommandPayload);
+    const body = await Effect.runPromise(
+      Effect.tryPromise({
+        try: () => request.json() as Promise<unknown>,
+        catch: () => undefined,
+      }).pipe(Effect.flatMap((body) => Effect.sync(() => decodeCommandPayload(body)))),
+    );
     if (Option.isNone(body)) return jsonError("malformed", "malformed /command payload");
     const command = body.value.command;
     const record = await this.loadRecord();
@@ -209,10 +221,7 @@ export class SakuThreadDO {
     return jsonOk({ payload: result.payload, tailSeq: result.tailSeq });
   }
 
-  private runCommand(
-    record: ThreadRecord,
-    command: SessionCommand,
-  ) {
+  private runCommand(record: ThreadRecord, command: SessionCommand) {
     const self = this;
     return Effect.fn("runCommand")(function* () {
       // The shared dispatch serves the read-only commands without a host
@@ -245,9 +254,7 @@ export class SakuThreadDO {
   }
 
   /** The live host only when the thread's session has already started; none otherwise. */
-  private readOnlyHost(
-    record: ThreadRecord,
-  ) {
+  private readOnlyHost(record: ThreadRecord) {
     const self = this;
     return Effect.fn("readOnlyHost")(function* () {
       if (self.host !== undefined) return Option.some(self.host);

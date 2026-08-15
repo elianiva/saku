@@ -30,8 +30,6 @@ import { scriptedProvisioner, scriptedWorker, type ScriptedWorker } from "./mock
 
 const TEST_TOKEN = "hub-test-secret";
 
-const run = <A, E extends Error>(effect: Effect.Effect<A, E, never>) => Effect.runPromise(effect);
-
 interface World {
   readonly url: string;
   readonly worker: ScriptedWorker;
@@ -69,10 +67,12 @@ afterEach(async () => {
 });
 
 const connect = (options?: Partial<WorkerClientOptions>) =>
-  run(WireClient.make({ url: world.url, token: TEST_TOKEN, role: "cli", ...options }));
+  Effect.runPromise(
+    WireClient.make({ url: world.url, token: TEST_TOKEN, role: "cli", ...options }),
+  );
 
 const newThread = async (client: WireClientShape, name = `thread ${++seq}`) =>
-  run(client.createThread(name));
+  Effect.runPromise(client.createThread(name));
 
 /** A raw socket (no client machinery) for protocol-level assertions. */
 const rawSocket = (): Promise<WebSocket> =>
@@ -111,7 +111,7 @@ const waitFor = async (fn: () => boolean, timeoutMs = 2000) => {
 describe("handshake", () => {
   it("completes and reports the wire version", async () => {
     const client = await connect();
-    const hello = await run(client.connect());
+    const hello = await Effect.runPromise(client.connect());
     expect(hello.version).toBe(WIRE_VERSION);
     expect(hello.pid).toBeTypeOf("number");
     client.disconnect();
@@ -119,7 +119,7 @@ describe("handshake", () => {
 
   it("rejects a bad token", async () => {
     const client = await connect({ token: "wrong" });
-    await expect(run(client.connect())).rejects.toMatchObject({
+    await expect(Effect.runPromise(client.connect())).rejects.toMatchObject({
       code: "handshake",
       message: "invalid token",
     });
@@ -127,7 +127,7 @@ describe("handshake", () => {
 
   it("rejects a version mismatch before anything else", async () => {
     const client = await connect({ version: "0.0.0" });
-    await expect(run(client.connect())).rejects.toMatchObject({
+    await expect(Effect.runPromise(client.connect())).rejects.toMatchObject({
       code: "handshake",
       message: `version mismatch: expected ${WIRE_VERSION}`,
     });
@@ -149,8 +149,8 @@ describe("thread lifecycle over the wire", () => {
   it("creates, lists, gets, renames, and deletes, broadcasting to all consoles", async () => {
     const a = await connect();
     const b = await connect();
-    await run(a.connect());
-    await run(b.connect());
+    await Effect.runPromise(a.connect());
+    await Effect.runPromise(b.connect());
     const changed: ThreadInfo[] = [];
     a.on("thread_changed", (thread) => changed.push(thread));
     b.on("thread_changed", (thread) => changed.push(thread));
@@ -160,24 +160,24 @@ describe("thread lifecycle over the wire", () => {
     expect(world.worker.created).toEqual([thread.id]);
     await waitFor(() => changed.length === 2); // both consoles saw the create
 
-    expect((await run(a.listThreads())).map((t) => t.id)).toEqual([thread.id]);
-    expect((await run(b.getThread(thread.id))).id).toBe(thread.id);
+    expect((await Effect.runPromise(a.listThreads())).map((t) => t.id)).toEqual([thread.id]);
+    expect((await Effect.runPromise(b.getThread(thread.id))).id).toBe(thread.id);
 
-    const renamed = await run(a.renameThread(thread.id, "beta"));
+    const renamed = await Effect.runPromise(a.renameThread(thread.id, "beta"));
     expect(renamed.name).toBe("beta");
     await waitFor(() => changed.length === 4);
     expect(changed.at(-1)?.name).toBe("beta");
 
-    await run(b.deleteThread(thread.id));
+    await Effect.runPromise(b.deleteThread(thread.id));
     await waitFor(() => changed.length === 6);
     expect(world.worker.deleted).toEqual([thread.id]);
-    expect(await run(a.listThreads())).toHaveLength(0);
+    expect(await Effect.runPromise(a.listThreads())).toHaveLength(0);
   });
 
   it("fails an unknown thread with a response error", async () => {
     const client = await connect();
-    await run(client.connect());
-    await expect(run(client.getThread("nope"))).rejects.toMatchObject({
+    await Effect.runPromise(client.connect());
+    await expect(Effect.runPromise(client.getThread("nope"))).rejects.toMatchObject({
       code: "command_failed",
       message: 'no thread matches "nope"',
     });
@@ -188,8 +188,8 @@ describe("session commands over the wire", () => {
   it("streams a run's events and state changes to every console", async () => {
     const a = await connect();
     const b = await connect();
-    await run(a.connect());
-    await run(b.connect());
+    await Effect.runPromise(a.connect());
+    await Effect.runPromise(b.connect());
     const sessionEvents: Array<{ threadId: string; event: { type: string } }> = [];
     const changed: Array<{ id: string; state: string; tailSeq: number }> = [];
     a.on("event", (e) => sessionEvents.push(e));
@@ -217,7 +217,7 @@ describe("session commands over the wire", () => {
       world.worker.report(threadId, { state: "idle" });
       return Effect.succeed({ payload: { _tag: "prompt" }, tailSeq: 3 });
     });
-    await run(a.prompt(thread.id, "hello"));
+    await Effect.runPromise(a.prompt(thread.id, "hello"));
 
     // Both consoles see both session events (4 total) and the run's reports.
     await waitFor(() => sessionEvents.length === 4);
@@ -237,23 +237,23 @@ describe("session commands over the wire", () => {
 
   it("gates sandbox prompts: provisioning failure is a response error, env → error", async () => {
     const client = await connect();
-    await run(client.connect());
+    await Effect.runPromise(client.connect());
     const changed: ThreadInfo[] = [];
     client.on("thread_changed", (thread) => changed.push(thread));
 
     // A sandbox thread: the env axis starts stopped (lazy provisioning).
-    const sandbox = await run(client.createThread("sandboxed", { mode: "sandbox" }));
+    const sandbox = await Effect.runPromise(client.createThread("sandboxed", { mode: "sandbox" }));
     expect(sandbox.env).toBe("stopped");
 
     // This suite's hub carries a failing provisioner: the prompt is refused
     // before it reaches the worker, and the env axis flips to error.
-    await expect(run(client.prompt(sandbox.id, "hi"))).rejects.toMatchObject({
+    await expect(Effect.runPromise(client.prompt(sandbox.id, "hi"))).rejects.toMatchObject({
       code: "command_failed",
       message: "sandbox provisioning failed (scripted)",
     });
     await waitFor(() => changed.some((t) => t.id === sandbox.id && t.env === "error"));
     // Reads bypass the gate: browsing a failed sandbox still answers.
-    const state = await run(client.getState(sandbox.id));
+    const state = await Effect.runPromise(client.getState(sandbox.id));
     expect(state.state).toBe("idle");
   });
 
@@ -281,15 +281,17 @@ describe("session commands over the wire", () => {
 describe("skills over the wire", () => {
   it("imports, lists, and deletes skills", async () => {
     const client = await connect();
-    await run(client.connect());
-    const skill = await run(client.importSkill("https://github.com/foo/bar-baz.git"));
+    await Effect.runPromise(client.connect());
+    const skill = await Effect.runPromise(client.importSkill("https://github.com/foo/bar-baz.git"));
     expect(skill).toMatchObject({ name: "bar-baz", scope: "personal" });
-    const workspace = await run(client.importSkill("https://github.com/foo/team.git", "workspace"));
+    const workspace = await Effect.runPromise(
+      client.importSkill("https://github.com/foo/team.git", "workspace"),
+    );
     expect(workspace.scope).toBe("workspace");
-    const skills = await run(client.listSkills());
+    const skills = await Effect.runPromise(client.listSkills());
     expect(skills.map((s) => s.name)).toEqual(["bar-baz", "team"]);
-    await run(client.deleteSkill(skill.id));
-    await expect(run(client.deleteSkill(skill.id))).rejects.toMatchObject({
+    await Effect.runPromise(client.deleteSkill(skill.id));
+    await expect(Effect.runPromise(client.deleteSkill(skill.id))).rejects.toMatchObject({
       code: "command_failed",
       message: `unknown skill: ${skill.id}`,
     });

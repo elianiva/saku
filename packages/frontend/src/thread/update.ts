@@ -34,6 +34,7 @@ import { filterModels } from "../presentation.ts";
 import { Wire } from "../wire.ts";
 import {
   AbortCmd,
+  CompactCmd,
   ListModelsCmd,
   LoadStateCmd,
   LoadTrailCmd,
@@ -41,6 +42,13 @@ import {
   QuickStartCmd,
   SetModelCmd,
 } from "./command.ts";
+import {
+  ClearComposerCmd,
+  InsertComposerSuggestionCmd,
+  RemoveComposerTriggerCmd,
+  SetComposerEditableCmd,
+} from "./composer.ts";
+import { composerSuggestions, type ComposerSuggestion, type ComposerTrigger } from "./composer/options.ts";
 import { emptyLiveRegion, foldLive, Trail } from "./live.ts";
 import type { ThreadMessage, ThreadOutMessage } from "./message.ts";
 import { Model, ModelPicker } from "./model.ts";
@@ -71,6 +79,67 @@ const resetViewFields = {
   // starts collapsed (ADR-consistent with the welcome's focus state).
   thinkingOpen: (_: readonly string[]) => [],
   toolsOpen: (_: readonly string[]) => [],
+  composerMenu: (_: Model["composerMenu"]) => null,
+};
+
+const composerKind = (model: Model) => (model.id === null ? "welcome" : "thread");
+
+const composerOptions = (
+  model: Model,
+  trigger: ComposerTrigger,
+  query: string,
+) => composerSuggestions(trigger, query, model.id !== null);
+
+const updateResult = (
+  model: Model,
+  commands: Commands,
+  out: Option.Option<ThreadOutMessage>,
+) => [model, commands, out] as const;
+
+const applyComposerSuggestion = (
+  model: Model,
+  trigger: ComposerTrigger,
+  suggestion: ComposerSuggestion,
+) => {
+  const kind = composerKind(model);
+  const close = (next: Model) => evo(next, { composerMenu: (_) => null });
+  switch (suggestion.action) {
+    case "mention":
+      return updateResult(
+        close(model),
+        [InsertComposerSuggestionCmd({ kind, trigger, value: suggestion.value })],
+        Option.none(),
+      );
+    case "clear":
+      return updateResult(close(model), [ClearComposerCmd({ kind })], Option.none());
+    case "model":
+      if (model.id === null) return updateResult(model, none, Option.none());
+      return updateResult(
+        evo(model, {
+          composerMenu: (_) => null,
+          modelPicker: (_) => ModelPicker.Loading(),
+          pickerQuery: (_) => "",
+          pickerActive: (_) => 0,
+          usageOpen: (_) => false,
+        }),
+        [RemoveComposerTriggerCmd({ kind, trigger }), ListModelsCmd({ id: model.id })],
+        Option.none(),
+      );
+    case "compact":
+      if (model.id === null) return updateResult(model, none, Option.none());
+      return updateResult(
+        close(model),
+        [RemoveComposerTriggerCmd({ kind, trigger }), CompactCmd({ id: model.id })],
+        Option.none(),
+      );
+    case "abort":
+      if (model.id === null) return updateResult(model, none, Option.none());
+      return updateResult(
+        close(model),
+        [RemoveComposerTriggerCmd({ kind, trigger }), AbortCmd({ id: model.id })],
+        Option.none(),
+      );
+  }
 };
 
 /** The expanded-id set fold shared by the thinking/tool toggles: add on
@@ -95,10 +164,14 @@ export const update = (model: Model, message: ThreadMessage) =>
       },
       // The registry's word about this thread: keep the header current
       // (name, mode, state, env — the auto-title lands here).
-      ThreadChanged: ({ thread }) =>
-        model.id === thread.id
-          ? [evo(model, { info: (_) => thread }), none, Option.none()]
-          : [model, none, Option.none()],
+      ThreadChanged: ({ thread }) => {
+        if (model.id !== thread.id) return [model, none, Option.none()];
+        return [
+          evo(model, { info: (_) => thread }),
+          [SetComposerEditableCmd({ kind: "thread", editable: thread.state !== "working" })],
+          Option.none(),
+        ];
+      },
 
       TrailLoaded: ({ entries, tailSeq }) => [
         evo(model, { trail: (_) => Trail.Success({ data: { entries, tailSeq } }) }),
@@ -112,6 +185,46 @@ export const update = (model: Model, message: ThreadMessage) =>
       ],
 
       ComposerChanged: ({ text }) => [evo(model, { composer: (_) => text }), none, Option.none()],
+      ComposerTriggerChanged: ({ trigger, query }) => [
+        evo(model, { composerMenu: (_) => ({ trigger, query, active: 0 }) }),
+        none,
+        Option.none(),
+      ],
+      ComposerMenuClosed: () => [
+        evo(model, { composerMenu: (_) => null }),
+        none,
+        Option.none(),
+      ],
+      ComposerMenuMoved: ({ delta }) => {
+        if (model.composerMenu === null) return [model, none, Option.none()];
+        const { trigger, query, active } = model.composerMenu;
+        const options = composerOptions(model, trigger, query);
+        if (options.length === 0) return [model, none, Option.none()];
+        const next = Math.min(Math.max(active + delta, 0), options.length - 1);
+        return [evo(model, { composerMenu: (_) => ({ trigger, query, active: next }) }), none, Option.none()];
+      },
+      ComposerSuggestionAccepted: () => {
+        if (model.composerMenu === null) return [model, none, Option.none()];
+        const { trigger, query, active } = model.composerMenu;
+        const options = composerOptions(model, trigger, query);
+        const suggestion = options[Math.min(Math.max(active, 0), options.length - 1)];
+        if (suggestion === undefined) return [model, none, Option.none()];
+        return applyComposerSuggestion(model, trigger, suggestion);
+      },
+      ComposerSuggestionPicked: ({ trigger, value }) => {
+        if (model.composerMenu === null || model.composerMenu.trigger !== trigger) {
+          return [model, none, Option.none()];
+        }
+        const suggestion = composerOptions(model, trigger, model.composerMenu.query).find(
+          (candidate) => candidate.value === value,
+        );
+        if (suggestion === undefined) return [model, none, Option.none()];
+        return applyComposerSuggestion(model, trigger, suggestion);
+      },
+      ComposerCleared: () => [model, none, Option.none()],
+      ComposerTriggerRemoved: () => [model, none, Option.none()],
+      ComposerSuggestionInserted: () => [model, none, Option.none()],
+      ComposerEditableChanged: () => [model, none, Option.none()],
       ComposerFocused: () => [evo(model, { focused: (_) => true }), none, Option.none()],
       ComposerBlurred: () => [evo(model, { focused: (_) => false }), none, Option.none()],
 
@@ -120,7 +233,7 @@ export const update = (model: Model, message: ThreadMessage) =>
       // state and the stop control immediately.
       StateLoaded: ({ model: next, info }) => [
         evo(model, { model: (_) => next, info: (_) => info }),
-        none,
+        [SetComposerEditableCmd({ kind: "thread", editable: info.state !== "working" })],
         Option.none(),
       ],
       StateFailed: () => [model, none, Option.none()],
@@ -140,6 +253,7 @@ export const update = (model: Model, message: ThreadMessage) =>
                 // The picker and the usage panel float over the same card
                 // edge — only one at a time.
                 usageOpen: (_) => false,
+                composerMenu: (_) => null,
               }),
               [ListModelsCmd({ id: model.id })],
               Option.none(),
@@ -230,26 +344,49 @@ export const update = (model: Model, message: ThreadMessage) =>
         if (text === "") return [model, none, Option.none()];
         if (model.id === null) {
           if (model.starting) return [model, none, Option.none()];
-          return [evo(model, { starting: (_) => true }), [QuickStartCmd({ text })], Option.none()];
+          return [
+            evo(model, { starting: (_) => true, composerMenu: (_) => null }),
+            [
+              SetComposerEditableCmd({ kind: "welcome", editable: false }),
+              QuickStartCmd({ text }),
+            ],
+            Option.none(),
+          ];
         }
+        if (model.info?.state === "working") return [model, none, Option.none()];
         return [model, [PromptCmd({ id: model.id, text })], Option.none()];
       },
-      PromptAcked: () => [evo(model, { composer: (_) => "" }), none, Option.none()],
-      SendFailed: ({ message }) => [evo(model, { notice: (_) => message }), none, Option.none()],
+      PromptAcked: () => [
+        evo(model, { composer: (_) => "", composerMenu: (_) => null }),
+        [ClearComposerCmd({ kind: "thread" })],
+        Option.none(),
+      ],
+      SendFailed: ({ message }) => [
+        evo(model, { notice: (_) => message }),
+        model.id === null
+          ? none
+          : [SetComposerEditableCmd({ kind: "thread", editable: model.info?.state !== "working" })],
+        Option.none(),
+      ],
 
       // A thread was born from the draft: clear the draft (the prompt was
       // consumed), release the guard, and surface the fact — the root
       // pushes its URL, exactly as if the user had clicked the rail row.
       ThreadCreated: ({ thread }) => [
-        evo(model, { starting: (_) => false, composer: (_) => "", focused: (_) => false }),
-        none,
+        evo(model, {
+          starting: (_) => false,
+          composer: (_) => "",
+          composerMenu: (_) => null,
+          focused: (_) => false,
+        }),
+        [ClearComposerCmd({ kind: "welcome" })],
         Option.some(OpenedThread({ id: thread.id })),
       ],
       // The create failed: release the guard, keep the draft (clear only on
       // success), and show the notice under the composer.
       CreateFailed: ({ message }) => [
         evo(model, { starting: (_) => false, notice: (_) => message }),
-        none,
+        [SetComposerEditableCmd({ kind: "welcome", editable: true })],
         Option.none(),
       ],
 
@@ -258,6 +395,8 @@ export const update = (model: Model, message: ThreadMessage) =>
           ? [model, none, Option.none()]
           : [model, [AbortCmd({ id: model.id })], Option.none()],
       AbortDone: () => [model, none, Option.none()],
+      CompactionFinished: () => [model, none, Option.none()],
+      CompactionFailed: ({ message }) => [evo(model, { notice: (_) => message }), none, Option.none()],
       // A trail thinking block was expanded/collapsed (the `<details>`
       // toggle event; `expanded` is the new state from OnToggle). The
       // live region never lands here — it is open while streaming.

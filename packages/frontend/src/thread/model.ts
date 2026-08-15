@@ -22,6 +22,15 @@ import { emptyLiveRegion, LiveRegion, Trail } from "./live.ts";
 /** The switchable models `getAvailableModels()` returns, held as AsyncData. */
 export const ModelPicker = AsyncData.Schema(S.Array(WireModelInfo), WireError);
 
+/** The transient Lexical trigger shown in Foldkit's suggestion panel. The
+ * editor remains the source of truth for text and selection; this only holds
+ * the small amount of view state needed to render and navigate suggestions. */
+export const ComposerMenu = S.Struct({
+  trigger: S.Literals(["file", "command"]),
+  query: S.String,
+  active: S.Number,
+});
+
 export const Model = S.Struct({
   /** The active thread id; null renders the pane's welcome. */
   id: S.NullOr(S.String),
@@ -53,6 +62,8 @@ export const Model = S.Struct({
   modelBusy: S.Boolean,
   /** The composer's text — shared between the welcome and the thread. */
   composer: S.String,
+  /** The Foldkit-owned palette for the Lexical editor's @ and / triggers. */
+  composerMenu: S.NullOr(ComposerMenu),
   /** A quick start is in flight (guards Enter against double creates). */
   starting: S.Boolean,
   /** The composer's focus state, for the focus-aware placeholder. */
@@ -76,6 +87,7 @@ export const initialModel = () => ({
   pickerActive: 0,
   modelBusy: false,
   composer: "",
+  composerMenu: null,
   starting: false,
   focused: false,
   notice: null,

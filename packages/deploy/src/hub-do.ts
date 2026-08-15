@@ -42,7 +42,7 @@ import type { SessionWireEvent } from "@saku/wire";
 import { KvStore } from "@saku/store";
 import { varOrDefault, type DeploymentEnv } from "./env.ts";
 import { threadIdleStop, threadWorkerRef } from "./rpc.ts";
-import { decodeHubPush, jsonError, jsonOk, readBody, rpcErrorOf } from "./do-protocol.ts";
+import { decodeHubPush, jsonError, jsonOk, rpcErrorOf } from "./do-protocol.ts";
 import { staticProvisioner } from "./static-provisioner.ts";
 import { ENV_BUNDLE_BASE64 } from "./generated/env-bundle.ts";
 
@@ -215,7 +215,12 @@ export class SakuHubDO {
   private async handlePush(request: Request) {
     // Malformed JSON (the tryPromise catch) and out-of-contract shapes
     // (decodeUnknownOption) both land on `none`: one error response.
-    const parsed = await readBody(request, decodeHubPush);
+    const parsed = await Effect.runPromise(
+      Effect.tryPromise({
+        try: () => request.json() as Promise<unknown>,
+        catch: () => undefined,
+      }).pipe(Effect.flatMap((body) => Effect.sync(() => decodeHubPush(body)))),
+    );
     if (Option.isNone(parsed)) return jsonError("malformed", "malformed push");
     const push = parsed.value;
     const hub = await this.hubShape();

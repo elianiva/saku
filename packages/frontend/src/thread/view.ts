@@ -49,9 +49,7 @@ import { toolArgsView, type ToolArgLine, type ToolArgsView } from "./tools.ts";
 import type { LiveTool } from "./live.ts";
 import {
   AbortRequested,
-  ComposerBlurred,
-  ComposerChanged,
-  ComposerFocused,
+  ComposerSuggestionPicked,
   ModelPicked,
   ModelPickerClosed,
   ModelPickerRequested,
@@ -66,6 +64,8 @@ import {
 } from "./message.ts";
 import type { Model } from "./model.ts";
 import type { EntryProjection, MessageProjection } from "./projection.ts";
+import { ComposerMount } from "./composer.ts";
+import { composerSuggestions } from "./composer/options.ts";
 import { ChatScroller } from "./scroller.ts";
 
 export const view = Submodel.defineView<Model, ThreadMessage>((model, h) =>
@@ -616,8 +616,8 @@ const composerToolbar = (
         [h.Class("hidden sm:inline text-[10px] text-muted")],
         [
           kind === "welcome"
-            ? "enter to start · shift+enter for newline"
-            : "enter to send · shift+enter for newline",
+            ? "enter to start · shift+enter newline · @ files · / commands"
+            : "enter to send · shift+enter newline · @ files · / commands",
         ],
       ),
       h.span([h.Class("flex-1 min-w-2")], []),
@@ -927,15 +927,139 @@ const modelPickerRow = (
   );
 };
 
+/** The Foldkit-owned trigger palette. Lexical reports the active @ or /
+ * context through the ComposerMount; this panel is ordinary Foldkit view
+ * state, so keyboard navigation and pointer selection are replayable in
+ * DevTools and tests. */
+const composerMenuPanel = (model: Model, h: HtmlBuilder<ThreadMessage>) => {
+  const menu = model.composerMenu;
+  if (menu === null) return null;
+  const options = composerSuggestions(menu.trigger, menu.query, model.id !== null);
+  const active = options.length === 0 ? -1 : Math.min(menu.active, options.length - 1);
+  return h.div(
+    [
+      h.Class("absolute bottom-full left-0 right-0 z-20 mb-2 border border-line bg-base shadow-lg"),
+      h.Role("listbox"),
+      h.Attribute("id", "composer-suggestions"),
+      h.AriaLabel(menu.trigger === "file" ? "file mentions" : "slash commands"),
+    ],
+    [
+      h.div(
+        [h.Class("flex items-center justify-between border-b border-line px-3 py-1.5")],
+        [
+          h.span(
+            [h.Class("text-[10px] uppercase tracking-[0.18em] text-subtle")],
+            [menu.trigger === "file" ? "mention file" : "slash command"],
+          ),
+          h.span([h.Class("text-[10px] text-muted")], ["↑↓ navigate · enter select"]),
+        ],
+      ),
+      options.length === 0
+        ? h.div(
+            [h.Class("px-3 py-2 text-[12px] text-muted")],
+            [
+              menu.trigger === "file"
+                ? "type a path after @ to mention a file"
+                : "no matching slash commands",
+            ],
+          )
+        : h.div(
+            [h.Class("max-h-56 overflow-y-auto")],
+            options.map((suggestion, index) =>
+              h.button(
+                [
+                  h.Attribute("type", "button"),
+                  h.Attribute("id", `composer-option-${index}`),
+                  h.Role("option"),
+                  h.AriaSelected(index === active),
+                  h.Class(
+                    `flex w-full items-center gap-2 border-b border-line px-3 py-1.5 text-left text-[12px] last:border-b-0 ${index === active ? "bg-overlay/70" : "hover:bg-overlay/50"}`,
+                  ),
+                  h.OnMouseDown(
+                    ComposerSuggestionPicked({ trigger: menu.trigger, value: suggestion.value }),
+                  ),
+                ],
+                [
+                  h.span([h.Class("w-[1em] shrink-0 text-pine")], [icon(h, suggestion.icon)]),
+                  h.span([h.Class("font-mono text-text")], [suggestion.label]),
+                  h.span([h.Class("min-w-0 truncate text-muted")], [suggestion.detail]),
+                ],
+              ),
+            ),
+          ),
+    ],
+  );
+};
+
+/** The Lexical root is intentionally childless from Foldkit's point of view:
+ * Lexical owns that DOM subtree after ComposerMount attaches. The placeholder
+ * is a Foldkit sibling, not text inserted into the editor state. */
+const composerEditor = (
+  model: Model,
+  h: HtmlBuilder<ThreadMessage>,
+  kind: "thread" | "welcome",
+  busy: boolean,
+  placeholder: string,
+) => {
+  const menu = model.composerMenu;
+  const options =
+    menu === null ? [] : composerSuggestions(menu.trigger, menu.query, model.id !== null);
+  const active = options.length === 0 ? -1 : Math.min(menu?.active ?? 0, options.length - 1);
+  return h.div(
+    [h.Class("relative")],
+    [
+      h.div(
+        [
+          h.Class(
+            `saku-composer-editor block min-h-[72px] max-h-64 overflow-y-auto whitespace-pre-wrap break-words bg-transparent px-4 pb-2 pt-3 font-mono text-[13px] leading-relaxed text-text outline-none ${busy ? "cursor-not-allowed opacity-50" : ""}`,
+          ),
+          h.Contenteditable(String(!busy)),
+          h.AriaLabel(kind === "welcome" ? "start a thread" : "prompt the thread"),
+          h.Attribute("aria-placeholder", placeholder),
+          h.Spellcheck(false),
+          h.Autocorrect("off"),
+          h.Autocapitalize("off"),
+          ...(menu !== null && active >= 0
+            ? [
+                h.Attribute("aria-controls", "composer-suggestions"),
+                h.Attribute("aria-activedescendant", `composer-option-${active}`),
+              ]
+            : []),
+          h.OnMount(
+            ComposerMount({
+              kind,
+              initialText: model.composer,
+              placeholder,
+              editable: !busy,
+              autofocus: kind === "welcome",
+            }),
+          ),
+        ],
+        [],
+      ),
+      model.composer === ""
+        ? h.div(
+            [
+              h.Class(
+                "pointer-events-none absolute left-4 top-3 font-mono text-[13px] leading-relaxed text-muted",
+              ),
+              h.AriaHidden(true),
+            ],
+            [placeholder],
+          )
+        : null,
+    ],
+  );
+};
+
 /**
  * The composer box, shared by the thread pane and the welcome: a generous
  * prompt surface with its send action and real thread controls in one footer.
- * The textarea keeps the focus-aware placeholder and Enter/Shift+Enter
- * behavior; the failure notice stays under the action that caused it. On a
- * pinned thread the model picker and the usage panel float above the card
- * (absolute, overlaying the trail — the card is the positioning context).
- * The welcome's box autofocuses on mount — every arrival at the root route
- * lands the cursor in the composer (the thread box never autofocuses).
+ * Lexical owns editing and selection; the failure notice stays under the
+ * action that caused it. On a pinned thread the model picker and the usage
+ * panel float above the card (absolute, overlaying the trail — the card is the
+ * positioning context). The welcome's box autofocuses on mount — every
+ * arrival at the root route lands the cursor in the composer.
  */
 const composerBox = (model: Model, h: HtmlBuilder<ThreadMessage>, kind: "thread" | "welcome") => {
   const working = model.info?.state === "working";
@@ -958,45 +1082,13 @@ const composerBox = (model: Model, h: HtmlBuilder<ThreadMessage>, kind: "thread"
           ),
         ],
         [
-          h.div(
-            [h.Class("px-4 pb-2 pt-3")],
-            [
-              h.textarea([
-                h.Class(
-                  "block w-full resize-y border-0 bg-transparent p-0 font-mono text-[13px] leading-relaxed text-text outline-none placeholder:text-muted focus:ring-0",
-                ),
-                h.Rows(3),
-                h.Placeholder(placeholder),
-                h.Spellcheck(false),
-                h.Disabled(busy),
-                h.Value(model.composer),
-                h.OnInput((raw) => ComposerChanged({ text: raw })),
-                h.OnKeyDownPreventDefault((key, modifiers) =>
-                  key === "Enter" && !modifiers.shiftKey && !busy
-                    ? Option.some(SendRequested())
-                    : Option.none(),
-                ),
-                h.OnFocus(ComposerFocused()),
-                h.OnBlur(ComposerBlurred()),
-                ...(kind === "welcome"
-                  ? [
-                      h.OnMount({
-                        name: "AutofocusComposer",
-                        f: (element) => {
-                          (element as HTMLTextAreaElement).focus();
-                          return Stream.empty;
-                        },
-                      }),
-                    ]
-                  : []),
-              ]),
-            ],
-          ),
+          composerEditor(model, h, kind, busy, placeholder),
           composerToolbar(model, h, kind, busy),
         ],
       ),
       // The floating panels hang off the card's top edge, overlaying the
       // trail above the composer (the card is the positioning context).
+      ...(model.composerMenu !== null ? [composerMenuPanel(model, h)] : []),
       ...(kind === "thread" && model.modelPicker._tag !== "Idle"
         ? [modelPickerPanel(model, h)]
         : []),

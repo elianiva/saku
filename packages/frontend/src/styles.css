@@ -96,6 +96,31 @@ body {
 }
 
 /*
+ * Lexical's root is mounted as a third-party DOM island by thread/composer.ts.
+ * These classes keep its paragraph and token output visually identical to the
+ * old textarea while leaving room for richer nodes later.
+ */
+.saku-composer-editor:focus {
+  outline: none;
+}
+.saku-composer-paragraph {
+  min-height: 1.5rem;
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.saku-composer-file-mention {
+  display: inline-block;
+  margin: 0 0.12rem;
+  border: 1px solid color-mix(in srgb, var(--color-pine) 35%, transparent);
+  background: color-mix(in srgb, var(--color-pine) 12%, transparent);
+  padding: 0 0.25rem;
+  color: var(--color-pine);
+  font-family: var(--font-mono);
+  font-size: 0.95em;
+}
+
+/*
  * Markdown bodies (thread/markdown.ts): LLM assistant text and thinking,
  * parsed with md4x into foldkit nodes. The container keeps soft line
  * breaks (pre-line) the way the old pre-wrap body did; each element

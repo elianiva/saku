@@ -35,9 +35,6 @@ class TestError extends Schema.TaggedError<TestError>()("TestError", {
   message: Schema.String,
 }) {}
 
-const run = <T, E extends WireError>(effect: Effect.Effect<T, E, never>) =>
-  Effect.runPromise(effect);
-
 const wait = (ms = 50) => new Promise((resolve) => setTimeout(resolve, ms));
 
 let hub: HubFixture;
@@ -53,10 +50,10 @@ afterEach(async () => {
 });
 
 const connect = (options?: Partial<WorkerClientOptions>) =>
-  run(WireClient.make({ url: hub.url, token: TEST_TOKEN, role: "cli", ...options }));
+  Effect.runPromise(WireClient.make({ url: hub.url, token: TEST_TOKEN, role: "cli", ...options }));
 
 const newThread = async (client: WireClientShape, name = `thread ${++seq}`) => {
-  const thread = await run(client.createThread(name, { cwd: "/tmp/work" }));
+  const thread = await Effect.runPromise(client.createThread(name, { cwd: "/tmp/work" }));
   return thread.id;
 };
 
@@ -88,44 +85,44 @@ const tagOf = (frame: unknown) => (isTaggedFrame(frame) ? frame._tag : undefined
 describe("handshake", () => {
   it("completes and reports the wire version", async () => {
     const client = await connect();
-    const hello = await run(client.connect());
+    const hello = await Effect.runPromise(client.connect());
     expect(hello.version).toBe(WIRE_VERSION);
     expect(hello.pid).toBeTypeOf("number");
-    await run(client.disconnect());
+    await Effect.runPromise(client.disconnect());
   });
 
   it("rejects a bad token", async () => {
     const client = await connect({ token: "wrong" });
-    await expect(run(client.connect())).rejects.toMatchObject({
+    await expect(Effect.runPromise(client.connect())).rejects.toMatchObject({
       code: "handshake",
       message: "invalid token",
     });
-    await run(client.disconnect());
+    await Effect.runPromise(client.disconnect());
   });
 
   it("rejects a version mismatch before anything else", async () => {
     const client = await connect({ version: "0.0.0" });
-    await expect(run(client.connect())).rejects.toMatchObject({
+    await expect(Effect.runPromise(client.connect())).rejects.toMatchObject({
       code: "handshake",
       message: `version mismatch: expected ${WIRE_VERSION}`,
     });
-    await run(client.disconnect());
+    await Effect.runPromise(client.disconnect());
   });
 
   it("fails with refused when nothing is listening", async () => {
     const client = await connect({ url: "ws://127.0.0.1:1" });
-    await expect(run(client.connect())).rejects.toMatchObject({ code: "refused" });
-    await run(client.disconnect());
+    await expect(Effect.runPromise(client.connect())).rejects.toMatchObject({ code: "refused" });
+    await Effect.runPromise(client.disconnect());
   });
 });
 
 describe("thread lifecycle", () => {
   it("creates, lists, gets, renames, and deletes threads", async () => {
     const client = await connect();
-    await run(client.connect());
+    await Effect.runPromise(client.connect());
     const id = await newThread(client, "alpha");
 
-    const threads = await run(client.listThreads());
+    const threads = await Effect.runPromise(client.listThreads());
     expect(threads).toHaveLength(1);
     expect(threads[0]).toMatchObject({
       name: "alpha",
@@ -134,178 +131,180 @@ describe("thread lifecycle", () => {
       env: "ready",
     });
 
-    const got = await run(client.getThread(id));
+    const got = await Effect.runPromise(client.getThread(id));
     expect(got.id).toBe(id);
 
-    const renamed = await run(client.renameThread(id, "beta"));
+    const renamed = await Effect.runPromise(client.renameThread(id, "beta"));
     expect(renamed.name).toBe("beta");
 
-    await run(client.deleteThread(id));
-    expect(await run(client.listThreads())).toHaveLength(0);
-    await run(client.disconnect());
+    await Effect.runPromise(client.deleteThread(id));
+    expect(await Effect.runPromise(client.listThreads())).toHaveLength(0);
+    await Effect.runPromise(client.disconnect());
   });
 
   it("sends thread_changed on every mutation", async () => {
     const client = await connect();
-    await run(client.connect());
+    await Effect.runPromise(client.connect());
     const changes: string[] = [];
     client.on("thread_changed", (thread) => changes.push(thread.name));
 
-    await run(client.createThread("first", {}));
-    await run(client.createThread("second", {}));
+    await Effect.runPromise(client.createThread("first", {}));
+    await Effect.runPromise(client.createThread("second", {}));
     expect(changes).toEqual(["first", "second"]);
-    await run(client.disconnect());
+    await Effect.runPromise(client.disconnect());
   });
 
   it("archives and unarchives a thread (visibility-only)", async () => {
     const client = await connect();
-    await run(client.connect());
+    await Effect.runPromise(client.connect());
     const id = await newThread(client, "alpha");
 
-    const archived = await run(client.archiveThread(id));
+    const archived = await Effect.runPromise(client.archiveThread(id));
     expect(archived.archivedAt).not.toBeNull();
 
-    const unarchived = await run(client.unarchiveThread(id));
+    const unarchived = await Effect.runPromise(client.unarchiveThread(id));
     expect(unarchived.archivedAt).toBeNull();
     expect(unarchived.name).toBe("alpha");
 
-    await run(client.disconnect());
+    await Effect.runPromise(client.disconnect());
   });
 
   it("archiving an unknown thread fails command_failed", async () => {
     const client = await connect();
-    await run(client.connect());
+    await Effect.runPromise(client.connect());
 
-    await expect(run(client.archiveThread("nope"))).rejects.toMatchObject({
+    await expect(Effect.runPromise(client.archiveThread("nope"))).rejects.toMatchObject({
       code: "command_failed",
     });
-    await run(client.disconnect());
+    await Effect.runPromise(client.disconnect());
   });
 
   it("fails command_failed for unknown threads", async () => {
     const client = await connect();
-    await run(client.connect());
-    await expect(run(client.getThread("nope"))).rejects.toMatchObject({
+    await Effect.runPromise(client.connect());
+    await expect(Effect.runPromise(client.getThread("nope"))).rejects.toMatchObject({
       code: "command_failed",
       message: "unknown thread: nope",
     });
-    await run(client.disconnect());
+    await Effect.runPromise(client.disconnect());
   });
 });
 
 describe("session commands", () => {
   it("prompt appends entries, settles, and is readable back", async () => {
     const client = await connect();
-    await run(client.connect());
+    await Effect.runPromise(client.connect());
     const id = await newThread(client);
 
     const events: string[] = [];
     client.on("event", ({ event }) => events.push(event.type));
 
-    await run(client.prompt(id, "hello"));
+    await Effect.runPromise(client.prompt(id, "hello"));
     expect(events).toEqual(["entry_appended", "settled"]);
 
-    const { entries, tailSeq, leafId } = await run(client.getEntries(id));
+    const { entries, tailSeq, leafId } = await Effect.runPromise(client.getEntries(id));
     expect(entries).toHaveLength(1);
     expect(tailSeq).toBe(1);
     expect(leafId).toBe(entries[0]!.id);
 
-    const state = await run(client.getState(id));
+    const state = await Effect.runPromise(client.getState(id));
     expect(state.state).toBe("idle");
     expect(state.sessionId).toBe(id);
-    await run(client.disconnect());
+    await Effect.runPromise(client.disconnect());
   });
 
   it("supports reads without ever creating a session", async () => {
     const client = await connect();
-    await run(client.connect());
+    await Effect.runPromise(client.connect());
     const id = await newThread(client);
 
-    const { entries, tailSeq } = await run(client.getEntries(id));
+    const { entries, tailSeq } = await Effect.runPromise(client.getEntries(id));
     expect(entries).toHaveLength(0);
     expect(tailSeq).toBe(0);
-    const state = await run(client.getState(id));
+    const state = await Effect.runPromise(client.getState(id));
     expect(state.sessionId).toBeNull();
-    await run(client.disconnect());
+    await Effect.runPromise(client.disconnect());
   });
 
   it("serves models, thinking levels, and session stats", async () => {
     const client = await connect();
-    await run(client.connect());
+    await Effect.runPromise(client.connect());
     const id = await newThread(client);
 
-    const models = await run(client.getAvailableModels(id));
+    const models = await Effect.runPromise(client.getAvailableModels(id));
     expect(models).toEqual([MOCK_MODEL]);
-    const levels = await run(client.getAvailableThinkingLevels(id));
+    const levels = await Effect.runPromise(client.getAvailableThinkingLevels(id));
     expect(levels).toContain("high");
 
-    await run(client.setModel(id, "mock", "m1"));
-    await run(client.setThinkingLevel(id, "high"));
-    await expect(run(client.setModel(id, "mock", "nope"))).rejects.toMatchObject({
+    await Effect.runPromise(client.setModel(id, "mock", "m1"));
+    await Effect.runPromise(client.setThinkingLevel(id, "high"));
+    await expect(Effect.runPromise(client.setModel(id, "mock", "nope"))).rejects.toMatchObject({
       code: "command_failed",
     });
 
-    const stats = await run(client.getSessionStats(id));
+    const stats = await Effect.runPromise(client.getSessionStats(id));
     expect(stats).toBeDefined();
-    await run(client.disconnect());
+    await Effect.runPromise(client.disconnect());
   });
 
   it("rejects a prompt while the agent is working", async () => {
     const client = await connect();
-    await run(client.connect());
+    await Effect.runPromise(client.connect());
     const id = await newThread(client);
 
     // The slow run is still in flight on the fixture's side when the second
     // prompt lands; the fixture rejects it like the hub does.
-    const first = run(client.prompt(id, SLOW_PROMPT));
-    await expect(run(client.prompt(id, "second"))).rejects.toMatchObject({
+    const first = Effect.runPromise(client.prompt(id, SLOW_PROMPT));
+    await expect(Effect.runPromise(client.prompt(id, "second"))).rejects.toMatchObject({
       code: "command_failed",
       message: "agent is already processing",
     });
     await first;
-    await run(client.disconnect());
+    await Effect.runPromise(client.disconnect());
   });
 
   it("fails session commands for unknown threads", async () => {
     const client = await connect();
-    await run(client.connect());
-    await expect(run(client.prompt("nope", "hi"))).rejects.toMatchObject({
+    await Effect.runPromise(client.connect());
+    await expect(Effect.runPromise(client.prompt("nope", "hi"))).rejects.toMatchObject({
       code: "command_failed",
       message: "unknown thread: nope",
     });
-    await run(client.disconnect());
+    await Effect.runPromise(client.disconnect());
   });
 
   it("branches to a past entry", async () => {
     const client = await connect();
-    await run(client.connect());
+    await Effect.runPromise(client.connect());
     const id = await newThread(client);
-    await run(client.prompt(id, "first"));
-    const { entries } = await run(client.getEntries(id));
-    const leaf = await run(client.branch(id, entries[0]!.id));
+    await Effect.runPromise(client.prompt(id, "first"));
+    const { entries } = await Effect.runPromise(client.getEntries(id));
+    const leaf = await Effect.runPromise(client.branch(id, entries[0]!.id));
     expect(leaf).toBe(entries[0]!.id);
-    await expect(run(client.branch(id, "e99"))).rejects.toMatchObject({ code: "command_failed" });
-    await run(client.disconnect());
+    await expect(Effect.runPromise(client.branch(id, "e99"))).rejects.toMatchObject({
+      code: "command_failed",
+    });
+    await Effect.runPromise(client.disconnect());
   });
 
   it("round-trips every session command and dispatches each to its handler", async () => {
     const client = await connect();
-    await run(client.connect());
+    await Effect.runPromise(client.connect());
     const id = await newThread(client);
 
-    await run(client.steer(id, "stay on task"));
-    await run(client.followUp(id, "and then?"));
-    await run(client.setSteeringMode(id, "one-at-a-time"));
-    await run(client.setFollowUpMode(id, "one-at-a-time"));
-    const compact = await run(client.compact(id, "keep it short"));
+    await Effect.runPromise(client.steer(id, "stay on task"));
+    await Effect.runPromise(client.followUp(id, "and then?"));
+    await Effect.runPromise(client.setSteeringMode(id, "one-at-a-time"));
+    await Effect.runPromise(client.setFollowUpMode(id, "one-at-a-time"));
+    const compact = await Effect.runPromise(client.compact(id, "keep it short"));
     expect(compact.summary).toBe("mock");
     expect(compact.tokensBefore).toBe(0);
-    await run(client.setAutoCompaction(id, true));
-    await run(client.setSessionName(id, "my session"));
-    expect((await run(client.getState(id))).name).toBe("my session");
-    await run(client.setThinkingLevel(id, "high"));
-    expect((await run(client.getState(id))).thinkingLevel).toBe("high");
-    await run(client.abort(id));
+    await Effect.runPromise(client.setAutoCompaction(id, true));
+    await Effect.runPromise(client.setSessionName(id, "my session"));
+    expect((await Effect.runPromise(client.getState(id))).name).toBe("my session");
+    await Effect.runPromise(client.setThinkingLevel(id, "high"));
+    expect((await Effect.runPromise(client.getState(id))).thinkingLevel).toBe("high");
+    await Effect.runPromise(client.abort(id));
 
     // Dispatch proof: every command kind reached its handler, in order.
     expect(hub.calls()).toEqual([
@@ -322,74 +321,76 @@ describe("session commands", () => {
       "get_state",
       "abort",
     ]);
-    await run(client.disconnect());
+    await Effect.runPromise(client.disconnect());
   });
 });
 
 describe("skills", () => {
   it("imports, lists, and deletes skills", async () => {
     const client = await connect();
-    await run(client.connect());
+    await Effect.runPromise(client.connect());
 
-    const skill = await run(client.importSkill("git@github.com:acme/dotfiles.git"));
+    const skill = await Effect.runPromise(client.importSkill("git@github.com:acme/dotfiles.git"));
     expect(skill).toMatchObject({
       name: "dotfiles",
       scope: "personal",
       source: "git@github.com:acme/dotfiles.git",
     });
 
-    const workspace = await run(
+    const workspace = await Effect.runPromise(
       client.importSkill("https://github.com/acme/team-skills", "workspace"),
     );
     expect(workspace.scope).toBe("workspace");
 
-    const skills = await run(client.listSkills());
+    const skills = await Effect.runPromise(client.listSkills());
     expect(skills).toHaveLength(2);
 
-    await run(client.deleteSkill(skill.id));
-    expect(await run(client.listSkills())).toHaveLength(1);
+    await Effect.runPromise(client.deleteSkill(skill.id));
+    expect(await Effect.runPromise(client.listSkills())).toHaveLength(1);
 
-    await expect(run(client.deleteSkill(skill.id))).rejects.toMatchObject({
+    await expect(Effect.runPromise(client.deleteSkill(skill.id))).rejects.toMatchObject({
       code: "command_failed",
     });
-    await run(client.disconnect());
+    await Effect.runPromise(client.disconnect());
   });
 });
 
 describe("pi sessions", () => {
   it("rejects the pi-session commands at the hub (they are local-daemon-only)", async () => {
     const client = await connect();
-    await run(client.connect());
+    await Effect.runPromise(client.connect());
 
-    await expect(run(client.listPiSessions())).rejects.toMatchObject({
+    await expect(Effect.runPromise(client.listPiSessions())).rejects.toMatchObject({
       code: "command_failed",
       message: "pi sessions are served by the local daemon, not the hub",
     });
-    await expect(run(client.importPiSession("/tmp/whatever.jsonl"))).rejects.toMatchObject({
+    await expect(
+      Effect.runPromise(client.importPiSession("/tmp/whatever.jsonl")),
+    ).rejects.toMatchObject({
       code: "command_failed",
       message: "pi sessions are served by the local daemon, not the hub",
     });
-    await run(client.disconnect());
+    await Effect.runPromise(client.disconnect());
   });
 });
 
 describe("projects", () => {
   it("rejects the project commands at the hub (they are local-daemon-only)", async () => {
     const client = await connect();
-    await run(client.connect());
+    await Effect.runPromise(client.connect());
 
     for (const attempt of [
-      () => run(client.listProjects()),
-      () => run(client.addProject("/tmp/work")),
-      () => run(client.removeProject("/tmp/work")),
-      () => run(client.browseProjectDirs("")),
+      () => Effect.runPromise(client.listProjects()),
+      () => Effect.runPromise(client.addProject("/tmp/work")),
+      () => Effect.runPromise(client.removeProject("/tmp/work")),
+      () => Effect.runPromise(client.browseProjectDirs("")),
     ]) {
       await expect(attempt()).rejects.toMatchObject({
         code: "command_failed",
         message: "projects are served by the local daemon, not the hub",
       });
     }
-    await run(client.disconnect());
+    await Effect.runPromise(client.disconnect());
   });
 });
 
@@ -397,8 +398,8 @@ describe("fan-out", () => {
   it("delivers every session event to every console", async () => {
     const a = await connect();
     const b = await connect();
-    await run(a.connect());
-    await run(b.connect());
+    await Effect.runPromise(a.connect());
+    await Effect.runPromise(b.connect());
     const id = await newThread(a);
 
     const seenA: string[] = [];
@@ -418,19 +419,19 @@ describe("fan-out", () => {
       });
     });
 
-    await run(a.prompt(id, "hello"));
+    await Effect.runPromise(a.prompt(id, "hello"));
     expect(seenA).toEqual(["entry_appended", "settled"]);
     await bSettled;
     expect(seenB).toEqual(["entry_appended", "settled"]);
-    await run(a.disconnect());
-    await run(b.disconnect());
+    await Effect.runPromise(a.disconnect());
+    await Effect.runPromise(b.disconnect());
   });
 
   it("delivers thread_changed to every console", async () => {
     const a = await connect();
     const b = await connect();
-    await run(a.connect());
-    await run(b.connect());
+    await Effect.runPromise(a.connect());
+    await Effect.runPromise(b.connect());
 
     const fanned = new Promise<void>((resolve) => {
       const off = b.on("thread_changed", (thread) => {
@@ -440,17 +441,17 @@ describe("fan-out", () => {
         }
       });
     });
-    await run(a.createThread("fanned", {}));
+    await Effect.runPromise(a.createThread("fanned", {}));
     await fanned;
-    await run(a.disconnect());
-    await run(b.disconnect());
+    await Effect.runPromise(a.disconnect());
+    await Effect.runPromise(b.disconnect());
   });
 });
 
 describe("request/response correlation", () => {
   it("correlates interleaved responses to their requests", async () => {
     const client = await connect({ requestTimeoutMs: 5_000 });
-    await run(client.connect());
+    await Effect.runPromise(client.connect());
     const a = await newThread(client, "slow thread");
     const b = await newThread(client, "fast thread");
 
@@ -463,62 +464,64 @@ describe("request/response correlation", () => {
 
     // B's run settles well before A's slow run; both responses must still
     // resolve to their own requests.
-    const slow = run(client.prompt(a, SLOW_PROMPT));
-    const quick = run(client.prompt(b, "hi"));
+    const slow = Effect.runPromise(client.prompt(a, SLOW_PROMPT));
+    const quick = Effect.runPromise(client.prompt(b, "hi"));
     await quick;
     await slow;
     expect(seenB).toEqual(["entry_appended", "settled"]);
     expect(seenA).toEqual(["entry_appended", "settled"]);
-    await run(client.disconnect());
+    await Effect.runPromise(client.disconnect());
   });
 
   it("correlates concurrent requests to their own responses", async () => {
     const client = await connect();
-    await run(client.connect());
+    await Effect.runPromise(client.connect());
 
     const names = ["a", "b", "c", "d", "e"];
     const threads = await Promise.all(
-      names.map((name) => run(client.createThread(name, { cwd: "/tmp" }))),
+      names.map((name) => Effect.runPromise(client.createThread(name, { cwd: "/tmp" }))),
     );
     expect(threads.map((thread) => thread.name).sort()).toEqual([...names].sort());
-    await run(client.disconnect());
+    await Effect.runPromise(client.disconnect());
   });
 });
 
 describe("client behavior", () => {
   it("times out slow commands", async () => {
     const client = await connect({ requestTimeoutMs: 100 });
-    await run(client.connect());
+    await Effect.runPromise(client.connect());
     const id = await newThread(client);
-    await expect(run(client.prompt(id, SLOW_PROMPT))).rejects.toMatchObject({ code: "timeout" });
-    await run(client.disconnect());
+    await expect(Effect.runPromise(client.prompt(id, SLOW_PROMPT))).rejects.toMatchObject({
+      code: "timeout",
+    });
+    await Effect.runPromise(client.disconnect());
   });
 
   it("fails pending requests when the connection drops", async () => {
     const client = await connect({ requestTimeoutMs: 5_000 });
-    await run(client.connect());
+    await Effect.runPromise(client.connect());
     const id = await newThread(client);
 
-    const pending = run(client.prompt(id, SLOW_PROMPT));
+    const pending = Effect.runPromise(client.prompt(id, SLOW_PROMPT));
     await wait(50);
-    await run(hub.dropAll());
+    await Effect.runPromise(hub.dropAll());
     await expect(pending).rejects.toMatchObject({ code: "disconnected" });
-    await run(client.disconnect());
+    await Effect.runPromise(client.disconnect());
   });
 
   it("fails pending requests and closes clients when the server closes", async () => {
     const client = await connect({ requestTimeoutMs: 5_000 });
-    await run(client.connect());
+    await Effect.runPromise(client.connect());
     const id = await newThread(client);
 
-    const pending = run(client.prompt(id, SLOW_PROMPT));
+    const pending = Effect.runPromise(client.prompt(id, SLOW_PROMPT));
     await wait(50);
     const closed = new Promise<void>((resolve) => client.on("close", () => resolve()));
-    await run(hub.close());
+    await Effect.runPromise(hub.close());
     await expect(pending).rejects.toMatchObject({ code: "disconnected" });
     await closed;
     expect(client.isConnected).toBe(false);
-    await run(client.disconnect());
+    await Effect.runPromise(client.disconnect());
   });
 
   it("reconnects with backoff and re-hellos", async () => {
@@ -532,7 +535,7 @@ describe("client behavior", () => {
     expect(client.isConnected).toBe(true);
 
     const closed = new Promise<void>((resolve) => client.on("close", () => resolve()));
-    await run(hub.dropAll());
+    await Effect.runPromise(hub.dropAll());
     await closed;
     expect(client.isConnected).toBe(false);
 
@@ -542,20 +545,20 @@ describe("client behavior", () => {
     }
     expect(client.isConnected).toBe(true);
     expect(hellos).toBeGreaterThanOrEqual(2);
-    await run(client.listThreads());
-    await run(client.disconnect());
+    await Effect.runPromise(client.listThreads());
+    await Effect.runPromise(client.disconnect());
   });
 
   it("surfaces malformed frames as error events", async () => {
     const client = await connect();
-    await run(client.connect());
+    await Effect.runPromise(client.connect());
     const errors: string[] = [];
     client.on("error", ({ message }) => errors.push(message));
 
-    await run(hub.sendRaw("this is not json\n"));
+    await Effect.runPromise(hub.sendRaw("this is not json\n"));
     await wait();
     expect(errors).toContain("malformed JSON frame from server");
-    await run(client.disconnect());
+    await Effect.runPromise(client.disconnect());
   });
 });
 
@@ -664,7 +667,7 @@ class CreateThreadCommand implements fc.AsyncCommand<LifecycleModel, WireClientS
   check = () => true;
 
   async run(model: LifecycleModel, real: WireClientShape) {
-    const thread = await run(
+    const thread = await Effect.runPromise(
       real.createThread(this.name, this.cwd === null ? {} : { cwd: this.cwd }),
     );
     expect(thread).toMatchObject({
@@ -699,12 +702,12 @@ class RenameThreadCommand implements fc.AsyncCommand<LifecycleModel, WireClientS
     const id = entry?.id ?? bogusId(this.symbol);
     if (entry === undefined || this.name.trim() === "") {
       // Unknown symbol, or the registry rejects blank renames.
-      await expect(run(real.renameThread(id, this.name))).rejects.toMatchObject({
+      await expect(Effect.runPromise(real.renameThread(id, this.name))).rejects.toMatchObject({
         code: "command_failed",
       });
       return;
     }
-    const renamed = await run(real.renameThread(entry.id, this.name));
+    const renamed = await Effect.runPromise(real.renameThread(entry.id, this.name));
     expect(renamed.name).toBe(this.name.trim());
     entry.name = this.name.trim();
   }
@@ -722,12 +725,12 @@ class GetThreadCommand implements fc.AsyncCommand<LifecycleModel, WireClientShap
   async run(model: LifecycleModel, real: WireClientShape) {
     const entry = model.current(this.symbol);
     if (entry === undefined) {
-      await expect(run(real.getThread(bogusId(this.symbol)))).rejects.toMatchObject({
+      await expect(Effect.runPromise(real.getThread(bogusId(this.symbol)))).rejects.toMatchObject({
         code: "command_failed",
       });
       return;
     }
-    const got = await run(real.getThread(entry.id));
+    const got = await Effect.runPromise(real.getThread(entry.id));
     expect(got.id).toBe(entry.id);
     expect(got.name).toBe(entry.name);
   }
@@ -745,12 +748,14 @@ class DeleteThreadCommand implements fc.AsyncCommand<LifecycleModel, WireClientS
   async run(model: LifecycleModel, real: WireClientShape) {
     const entry = model.current(this.symbol);
     if (entry === undefined) {
-      await expect(run(real.deleteThread(bogusId(this.symbol)))).rejects.toMatchObject({
+      await expect(
+        Effect.runPromise(real.deleteThread(bogusId(this.symbol))),
+      ).rejects.toMatchObject({
         code: "command_failed",
       });
       return;
     }
-    await run(real.deleteThread(entry.id));
+    await Effect.runPromise(real.deleteThread(entry.id));
     model.stacks.get(this.symbol)!.pop();
     model.all.delete(entry.id);
   }
@@ -764,7 +769,7 @@ class ListThreadsCommand implements fc.AsyncCommand<LifecycleModel, WireClientSh
   check = () => true;
 
   async run(model: LifecycleModel, real: WireClientShape) {
-    const threads = await run(real.listThreads());
+    const threads = await Effect.runPromise(real.listThreads());
     const byId = new Map(threads.map((thread) => [thread.id, thread]));
     expect([...byId.keys()].sort()).toEqual([...model.all.keys()].sort());
     for (const entry of model.all.values()) {
@@ -807,14 +812,16 @@ describe("thread lifecycle (model-based)", () => {
     // One fixture serves every run; the model is re-seeded from the
     // registry's current state so the runs compose.
     const hub = await Effect.runPromise(startHubFixture());
-    const client = await run(WireClient.make({ url: hub.url, token: TEST_TOKEN, role: "cli" }));
-    await run(client.connect());
+    const client = await Effect.runPromise(
+      WireClient.make({ url: hub.url, token: TEST_TOKEN, role: "cli" }),
+    );
+    await Effect.runPromise(client.connect());
     try {
       await fc.assert(
         fc.asyncProperty(lifecycleCommands(), async (cmds) => {
           await fc.asyncModelRun(async () => {
             const model = new LifecycleModel();
-            const threads = await run(client.listThreads());
+            const threads = await Effect.runPromise(client.listThreads());
             for (const thread of threads) {
               const entry: ThreadEntry = { id: thread.id, name: thread.name };
               model.stacks.set(`seed-${thread.id}`, [entry]);
@@ -825,7 +832,7 @@ describe("thread lifecycle (model-based)", () => {
         }),
       );
     } finally {
-      await run(client.disconnect());
+      await Effect.runPromise(client.disconnect());
       await Effect.runPromise(hub.close());
     }
   });

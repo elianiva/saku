@@ -30,8 +30,6 @@ import {
 
 const TEST_TOKEN = "hub-test-secret";
 
-const run = <A, E extends Error>(effect: Effect.Effect<A, E, never>) => Effect.runPromise(effect);
-
 /** A scripted stream that emits one assistant message immediately. */
 const oneShotStream = (text: string) => {
   const message = assistantMessage(text);
@@ -95,7 +93,8 @@ afterEach(async () => {
   await Effect.runPromise(Scope.close(world.scope, Exit.void));
 });
 
-const connect = () => run(WireClient.make({ url: world.url, token: TEST_TOKEN, role: "cli" }));
+const connect = () =>
+  Effect.runPromise(WireClient.make({ url: world.url, token: TEST_TOKEN, role: "cli" }));
 
 /** A polling assertion that gave up (the async fork hadn't landed in time). */
 class TestError extends Schema.TaggedError<TestError>()("TestError", {
@@ -115,7 +114,7 @@ const waitFor = async (fn: () => boolean | Promise<boolean>, timeoutMs = 3000) =
 describe("hub + real SessionHost over the wire", () => {
   it("runs a real prompt: lazy reads, streamed events, state broadcasts, durable entries", async () => {
     const client = await connect();
-    await run(client.connect());
+    await Effect.runPromise(client.connect());
     const events: Array<{ type: string }> = [];
     const changed: ThreadInfo[] = [];
     client.on("event", (e) => events.push({ type: e.event.type }));
@@ -123,17 +122,17 @@ describe("hub + real SessionHost over the wire", () => {
 
     // The thread's real session id is the thread id; the host creates its
     // own trail under SAKU_HOME (the adapter's record mirrors the hub's).
-    const thread = await run(client.createThread("quick start", { autoName: true }));
+    const thread = await Effect.runPromise(client.createThread("quick start", { autoName: true }));
     expect(thread.env).toBe("ready");
 
     // Reads before any prompt answer without starting the session.
-    const before = await run(client.getState(thread.id));
+    const before = await Effect.runPromise(client.getState(thread.id));
     expect(before).toMatchObject({ sessionId: null, state: "idle", tailSeq: 0 });
-    const entriesBefore = await run(client.getEntries(thread.id));
+    const entriesBefore = await Effect.runPromise(client.getEntries(thread.id));
     expect(entriesBefore.entries).toHaveLength(0);
 
     // A prompt runs the real host: entry + settled events, working → idle.
-    await run(client.prompt(thread.id, "hello"));
+    await Effect.runPromise(client.prompt(thread.id, "hello"));
     await waitFor(() => events.some((e) => e.type === "entry_appended"));
     await waitFor(() => events.some((e) => e.type === "settled"));
     await waitFor(() => changed.some((t) => t.id === thread.id && t.state === "working"));
@@ -141,7 +140,7 @@ describe("hub + real SessionHost over the wire", () => {
     expect(events.map((e) => e.type)).toContain("settled");
 
     // The durable trail: the run's entries are readable through the hub.
-    const { entries, tailSeq, leafId } = await run(client.getEntries(thread.id));
+    const { entries, tailSeq, leafId } = await Effect.runPromise(client.getEntries(thread.id));
     expect(entries.map((entry) => entry.type)).toEqual([
       "model_change",
       "thinking_level_change",
@@ -156,38 +155,41 @@ describe("hub + real SessionHost over the wire", () => {
 
     // The session state: stable sessionId (back-filled via the hub's report
     // channel), the catalog's default model, the thread's tailSeq.
-    const state = await run(client.getState(thread.id));
+    const state = await Effect.runPromise(client.getState(thread.id));
     expect(state.sessionId).toBe(thread.id);
     expect(state.model).toMatchObject({ provider: TEST_PROVIDER, id: TEST_MODEL });
     expect(state.tailSeq).toBe(4);
     // The hub's registry view carries the same sessionId and tailSeq.
-    const info = await run(client.getThread(thread.id));
+    const info = await Effect.runPromise(client.getThread(thread.id));
     expect(info).toMatchObject({ sessionId: thread.id, tailSeq: 4, state: "idle" });
   });
 
   it("reports the auto-title to the hub and applies it to the registry name", async () => {
     // This suite's catalog feeds the host's auto-title completion.
     const client = await connect();
-    await run(client.connect());
-    const thread = await run(client.createThread("quick start", { autoName: true }));
-    await run(client.prompt(thread.id, "hello"));
+    await Effect.runPromise(client.connect());
+    const thread = await Effect.runPromise(client.createThread("quick start", { autoName: true }));
+    await Effect.runPromise(client.prompt(thread.id, "hello"));
     await waitFor(
-      async () => (await run(client.getThread(thread.id))).name.startsWith("a canned completion"),
+      async () =>
+        (await Effect.runPromise(client.getThread(thread.id))).name.startsWith(
+          "a canned completion",
+        ),
       5000,
     );
-    const renamed = await run(client.getThread(thread.id));
+    const renamed = await Effect.runPromise(client.getThread(thread.id));
     expect(renamed.name).toContain("quick start");
   });
 
   it("deletes the thread, its session, and its trail", async () => {
     const client = await connect();
-    await run(client.connect());
-    const thread = await run(client.createThread("gone soon"));
-    await run(client.prompt(thread.id, "hello"));
-    await run(client.deleteThread(thread.id));
-    expect(await run(client.listThreads())).toHaveLength(0);
+    await Effect.runPromise(client.connect());
+    const thread = await Effect.runPromise(client.createThread("gone soon"));
+    await Effect.runPromise(client.prompt(thread.id, "hello"));
+    await Effect.runPromise(client.deleteThread(thread.id));
+    expect(await Effect.runPromise(client.listThreads())).toHaveLength(0);
     // The trail directory is gone with the thread.
-    const trailExists = await run(
+    const trailExists = await Effect.runPromise(
       world.fs
         .exists(world.paths.threadTrailRoot(thread.id))
         .pipe(Effect.catch(() => Effect.succeed(false))),
@@ -197,13 +199,13 @@ describe("hub + real SessionHost over the wire", () => {
 
   it("provisions a sandbox thread on first prompt (scripted provisioner)", async () => {
     const client = await connect();
-    await run(client.connect());
-    const thread = await run(client.createThread("boxed", { mode: "sandbox" }));
+    await Effect.runPromise(client.connect());
+    const thread = await Effect.runPromise(client.createThread("boxed", { mode: "sandbox" }));
     expect(thread.env).toBe("stopped");
     // The scripted provisioner succeeds; the real SessionHost runs the run
     // with its stub stream fn, then the thread settles back to idle.
-    await run(client.prompt(thread.id, "hi"));
-    const info = await run(client.getThread(thread.id));
+    await Effect.runPromise(client.prompt(thread.id, "hi"));
+    const info = await Effect.runPromise(client.getThread(thread.id));
     expect(info.env).toBe("ready");
     expect(info.state).toBe("idle");
   });

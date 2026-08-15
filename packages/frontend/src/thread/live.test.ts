@@ -261,7 +261,7 @@ describe("tool execution", () => {
   });
 
   it("captures the tool's args: start pins them, a streamed update refreshes", () => {
-    let state = initial();
+    let state: Live = initial();
     state = foldLive(state, {
       _tag: "tool_execution_start",
       toolCallId: "c1",

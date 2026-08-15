@@ -32,11 +32,32 @@ export const TrailLoaded = Message.m("TrailLoaded", {
 export const TrailFailed = Message.m("TrailFailed", { error: S.String });
 
 export const ComposerChanged = Message.m("ComposerChanged", { text: S.String });
+/** Lexical found a trigger immediately before the caret. The suggestion
+ *  surface is Foldkit-owned; Lexical only reports the cursor context. */
+export const ComposerTriggerChanged = Message.m("ComposerTriggerChanged", {
+  trigger: S.Literals(["file", "command"]),
+  query: S.String,
+});
+export const ComposerMenuClosed = Message.m("ComposerMenuClosed");
+export const ComposerMenuMoved = Message.m("ComposerMenuMoved", { delta: S.Number });
+export const ComposerSuggestionAccepted = Message.m("ComposerSuggestionAccepted");
+export const ComposerSuggestionPicked = Message.m("ComposerSuggestionPicked", {
+  trigger: S.Literals(["file", "command"]),
+  value: S.String,
+});
+/** Fire-and-forget acknowledgements for DOM work performed by the Lexical
+ *  Mount. They keep those effects visible to Foldkit's runtime and DevTools. */
+export const ComposerCleared = Message.m("ComposerCleared");
+export const ComposerTriggerRemoved = Message.m("ComposerTriggerRemoved");
+export const ComposerSuggestionInserted = Message.m("ComposerSuggestionInserted");
+export const ComposerEditableChanged = Message.m("ComposerEditableChanged");
 /** Enter / the send button: prompts the pinned thread, or quick-starts a new
  *  one when no thread is pinned (the update branches on `model.id`). */
 export const SendRequested = Message.m("SendRequested");
 export const PromptAcked = Message.m("PromptAcked");
 export const SendFailed = Message.m("SendFailed", { message: S.String });
+export const CompactionFinished = Message.m("CompactionFinished");
+export const CompactionFailed = Message.m("CompactionFailed", { message: S.String });
 /** The composer's focus state, for the focus-aware placeholder (the
  *  humanlayer pattern: unfocused shows the affordance, focused the task). */
 export const ComposerFocused = Message.m("ComposerFocused");
@@ -102,9 +123,20 @@ export const ThreadMessage = S.Union([
   TrailLoaded,
   TrailFailed,
   ComposerChanged,
+  ComposerTriggerChanged,
+  ComposerMenuClosed,
+  ComposerMenuMoved,
+  ComposerSuggestionAccepted,
+  ComposerSuggestionPicked,
+  ComposerCleared,
+  ComposerTriggerRemoved,
+  ComposerSuggestionInserted,
+  ComposerEditableChanged,
   SendRequested,
   PromptAcked,
   SendFailed,
+  CompactionFinished,
+  CompactionFailed,
   ComposerFocused,
   ComposerBlurred,
   StateLoaded,

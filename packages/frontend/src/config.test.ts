@@ -42,11 +42,6 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-/** Run a config effect in a test. The timeout guard keeps a hung resolution
- *  from hanging the runner (the .pipe carve-out the wrapper rule allows). */
-const run = <A>(effect: Effect.Effect<A, never, never>) =>
-  Effect.runPromise(effect.pipe(Effect.timeout("2 seconds")));
-
 /**
  * The bootstrap oracle: a payload is a live daemon exactly when it is an
  * object with string url AND string token; it is the offline marker exactly
@@ -83,7 +78,7 @@ describe("fetchBootstrap", () => {
     await fc.assert(
       fc.asyncProperty(fc.oneof(payloadArb, fc.constant(null)), async (payload) => {
         stubFetch(payload);
-        const result = await run(fetchBootstrap);
+        const result = await Effect.runPromise(fetchBootstrap.pipe(Effect.timeout("2 seconds")));
         expect(result).toEqual(bootstrapOracle(payload));
       }),
     );
@@ -120,7 +115,7 @@ describe("resolveConfig", () => {
         async (payload, saved) => {
           stubFetch(payload);
           stubWindow(saved);
-          const result = await run(resolveConfig);
+          const result = await Effect.runPromise(resolveConfig.pipe(Effect.timeout("2 seconds")));
           expect(result).toEqual(resolveOracle(payload, saved));
         },
       ),

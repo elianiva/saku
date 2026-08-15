@@ -41,8 +41,6 @@ class TestError extends Schema.TaggedError<TestError>()("TestError", {
   message: Schema.String,
 }) {}
 
-const run = <A, E extends Error>(effect: Effect.Effect<A, E, never>) => Effect.runPromise(effect);
-
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const waitFor = async (fn: () => boolean, timeoutMs = 2000) => {
@@ -103,11 +101,13 @@ describe("idle-stop", () => {
   it("stops a sandbox env after the thread has been idle", async () => {
     const world = await makeWorld();
     scriptPrompt(world, "hi");
-    const thread = await run(world.hub.createThread({ name: "boxed", mode: "sandbox" }));
-    await run(world.hub.runSessionCommand(thread.id, { _tag: "prompt", text: "hi" }));
+    const thread = await Effect.runPromise(
+      world.hub.createThread({ name: "boxed", mode: "sandbox" }),
+    );
+    await Effect.runPromise(world.hub.runSessionCommand(thread.id, { _tag: "prompt", text: "hi" }));
     // The run settles to idle with the env ready; the timer then fires.
     await waitFor(() => world.provisioner.released.includes(thread.id));
-    const info = await run(world.hub.getThread(thread.id));
+    const info = await Effect.runPromise(world.hub.getThread(thread.id));
     expect(info.env).toBe("stopped");
     const last = world.events
       .filter((event) => event._tag === "thread_changed")
@@ -118,12 +118,16 @@ describe("idle-stop", () => {
   it("resumes on the next prompt: the env comes back ready and stops again after idle", async () => {
     const world = await makeWorld();
     scriptPrompt(world, "hi");
-    const thread = await run(world.hub.createThread({ name: "boxed", mode: "sandbox" }));
-    await run(world.hub.runSessionCommand(thread.id, { _tag: "prompt", text: "hi" }));
+    const thread = await Effect.runPromise(
+      world.hub.createThread({ name: "boxed", mode: "sandbox" }),
+    );
+    await Effect.runPromise(world.hub.runSessionCommand(thread.id, { _tag: "prompt", text: "hi" }));
     await waitFor(() => world.provisioner.released.includes(thread.id));
 
     // The next prompt provisions (resumes) the stopped box.
-    await run(world.hub.runSessionCommand(thread.id, { _tag: "prompt", text: "again" }));
+    await Effect.runPromise(
+      world.hub.runSessionCommand(thread.id, { _tag: "prompt", text: "again" }),
+    );
     await waitFor(() => {
       const latest = world.events
         .filter((event) => event._tag === "thread_changed")
@@ -139,22 +143,28 @@ describe("idle-stop", () => {
   it("never stops a local thread's env", async () => {
     const world = await makeWorld();
     scriptPrompt(world, "hi");
-    const thread = await run(world.hub.createThread({ name: "local", mode: "local" }));
-    await run(world.hub.runSessionCommand(thread.id, { _tag: "prompt", text: "hi" }));
+    const thread = await Effect.runPromise(
+      world.hub.createThread({ name: "local", mode: "local" }),
+    );
+    await Effect.runPromise(world.hub.runSessionCommand(thread.id, { _tag: "prompt", text: "hi" }));
     await sleep(IDLE_MS * 3);
     expect(world.provisioner.released).toHaveLength(0);
-    const info = await run(world.hub.getThread(thread.id));
+    const info = await Effect.runPromise(world.hub.getThread(thread.id));
     expect(info.env).toBe("ready");
   });
 
   it("resets the idle window on activity: a prompt shortly before the deadline stops it later", async () => {
     const world = await makeWorld();
     scriptPrompt(world, "hi");
-    const thread = await run(world.hub.createThread({ name: "boxed", mode: "sandbox" }));
-    await run(world.hub.runSessionCommand(thread.id, { _tag: "prompt", text: "hi" }));
+    const thread = await Effect.runPromise(
+      world.hub.createThread({ name: "boxed", mode: "sandbox" }),
+    );
+    await Effect.runPromise(world.hub.runSessionCommand(thread.id, { _tag: "prompt", text: "hi" }));
     await waitFor(() => world.provisioner.released.length === 1);
     // Activity resets the window: the second stop needs a fresh idle span.
-    await run(world.hub.runSessionCommand(thread.id, { _tag: "prompt", text: "again" }));
+    await Effect.runPromise(
+      world.hub.runSessionCommand(thread.id, { _tag: "prompt", text: "again" }),
+    );
     await sleep(IDLE_MS / 2);
     expect(world.provisioner.released.length).toBe(1);
     await waitFor(() => world.provisioner.released.length === 2);
@@ -224,7 +234,7 @@ describe("IdleStop.make — the policy directly", () => {
           return Option.some(record);
         }),
     };
-    return run(
+    return Effect.runPromise(
       IdleStop.make({
         registry,
         provisioner: {
@@ -278,14 +288,14 @@ describe("IdleStop.make — the policy directly", () => {
   it("arms a ready idle sandbox thread (the controller gets the arm)", async () => {
     const controller = fakeController();
     const { idleStop } = await makePolicy({ controller: controller.controller });
-    await run(idleStop.arm(THREAD));
+    await Effect.runPromise(idleStop.arm(THREAD));
     expect(controller.armed).toEqual([THREAD]);
   });
 
   it("never arms a local thread", async () => {
     const controller = fakeController();
     const { idleStop } = await makePolicy({ controller: controller.controller, mode: "local" });
-    await run(idleStop.arm(THREAD));
+    await Effect.runPromise(idleStop.arm(THREAD));
     expect(controller.armed).toEqual([]);
   });
 
@@ -293,7 +303,7 @@ describe("IdleStop.make — the policy directly", () => {
     for (const env of ["stopped", "error", "provisioning"] as const) {
       const controller = fakeController();
       const { idleStop } = await makePolicy({ controller: controller.controller, env });
-      await run(idleStop.arm(THREAD));
+      await Effect.runPromise(idleStop.arm(THREAD));
       expect(controller.armed).toEqual([]);
     }
   });
@@ -301,23 +311,23 @@ describe("IdleStop.make — the policy directly", () => {
   it("never arms mid-run (the run's own reports re-arm)", async () => {
     const controller = fakeController();
     const { idleStop } = await makePolicy({ controller: controller.controller, state: "working" });
-    await run(idleStop.arm(THREAD));
+    await Effect.runPromise(idleStop.arm(THREAD));
     expect(controller.armed).toEqual([]);
   });
 
   it("disarms through the controller", async () => {
     const controller = fakeController();
     const { idleStop } = await makePolicy({ controller: controller.controller });
-    await run(idleStop.disarm(THREAD));
+    await Effect.runPromise(idleStop.disarm(THREAD));
     expect(controller.disarmed).toEqual([THREAD]);
   });
 
   it("resets the window on activity: a re-arm pushes the deadline out", async () => {
     const { idleStop, released } = await makePolicy({});
-    await run(idleStop.arm(THREAD));
+    await Effect.runPromise(idleStop.arm(THREAD));
     await sleep(IDLE_MS / 2);
     // Activity resets the window: the first deadline passes, the second hasn't.
-    await run(idleStop.arm(THREAD));
+    await Effect.runPromise(idleStop.arm(THREAD));
     await sleep(IDLE_MS / 2);
     expect(released).toHaveLength(0);
     await waitFor(() => released.length === 1);
@@ -325,15 +335,15 @@ describe("IdleStop.make — the policy directly", () => {
 
   it("disarming clears the hub timer", async () => {
     const { idleStop, released } = await makePolicy({});
-    await run(idleStop.arm(THREAD));
-    await run(idleStop.disarm(THREAD));
+    await Effect.runPromise(idleStop.arm(THREAD));
+    await Effect.runPromise(idleStop.disarm(THREAD));
     await sleep(IDLE_MS * 2);
     expect(released).toHaveLength(0);
   });
 
   it("fires: releases the env, clears the worker's handle, flips the axis, broadcasts", async () => {
     const { idleStop, released, handles, envs, changed } = await makePolicy({});
-    await run(idleStop.fire(THREAD));
+    await Effect.runPromise(idleStop.fire(THREAD));
     expect(released).toEqual([{ threadId: THREAD, handle: HANDLE }]);
     expect(handles).toEqual([{ threadId: THREAD, handle: null }]);
     expect(envs).toEqual([{ threadId: THREAD, env: "stopped" }]);
@@ -347,7 +357,7 @@ describe("IdleStop.make — the policy directly", () => {
       controller: controller.controller,
       state: "working",
     });
-    await run(idleStop.fire(THREAD));
+    await Effect.runPromise(idleStop.fire(THREAD));
     expect(controller.disarmed).toEqual([THREAD]);
     // The re-arm attempt is a no-op while the run is in flight (arm's own
     // gate skips working threads); the run's reports re-arm when it settles.
@@ -357,7 +367,7 @@ describe("IdleStop.make — the policy directly", () => {
 
   it("fires nothing for a local thread", async () => {
     const { idleStop, released, handles, envs, changed } = await makePolicy({ mode: "local" });
-    await run(idleStop.fire(THREAD));
+    await Effect.runPromise(idleStop.fire(THREAD));
     expect(released).toHaveLength(0);
     expect(handles).toHaveLength(0);
     expect(envs).toHaveLength(0);

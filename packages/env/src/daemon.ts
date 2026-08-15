@@ -122,12 +122,6 @@ const runOp = (
     ok: false,
     error: serializePiError(error),
   });
-  const run = <T, E extends FileError | ExecutionError>(
-    promise: Promise<PiResult<T, E>>,
-  ): Promise<{ ok: true; payload: T } | { ok: false; error: EnvError }> =>
-    promise.then((outcome) =>
-      outcome.ok ? { ok: true, payload: outcome.value } : fail(outcome.error),
-    );
 
   return Match.value(op).pipe(
     Match.tagsExhaustive({
@@ -136,57 +130,122 @@ const runOp = (
           ok: true as const,
           payload: { cwd: ctx.cwd, pid: ctx.pid, version: ENV_VERSION },
         }),
-      absolute_path: ({ path }) => run<string, FileError>(env.absolutePath(path)),
-      join_path: ({ parts }) => run<string, FileError>(env.joinPath([...parts])),
-      read_text_file: ({ path }) => run<string, FileError>(env.readTextFile(path)),
+      absolute_path: ({ path }) =>
+        env
+          .absolutePath(path)
+          .then((outcome) =>
+            outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error),
+          ),
+      join_path: ({ parts }) =>
+        env
+          .joinPath([...parts])
+          .then((outcome) =>
+            outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error),
+          ),
+      read_text_file: ({ path }) =>
+        env
+          .readTextFile(path)
+          .then((outcome) =>
+            outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error),
+          ),
       read_text_lines: ({ path, maxLines }) =>
-        run<string[], FileError>(
-          env.readTextLines(path, maxLines === undefined ? undefined : { maxLines }),
-        ),
+        env
+          .readTextLines(path, maxLines === undefined ? undefined : { maxLines })
+          .then((outcome) =>
+            outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error),
+          ),
       read_binary_file: ({ path }) =>
-        run<string, FileError>(
-          env.readBinaryFile(path).then((outcome) =>
+        env
+          .readBinaryFile(path)
+          .then((outcome) =>
             outcome.ok
               ? {
                   ok: true as const,
                   value: Buffer.from(outcome.value).toString("base64"),
                 }
               : { ok: false as const, error: outcome.error },
+          )
+          .then((outcome) =>
+            outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error),
           ),
-        ),
       write_file: ({ path, content, encoding }) => {
         const bytes = encoding === "base64" ? Buffer.from(content, "base64") : content;
-        return run<void, FileError>(env.writeFile(path, bytes));
+        return env
+          .writeFile(path, bytes)
+          .then((outcome) =>
+            outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error),
+          );
       },
       append_file: ({ path, content, encoding }) => {
         const bytes = encoding === "base64" ? Buffer.from(content, "base64") : content;
-        return run<void, FileError>(env.appendFile(path, bytes));
+        return env
+          .appendFile(path, bytes)
+          .then((outcome) =>
+            outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error),
+          );
       },
       rename_file: ({ sourcePath, destinationPath }) =>
-        run<void, FileError>(env.renameFile(sourcePath, destinationPath)),
-      file_info: ({ path }) => run<FileInfo, FileError>(env.fileInfo(path)),
-      list_dir: ({ path }) => run<FileInfo[], FileError>(env.listDir(path)),
-      canonical_path: ({ path }) => run<string, FileError>(env.canonicalPath(path)),
-      exists: ({ path }) => run<boolean, FileError>(env.exists(path)),
+        env
+          .renameFile(sourcePath, destinationPath)
+          .then((outcome) =>
+            outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error),
+          ),
+      file_info: ({ path }) =>
+        env
+          .fileInfo(path)
+          .then((outcome) =>
+            outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error),
+          ),
+      list_dir: ({ path }) =>
+        env
+          .listDir(path)
+          .then((outcome) =>
+            outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error),
+          ),
+      canonical_path: ({ path }) =>
+        env
+          .canonicalPath(path)
+          .then((outcome) =>
+            outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error),
+          ),
+      exists: ({ path }) =>
+        env
+          .exists(path)
+          .then((outcome) =>
+            outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error),
+          ),
       create_dir: ({ path, recursive }) =>
-        run<void, FileError>(env.createDir(path, { recursive: recursive ?? true })),
+        env
+          .createDir(path, { recursive: recursive ?? true })
+          .then((outcome) =>
+            outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error),
+          ),
       remove: ({ path, recursive, force }) =>
-        run<void, FileError>(
-          env.remove(path, { recursive: recursive ?? false, force: force ?? false }),
-        ),
-      create_temp_dir: ({ prefix }) => run<string, FileError>(env.createTempDir(prefix)),
+        env
+          .remove(path, { recursive: recursive ?? false, force: force ?? false })
+          .then((outcome) =>
+            outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error),
+          ),
+      create_temp_dir: ({ prefix }) =>
+        env
+          .createTempDir(prefix)
+          .then((outcome) =>
+            outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error),
+          ),
       create_temp_file: ({ prefix, suffix }) =>
-        run<string, FileError>(
-          env.createTempFile({
+        env
+          .createTempFile({
             ...(prefix === undefined ? {} : { prefix }),
             ...(suffix === undefined ? {} : { suffix }),
-          }),
-        ),
+          })
+          .then((outcome) =>
+            outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error),
+          ),
       exec: ({ command, cwd, env: opEnv, timeout, inheritEnv }) => {
         const controller = new AbortController();
         ctx.aborters.set(id, () => controller.abort());
-        return run<{ stdout: string; stderr: string; exitCode: number }, ExecutionError>(
-          env.exec(command, {
+        return env
+          .exec(command, {
             ...(cwd === undefined ? {} : { cwd }),
             ...(opEnv === undefined ? {} : { env: opEnv }),
             ...(timeout === undefined ? {} : { timeout }),
@@ -194,8 +253,10 @@ const runOp = (
             abortSignal: controller.signal,
             onStdout: (text) => ctx.send(EnvStream.make({ id, kind: "stdout", text })),
             onStderr: (text) => ctx.send(EnvStream.make({ id, kind: "stderr", text })),
-          }),
-        );
+          })
+          .then((outcome) =>
+            outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error),
+          );
       },
     }),
   );

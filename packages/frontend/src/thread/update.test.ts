@@ -134,6 +134,7 @@ const modelArb: fc.Arbitrary<Model> = fc.record({
   pickerActive: fc.integer({ min: -1, max: 3 }),
   modelBusy: fc.boolean(),
   composer: fc.string({ maxLength: 24 }),
+  composerMenu: fc.constant(null),
   starting: fc.boolean(),
   focused: fc.boolean(),
   notice: fc.oneof(fc.constant(null), fc.string({ maxLength: 24 })),
@@ -149,14 +150,19 @@ describe("thread update", () => {
           expect(next).toEqual(model);
           expect(commands).toHaveLength(0);
         } else if (model.id !== null) {
-          expect(next).toEqual(model);
-          expect(commands).toHaveLength(1);
+          if (model.info?.state === "working") {
+            expect(next).toEqual(model);
+            expect(commands).toHaveLength(0);
+          } else {
+            expect(next).toEqual(model);
+            expect(commands).toHaveLength(1);
+          }
         } else if (model.starting) {
           expect(next).toEqual(model);
           expect(commands).toHaveLength(0);
         } else {
           expect(next).toEqual({ ...model, starting: true });
-          expect(commands).toHaveLength(1);
+          expect(commands).toHaveLength(2);
         }
       }),
     );
@@ -166,8 +172,14 @@ describe("thread update", () => {
     fc.assert(
       fc.property(modelArb, threadArb, (model, thread) => {
         const [next, commands, out] = update(model, ThreadCreated({ thread }));
-        expect(next).toEqual({ ...model, starting: false, composer: "", focused: false });
-        expect(commands).toHaveLength(0);
+        expect(next).toEqual({
+          ...model,
+          starting: false,
+          composer: "",
+          composerMenu: null,
+          focused: false,
+        });
+        expect(commands).toHaveLength(1);
         expect(out).toEqual(Option.some({ _tag: "OpenedThread", id: thread.id }));
       }),
     );
@@ -186,7 +198,7 @@ describe("thread update", () => {
     fc.assert(
       fc.property(modelArb, threadArb, (model, thread) => {
         const [next, commands] = update(model, ThreadChanged({ thread }));
-        expect(commands).toHaveLength(0);
+        expect(commands).toHaveLength(model.id === thread.id ? 1 : 0);
         expect(next).toEqual(model.id === thread.id ? { ...model, info: thread } : model);
       }),
     );
@@ -464,6 +476,7 @@ describe("thread update", () => {
           pickerActive: 0,
           modelBusy: false,
           usageOpen: false,
+          composerMenu: null,
           thinkingOpen: [],
           toolsOpen: [],
         };

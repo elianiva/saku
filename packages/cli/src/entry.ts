@@ -75,38 +75,29 @@ const fail = (error: unknown) => {
   process.exit(1);
 };
 
-/** Give connection-refused errors a steer, keep everything else as-is. */
-const run = <T>(effect: Effect.Effect<T, WireError, never>, label: string) =>
-  effect.pipe(
+const pad = (text: string, width: number) => text.padEnd(width).slice(0, width);
+
+const cmdList = Effect.fn("cmdList")(function* () {
+  const client = yield* connect;
+  const threads = yield* client.listThreads().pipe(
     Effect.catchIf(
       (error): error is WireError => error instanceof WireError && error.code === "refused",
       () =>
         Effect.fail(
           new WireError({
             code: "refused",
-            message: `worker refused the connection (${label}) — it may have just shut down; try: saku daemon status`,
+            message: `worker refused the connection (list threads) — it may have just shut down; try: saku daemon status`,
           }),
         ),
     ),
   );
-
-const pad = (text: string, width: number) => text.padEnd(width).slice(0, width);
-
-const cmdList = Effect.fn("cmdList")(function* () {
-  const client = yield* connect;
-  const threads = yield* run(client.listThreads(), "list threads");
   if (threads.length === 0) {
     yield* Effect.logInfo("no threads — create one with: saku new <name>");
     yield* client.disconnect();
     return;
   }
   yield* Effect.logInfo(
-    pad("ID", 10) +
-      pad("NAME", 28) +
-      pad("MODE", 10) +
-      pad("STATE", 12) +
-      pad("ENV", 12) +
-      "CWD",
+    pad("ID", 10) + pad("NAME", 28) + pad("MODE", 10) + pad("STATE", 12) + pad("ENV", 12) + "CWD",
   );
   for (const thread of threads) {
     yield* Effect.logInfo(
@@ -135,11 +126,21 @@ const cmdNew = Effect.fn("cmdNew")(function* (
     );
   }
   const client = yield* connect;
-  const thread = yield* run(
+  const thread = yield* (
     mode === undefined
       ? client.createThread(name, { cwd })
-      : client.createThread(name, { cwd, mode }),
-    "create thread",
+      : client.createThread(name, { cwd, mode })
+  ).pipe(
+    Effect.catchIf(
+      (error): error is WireError => error instanceof WireError && error.code === "refused",
+      () =>
+        Effect.fail(
+          new WireError({
+            code: "refused",
+            message: `worker refused the connection (create thread) — it may have just shut down; try: saku daemon status`,
+          }),
+        ),
+    ),
   );
   yield* Effect.logInfo(shortThreadId(thread.id));
   yield* client.disconnect();
@@ -152,12 +153,34 @@ const cmdRm = Effect.fn("cmdRm")(function* (threadArg: string | undefined) {
     );
   }
   const client = yield* connect;
-  const threads = yield* run(client.listThreads(), "list threads");
+  const threads = yield* client.listThreads().pipe(
+    Effect.catchIf(
+      (error): error is WireError => error instanceof WireError && error.code === "refused",
+      () =>
+        Effect.fail(
+          new WireError({
+            code: "refused",
+            message: `worker refused the connection (list threads) — it may have just shut down; try: saku daemon status`,
+          }),
+        ),
+    ),
+  );
   const resolved = resolveThread(threads, threadArg);
   if (Result.isFailure(resolved)) {
     return yield* Effect.fail(new CliError({ code: "resolution", message: resolved.failure }));
   }
-  yield* run(client.deleteThread(resolved.success.id), "delete thread");
+  yield* client.deleteThread(resolved.success.id).pipe(
+    Effect.catchIf(
+      (error): error is WireError => error instanceof WireError && error.code === "refused",
+      () =>
+        Effect.fail(
+          new WireError({
+            code: "refused",
+            message: `worker refused the connection (delete thread) — it may have just shut down; try: saku daemon status`,
+          }),
+        ),
+    ),
+  );
   yield* Effect.logInfo(`deleted ${shortThreadId(resolved.success.id)} (${resolved.success.name})`);
   yield* client.disconnect();
 });
@@ -175,12 +198,23 @@ const fmtWhen = (ms: number) => {
  *  (CONTEXT.md: Project: the window is project-scoped, never a full scan). */
 const cmdPiList = Effect.fn("cmdPiList")(function* (project: string | undefined) {
   const client = yield* connect;
-  const sessions = yield* run(client.listPiSessions(project), "list pi sessions");
+  const sessions = yield* client.listPiSessions(project).pipe(
+    Effect.catchIf(
+      (error): error is WireError => error instanceof WireError && error.code === "refused",
+      () =>
+        Effect.fail(
+          new WireError({
+            code: "refused",
+            message: `worker refused the connection (list pi sessions) — it may have just shut down; try: saku daemon status`,
+          }),
+        ),
+    ),
+  );
   if (sessions.length === 0) {
     yield* Effect.logInfo(
       project === undefined
         ? "no pi sessions — add a project first: saku project add <path>"
-        : `no pi sessions under ${project}`, 
+        : `no pi sessions under ${project}`,
     );
     yield* client.disconnect();
     return;
@@ -216,7 +250,18 @@ const cmdPiImport = Effect.fn("cmdPiImport")(function* (arg: string | undefined)
   const client = yield* connect;
   // An explicit path is an explicit gesture: no window lookup needed.
   if (arg.endsWith(".jsonl")) {
-    const thread = yield* run(client.importPiSession(arg), "import pi session");
+    const thread = yield* client.importPiSession(arg).pipe(
+      Effect.catchIf(
+        (error): error is WireError => error instanceof WireError && error.code === "refused",
+        () =>
+          Effect.fail(
+            new WireError({
+              code: "refused",
+              message: `worker refused the connection (import pi session) — it may have just shut down; try: saku daemon status`,
+            }),
+          ),
+      ),
+    );
     yield* Effect.logInfo(
       `imported ${arg.split("/").pop()} as ${shortThreadId(thread.id)} (${thread.name}) — continue with any saku command`,
     );
@@ -225,7 +270,18 @@ const cmdPiImport = Effect.fn("cmdPiImport")(function* (arg: string | undefined)
   }
   // Accept a session id, a bare filename, or a full path, scoped to the
   // window (the added projects' sessions).
-  const sessions = yield* run(client.listPiSessions(), "list pi sessions");
+  const sessions = yield* client.listPiSessions().pipe(
+    Effect.catchIf(
+      (error): error is WireError => error instanceof WireError && error.code === "refused",
+      () =>
+        Effect.fail(
+          new WireError({
+            code: "refused",
+            message: `worker refused the connection (list pi sessions) — it may have just shut down; try: saku daemon status`,
+          }),
+        ),
+    ),
+  );
   const match =
     sessions.find((session) => session.id === arg) ??
     sessions.find((session) => session.path === arg) ??
@@ -234,11 +290,22 @@ const cmdPiImport = Effect.fn("cmdPiImport")(function* (arg: string | undefined)
     return yield* Effect.fail(
       new CliError({
         code: "resolution",
-        message: `no pi session matches "${arg}" — try: saku pi list`, 
+        message: `no pi session matches "${arg}" — try: saku pi list`,
       }),
     );
   }
-  const thread = yield* run(client.importPiSession(match.path), "import pi session");
+  const thread = yield* client.importPiSession(match.path).pipe(
+    Effect.catchIf(
+      (error): error is WireError => error instanceof WireError && error.code === "refused",
+      () =>
+        Effect.fail(
+          new WireError({
+            code: "refused",
+            message: `worker refused the connection (import pi session) — it may have just shut down; try: saku daemon status`,
+          }),
+        ),
+    ),
+  );
   yield* Effect.logInfo(
     `imported ${match.id.slice(0, 12)} as ${shortThreadId(thread.id)} (${thread.name}) — continue with any saku command`,
   );
@@ -257,7 +324,10 @@ const cmdPi = Effect.fn("cmdPi")(function* (sub: string | undefined, arg: string
 });
 
 /** saku project add|list|remove — the window's scope (CONTEXT.md: Project). */
-const cmdProject = Effect.fn("cmdProject")(function* (sub: string | undefined, arg: string | undefined) {
+const cmdProject = Effect.fn("cmdProject")(function* (
+  sub: string | undefined,
+  arg: string | undefined,
+) {
   yield* Match.value(sub).pipe(
     Match.withReturnType<Effect.Effect<void, WireError | CliError, Paths>>(),
     Match.when("add", () =>
@@ -268,7 +338,18 @@ const cmdProject = Effect.fn("cmdProject")(function* (sub: string | undefined, a
           );
         }
         const client = yield* connect;
-        const project = yield* run(client.addProject(arg), "add project");
+        const project = yield* client.addProject(arg).pipe(
+          Effect.catchIf(
+            (error): error is WireError => error instanceof WireError && error.code === "refused",
+            () =>
+              Effect.fail(
+                new WireError({
+                  code: "refused",
+                  message: `worker refused the connection (add project) — it may have just shut down; try: saku daemon status`,
+                }),
+              ),
+          ),
+        );
         yield* Effect.logInfo(`added ${project.path}`);
         yield* client.disconnect();
       }),
@@ -276,7 +357,18 @@ const cmdProject = Effect.fn("cmdProject")(function* (sub: string | undefined, a
     Match.when("list", () =>
       Effect.gen(function* () {
         const client = yield* connect;
-        const projects = yield* run(client.listProjects(), "list projects");
+        const projects = yield* client.listProjects().pipe(
+          Effect.catchIf(
+            (error): error is WireError => error instanceof WireError && error.code === "refused",
+            () =>
+              Effect.fail(
+                new WireError({
+                  code: "refused",
+                  message: `worker refused the connection (list projects) — it may have just shut down; try: saku daemon status`,
+                }),
+              ),
+          ),
+        );
         if (projects.length === 0) {
           yield* Effect.logInfo("no projects — add one with: saku project add <path>");
         } else {
@@ -295,7 +387,18 @@ const cmdProject = Effect.fn("cmdProject")(function* (sub: string | undefined, a
           );
         }
         const client = yield* connect;
-        yield* run(client.removeProject(arg), "remove project");
+        yield* client.removeProject(arg).pipe(
+          Effect.catchIf(
+            (error): error is WireError => error instanceof WireError && error.code === "refused",
+            () =>
+              Effect.fail(
+                new WireError({
+                  code: "refused",
+                  message: `worker refused the connection (remove project) — it may have just shut down; try: saku daemon status`,
+                }),
+              ),
+          ),
+        );
         yield* Effect.logInfo(`removed ${arg} from the window`);
         yield* client.disconnect();
       }),
@@ -307,7 +410,10 @@ const cmdProject = Effect.fn("cmdProject")(function* (sub: string | undefined, a
 });
 
 /** saku archive|unarchive <thread> — visibility-only (CONTEXT.md: Archive). */
-const cmdArchive = Effect.fn("cmdArchive")(function* (threadArg: string | undefined, unarchive: boolean) {
+const cmdArchive = Effect.fn("cmdArchive")(function* (
+  threadArg: string | undefined,
+  unarchive: boolean,
+) {
   if (threadArg === undefined) {
     return yield* Effect.fail(
       new CliError({
@@ -317,14 +423,47 @@ const cmdArchive = Effect.fn("cmdArchive")(function* (threadArg: string | undefi
     );
   }
   const client = yield* connect;
-  const threads = yield* run(client.listThreads(), "list threads");
+  const threads = yield* client.listThreads().pipe(
+    Effect.catchIf(
+      (error): error is WireError => error instanceof WireError && error.code === "refused",
+      () =>
+        Effect.fail(
+          new WireError({
+            code: "refused",
+            message: `worker refused the connection (list threads) — it may have just shut down; try: saku daemon status`,
+          }),
+        ),
+    ),
+  );
   const resolved = resolveThread(threads, threadArg);
   if (Result.isFailure(resolved)) {
     return yield* Effect.fail(new CliError({ code: "resolution", message: resolved.failure }));
   }
   const thread = unarchive
-    ? yield* run(client.unarchiveThread(resolved.success.id), "unarchive thread")
-    : yield* run(client.archiveThread(resolved.success.id), "archive thread");
+    ? yield* client.unarchiveThread(resolved.success.id).pipe(
+        Effect.catchIf(
+          (error): error is WireError => error instanceof WireError && error.code === "refused",
+          () =>
+            Effect.fail(
+              new WireError({
+                code: "refused",
+                message: `worker refused the connection (unarchive thread) — it may have just shut down; try: saku daemon status`,
+              }),
+            ),
+        ),
+      )
+    : yield* client.archiveThread(resolved.success.id).pipe(
+        Effect.catchIf(
+          (error): error is WireError => error instanceof WireError && error.code === "refused",
+          () =>
+            Effect.fail(
+              new WireError({
+                code: "refused",
+                message: `worker refused the connection (archive thread) — it may have just shut down; try: saku daemon status`,
+              }),
+            ),
+        ),
+      );
   yield* Effect.logInfo(
     `${unarchive ? "unarchived" : "archived"} ${shortThreadId(thread.id)} (${thread.name}) — the trail is untouched`,
   );

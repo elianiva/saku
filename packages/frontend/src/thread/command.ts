@@ -1,18 +1,19 @@
 /**
  * The thread submodel's commands (thread/command.ts): the pane's wire
  * operations as foldkit Commands landing thread messages. Errors never
- * escape as defects — every command body fails only with `WireError`, and
- * the shared `catchWireError` (root/command.ts) projects it into a `*Failed`
- * message so the pane can show it.
+ * escape as defects — every command body fails only with `WireError` and
+ * catches the tag itself, projecting it into a `*Failed` message so the
+ * pane can show it.
  */
 
 import { Effect, Schema as S } from "effect";
 import { Command } from "foldkit";
 
-import { catchWireError } from "../root/command.ts";
 import { Wire } from "../wire.ts";
 import {
   AbortDone,
+  CompactionFailed,
+  CompactionFinished,
   CreateFailed,
   ModelSet,
   ModelSetFailed,
@@ -28,23 +29,23 @@ import {
 } from "./message.ts";
 import { decodeEntry, type EntryProjection } from "./projection.ts";
 
-/** Load a thread's entry trail (reads never start a session, ADR 0004). */export const LoadTrailCmd = Command.define("LoadTrail", {
-  args: { id: S.String },
-  messages: [TrailLoaded, TrailFailed],
-  execute: ({ id }) =>
-    catchWireError(
+/** Load a thread's entry trail (reads never start a session, ADR 0004). */ export const LoadTrailCmd =
+  Command.define("LoadTrail", {
+    args: { id: S.String },
+    messages: [TrailLoaded, TrailFailed],
+    execute: ({ id }) =>
       Effect.gen(function* () {
         const { client } = yield* Wire;
         const result = yield* client.getEntries(id, 0);
         const decoded = yield* Effect.forEach(result.entries, decodeEntry);
-        const entries = decoded.filter(
-          (entry): entry is EntryProjection => entry !== undefined,
-        );
+        const entries = decoded.filter((entry): entry is EntryProjection => entry !== undefined);
         return TrailLoaded({ entries, tailSeq: result.tailSeq });
-      }),
-      (error) => TrailFailed({ error: error.message }),
-    ),
-});
+      }).pipe(
+        Effect.catchTag("WireError", (error) =>
+          Effect.succeed(TrailFailed({ error: error.message })),
+        ),
+      ),
+  });
 
 /** Read the pinned thread's state and registry info — the model badge's
  *  model and the header's state/env line (ADR 0004). The info lands here
@@ -54,14 +55,11 @@ export const LoadStateCmd = Command.define("LoadState", {
   args: { id: S.String },
   messages: [StateLoaded, StateFailed],
   execute: ({ id }) =>
-    catchWireError(
-      Effect.gen(function* () {
-        const { client } = yield* Wire;
-        const [state, info] = yield* Effect.all([client.getState(id), client.getThread(id)]);
-        return StateLoaded({ model: state.model, info });
-      }),
-      () => StateFailed(),
-    ),
+    Effect.gen(function* () {
+      const { client } = yield* Wire;
+      const [state, info] = yield* Effect.all([client.getState(id), client.getThread(id)]);
+      return StateLoaded({ model: state.model, info });
+    }).pipe(Effect.catchTag("WireError", () => Effect.succeed(StateFailed()))),
 });
 
 /** List the models the thread can switch to (a read — catalog-served, ADR 0004). */
@@ -69,14 +67,11 @@ export const ListModelsCmd = Command.define("ListModels", {
   args: { id: S.String },
   messages: [ModelsListed, ModelsListFailed],
   execute: ({ id }) =>
-    catchWireError(
-      Effect.gen(function* () {
-        const { client } = yield* Wire;
-        const models = yield* client.getAvailableModels(id);
-        return ModelsListed({ models });
-      }),
-      (error) => ModelsListFailed({ error }),
-    ),
+    Effect.gen(function* () {
+      const { client } = yield* Wire;
+      const models = yield* client.getAvailableModels(id);
+      return ModelsListed({ models });
+    }).pipe(Effect.catchTag("WireError", (error) => Effect.succeed(ModelsListFailed({ error })))),
 });
 
 /** Switch the thread's model; the response carries the resolved model. */
@@ -84,13 +79,14 @@ export const SetModelCmd = Command.define("SetModel", {
   args: { id: S.String, provider: S.String, modelId: S.String },
   messages: [ModelSet, ModelSetFailed],
   execute: ({ id, provider, modelId }) =>
-    catchWireError(
-      Effect.gen(function* () {
-        const { client } = yield* Wire;
-        const model = yield* client.setModel(id, provider, modelId);
-        return ModelSet({ model });
-      }),
-      (error) => ModelSetFailed({ message: error.message }),
+    Effect.gen(function* () {
+      const { client } = yield* Wire;
+      const model = yield* client.setModel(id, provider, modelId);
+      return ModelSet({ model });
+    }).pipe(
+      Effect.catchTag("WireError", (error) =>
+        Effect.succeed(ModelSetFailed({ message: error.message })),
+      ),
     ),
 });
 
@@ -99,13 +95,32 @@ export const PromptCmd = Command.define("Prompt", {
   args: { id: S.String, text: S.String },
   messages: [PromptAcked, SendFailed],
   execute: ({ id, text }) =>
-    catchWireError(
-      Effect.gen(function* () {
-        const { client } = yield* Wire;
-        yield* client.prompt(id, text);
-        return PromptAcked();
-      }),
-      (error) => SendFailed({ message: error.message }),
+    Effect.gen(function* () {
+      const { client } = yield* Wire;
+      yield* client.prompt(id, text);
+      return PromptAcked();
+    }).pipe(
+      Effect.catchTag("WireError", (error) =>
+        Effect.succeed(SendFailed({ message: error.message })),
+      ),
+    ),
+});
+
+/** Manual compaction, exposed through the composer's `/compact` palette
+ * action. The worker still owns session state and the streamed compaction
+ * events; this command only starts the existing wire operation. */
+export const CompactCmd = Command.define("Compact", {
+  args: { id: S.String },
+  messages: [CompactionFinished, CompactionFailed],
+  execute: ({ id }) =>
+    Effect.gen(function* () {
+      const { client } = yield* Wire;
+      yield* client.compact(id);
+      return CompactionFinished();
+    }).pipe(
+      Effect.catchTag("WireError", (error) =>
+        Effect.succeed(CompactionFailed({ message: error.message })),
+      ),
     ),
 });
 
@@ -116,15 +131,16 @@ export const QuickStartCmd = Command.define("QuickStart", {
   args: { text: S.String },
   messages: [ThreadCreated, CreateFailed],
   execute: ({ text }) =>
-    catchWireError(
-      Effect.gen(function* () {
-        const { client } = yield* Wire;
-        const created = yield* client.createThread(text, { autoName: true });
-        yield* client.prompt(created.id, text);
-        const thread = yield* client.getThread(created.id);
-        return ThreadCreated({ thread });
-      }),
-      (error) => CreateFailed({ message: error.message }),
+    Effect.gen(function* () {
+      const { client } = yield* Wire;
+      const created = yield* client.createThread(text, { autoName: true });
+      yield* client.prompt(created.id, text);
+      const thread = yield* client.getThread(created.id);
+      return ThreadCreated({ thread });
+    }).pipe(
+      Effect.catchTag("WireError", (error) =>
+        Effect.succeed(CreateFailed({ message: error.message })),
+      ),
     ),
 });
 
@@ -133,12 +149,9 @@ export const AbortCmd = Command.define("Abort", {
   args: { id: S.String },
   messages: [AbortDone],
   execute: ({ id }) =>
-    catchWireError(
-      Effect.gen(function* () {
-        const { client } = yield* Wire;
-        yield* client.abort(id);
-        return AbortDone();
-      }),
-      () => AbortDone(),
-    ),
+    Effect.gen(function* () {
+      const { client } = yield* Wire;
+      yield* client.abort(id);
+      return AbortDone();
+    }).pipe(Effect.catchTag("WireError", () => Effect.succeed(AbortDone()))),
 });

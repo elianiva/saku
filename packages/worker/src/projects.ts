@@ -46,11 +46,10 @@ const readDoc = (kv: KvStoreShape) =>
           Effect.try({
             try: () => JSON.parse(new TextDecoder().decode(value)) as unknown,
             catch: (error) => error,
-          })
-            .pipe(
-              Effect.flatMap((parsed) => Effect.sync(() => decodeDoc(parsed))),
-              Effect.catch(() => Effect.succeed({ projects: [] as readonly ProjectRecord[] })),
-            ),
+          }).pipe(
+            Effect.flatMap((parsed) => Effect.sync(() => decodeDoc(parsed))),
+            Effect.catch(() => Effect.succeed({ projects: [] as readonly ProjectRecord[] })),
+          ),
       }),
     ),
   );
@@ -58,22 +57,15 @@ const readDoc = (kv: KvStoreShape) =>
 const writeDoc = (kv: KvStoreShape, projects: readonly ProjectRecord[]) =>
   kv.put(DOC_KEY, new TextEncoder().encode(`${JSON.stringify({ projects })}\n`));
 
-/** Run a store effect over the file backend rooted at the saku home. */
-const withStore = <A, E>(
-  fs: FileSystem.FileSystem,
-  paths: PathsShape,
-  effect: Effect.Effect<A, E, KvStore>,
-) => effect.pipe(Effect.provide(KvStore.file(fs, paths.sakuDir)));
-
 /** The added projects, oldest first. */
 export const listProjects = Effect.fn("listProjects")(function* (
   fs: FileSystem.FileSystem,
   paths: PathsShape,
 ): Effect.fn.Return<readonly ProjectRecord[], never, never> {
-  const doc = yield* withStore(fs, paths, Effect.gen(function* () {
+  const doc = yield* Effect.gen(function* () {
     const kv = yield* KvStore;
     return yield* readDoc(kv);
-  }));
+  }).pipe(Effect.provide(KvStore.file(fs, paths.sakuDir)));
   return [...doc.projects].sort((a, b) => a.addedAt - b.addedAt);
 });
 
@@ -84,7 +76,7 @@ export const addProject = Effect.fn("addProject")(function* (
   input: string,
 ): Effect.fn.Return<ProjectRecord, never, never> {
   const path = resolve(input);
-  return yield* withStore(fs, paths, Effect.gen(function* () {
+  return yield* Effect.gen(function* () {
     const kv = yield* KvStore;
     const doc = yield* readDoc(kv);
     const existing = doc.projects.find((project) => project.path === path);
@@ -92,7 +84,7 @@ export const addProject = Effect.fn("addProject")(function* (
     const project: ProjectRecord = { path, addedAt: Date.now() };
     yield* writeDoc(kv, [...doc.projects, project]);
     return project;
-  }));
+  }).pipe(Effect.provide(KvStore.file(fs, paths.sakuDir)));
 });
 
 /** Remove a project from the window; a no-op when it was never added. */
@@ -102,11 +94,11 @@ export const removeProject = Effect.fn("removeProject")(function* (
   input: string,
 ): Effect.fn.Return<void, never, never> {
   const path = resolve(input);
-  yield* withStore(fs, paths, Effect.gen(function* () {
+  yield* Effect.gen(function* () {
     const kv = yield* KvStore;
     const doc = yield* readDoc(kv);
     const remaining = doc.projects.filter((project) => project.path !== path);
     if (remaining.length === doc.projects.length) return;
     yield* writeDoc(kv, remaining);
-  }));
+  }).pipe(Effect.provide(KvStore.file(fs, paths.sakuDir)));
 });

@@ -23,8 +23,6 @@ import {
 } from "../src/index.ts";
 import { scriptedProvisioner, scriptedWorker, type ScriptedWorker } from "./mock-worker.ts";
 
-const run = <A, E extends Error>(effect: Effect.Effect<A, E, never>) => Effect.runPromise(effect);
-
 /** A polling assertion that gave up (the async fork hadn't landed in time). */
 class TestError extends Schema.TaggedError<TestError>()("TestError", {
   message: Schema.String,
@@ -88,7 +86,7 @@ const scriptPrompt = (world: World, text: string, tailSeq = 1) => {
 describe("Hub.make — threads", () => {
   it("creates a thread, creates its worker, and broadcasts", async () => {
     const world = await makeWorld();
-    const thread = await run(world.hub.createThread({ name: "hello world" }));
+    const thread = await Effect.runPromise(world.hub.createThread({ name: "hello world" }));
     expect(world.worker.created).toEqual([thread.id]);
     expect(thread).toMatchObject({
       name: "hello world",
@@ -103,40 +101,47 @@ describe("Hub.make — threads", () => {
   it("rolls back when the worker cannot be created", async () => {
     const world = await makeWorld();
     world.worker.failCreateWith(new HubError({ kind: "worker", message: "no worker namespace" }));
-    await expect(run(world.hub.createThread({ name: "doomed" }))).rejects.toMatchObject({
+    await expect(
+      Effect.runPromise(world.hub.createThread({ name: "doomed" })),
+    ).rejects.toMatchObject({
       message: "failed to create worker: no worker namespace",
     });
-    expect((await run(world.hub.listThreads())).length).toBe(0);
+    expect((await Effect.runPromise(world.hub.listThreads())).length).toBe(0);
     expect(changedIds(world.events)).toEqual([]);
   });
 
   it("lists, gets (by id and prefix), renames, and deletes", async () => {
     const world = await makeWorld();
-    const a = await run(world.hub.createThread({ name: "alpha" }));
-    const b = await run(world.hub.createThread({ name: "beta" }));
+    const a = await Effect.runPromise(world.hub.createThread({ name: "alpha" }));
+    const b = await Effect.runPromise(world.hub.createThread({ name: "beta" }));
 
-    expect((await run(world.hub.listThreads())).map((t) => t.id)).toEqual([a.id, b.id]);
-    expect((await run(world.hub.getThread(a.id.slice(0, 8)))).id).toBe(a.id);
-    await expect(run(world.hub.getThread("nope"))).rejects.toMatchObject({
+    expect((await Effect.runPromise(world.hub.listThreads())).map((t) => t.id)).toEqual([
+      a.id,
+      b.id,
+    ]);
+    expect((await Effect.runPromise(world.hub.getThread(a.id.slice(0, 8)))).id).toBe(a.id);
+    await expect(Effect.runPromise(world.hub.getThread("nope"))).rejects.toMatchObject({
       message: 'no thread matches "nope"',
     });
 
-    const renamed = await run(world.hub.renameThread(b.id, "bravo"));
+    const renamed = await Effect.runPromise(world.hub.renameThread(b.id, "bravo"));
     expect(renamed.name).toBe("bravo");
-    expect((await run(world.hub.getThread(b.id))).name).toBe("bravo");
-    await expect(run(world.hub.renameThread(b.id, "   "))).rejects.toMatchObject({
+    expect((await Effect.runPromise(world.hub.getThread(b.id))).name).toBe("bravo");
+    await expect(Effect.runPromise(world.hub.renameThread(b.id, "   "))).rejects.toMatchObject({
       message: "name must not be empty",
     });
 
-    const removed = await run(world.hub.deleteThread(a.id));
+    const removed = await Effect.runPromise(world.hub.deleteThread(a.id));
     expect(removed.id).toBe(a.id);
     expect(world.worker.deleted).toEqual([a.id]);
-    expect((await run(world.hub.listThreads())).map((t) => t.id)).toEqual([b.id]);
+    expect((await Effect.runPromise(world.hub.listThreads())).map((t) => t.id)).toEqual([b.id]);
   });
 
   it("creates sandbox threads with a stopped env", async () => {
     const world = await makeWorld();
-    const thread = await run(world.hub.createThread({ name: "boxed", mode: "sandbox" }));
+    const thread = await Effect.runPromise(
+      world.hub.createThread({ name: "boxed", mode: "sandbox" }),
+    );
     expect(thread.env).toBe("stopped");
   });
 });
@@ -144,7 +149,7 @@ describe("Hub.make — threads", () => {
 describe("Hub.make — sessions and the env gate", () => {
   it("forwards session commands to the worker and caches tailSeq", async () => {
     const world = await makeWorld();
-    const thread = await run(world.hub.createThread({ name: "t" }));
+    const thread = await Effect.runPromise(world.hub.createThread({ name: "t" }));
     world.worker.onCommand((threadId, command) => {
       expect(command._tag).toBe("get_entries");
       return Effect.succeed({
@@ -152,20 +157,22 @@ describe("Hub.make — sessions and the env gate", () => {
         tailSeq: 9,
       });
     });
-    const payload = await run(
+    const payload = await Effect.runPromise(
       world.hub.runSessionCommand(thread.id, { _tag: "get_entries", sinceSeq: 0 }),
     );
     expect(payload._tag).toBe("get_entries");
     expect(world.worker.commands.map((c) => c.threadId)).toEqual([thread.id]);
-    const info = await run(world.hub.getThread(thread.id));
+    const info = await Effect.runPromise(world.hub.getThread(thread.id));
     expect(info.tailSeq).toBe(9);
   });
 
   it("runs a prompt: env gate, working → idle reports, session events", async () => {
     const world = await makeWorld();
-    const thread = await run(world.hub.createThread({ name: "t" }));
+    const thread = await Effect.runPromise(world.hub.createThread({ name: "t" }));
     scriptPrompt(world, "hello", 4);
-    await run(world.hub.runSessionCommand(thread.id, { _tag: "prompt", text: "hello" }));
+    await Effect.runPromise(
+      world.hub.runSessionCommand(thread.id, { _tag: "prompt", text: "hello" }),
+    );
 
     // The worker's event/report forks land asynchronously; wait for the run's
     // reports (working → idle) and the tailSeq it carried.
@@ -190,23 +197,29 @@ describe("Hub.make — sessions and the env gate", () => {
 
   it("read-only commands bypass the env gate (browsing a stopped Box is free)", async () => {
     const world = await makeWorld();
-    const thread = await run(world.hub.createThread({ name: "boxed", mode: "sandbox" }));
-    const payload = await run(world.hub.runSessionCommand(thread.id, { _tag: "get_state" }));
+    const thread = await Effect.runPromise(
+      world.hub.createThread({ name: "boxed", mode: "sandbox" }),
+    );
+    const payload = await Effect.runPromise(
+      world.hub.runSessionCommand(thread.id, { _tag: "get_state" }),
+    );
     expect(payload._tag).toBe("get_state");
     // No env flip happened: the sandbox thread is still stopped.
-    expect((await run(world.hub.getThread(thread.id))).env).toBe("stopped");
+    expect((await Effect.runPromise(world.hub.getThread(thread.id))).env).toBe("stopped");
   });
 
   it("mutating a sandbox thread fails provisioning and flips the env to error", async () => {
     const world = await makeWorld(scriptedProvisioner({ fail: true }));
-    const thread = await run(world.hub.createThread({ name: "boxed", mode: "sandbox" }));
+    const thread = await Effect.runPromise(
+      world.hub.createThread({ name: "boxed", mode: "sandbox" }),
+    );
     await expect(
-      run(world.hub.runSessionCommand(thread.id, { _tag: "prompt", text: "hi" })),
+      Effect.runPromise(world.hub.runSessionCommand(thread.id, { _tag: "prompt", text: "hi" })),
     ).rejects.toMatchObject({
       message: "sandbox provisioning failed (scripted)",
     });
     expect(world.worker.commands).toHaveLength(0); // never reached the worker
-    const info = await run(world.hub.getThread(thread.id));
+    const info = await Effect.runPromise(world.hub.getThread(thread.id));
     expect(info.env).toBe("error");
     expect(changedIds(world.events).length).toBe(2); // created, then error
     const last = world.events.filter((event) => event._tag === "thread_changed").at(-1);
@@ -216,10 +229,12 @@ describe("Hub.make — sessions and the env gate", () => {
   it("provisions a stopped env on first touch when the provisioner succeeds", async () => {
     const provisioner = scriptedProvisioner();
     const world = await makeWorld(provisioner);
-    const thread = await run(world.hub.createThread({ name: "boxed", mode: "sandbox" }));
+    const thread = await Effect.runPromise(
+      world.hub.createThread({ name: "boxed", mode: "sandbox" }),
+    );
     expect(thread.env).toBe("stopped");
     scriptPrompt(world, "hi");
-    await run(world.hub.runSessionCommand(thread.id, { _tag: "prompt", text: "hi" }));
+    await Effect.runPromise(world.hub.runSessionCommand(thread.id, { _tag: "prompt", text: "hi" }));
     await waitFor(() => {
       const changed = world.events
         .filter((event) => event._tag === "thread_changed")
@@ -241,32 +256,37 @@ describe("Hub.make — sessions and the env gate", () => {
 describe("Hub.make — worker reports", () => {
   it("applies auto-title while the name is auto-generated", async () => {
     const world = await makeWorld();
-    const thread = await run(world.hub.createThread({ name: "quick start", autoName: true }));
+    const thread = await Effect.runPromise(
+      world.hub.createThread({ name: "quick start", autoName: true }),
+    );
     world.worker.report(thread.id, { name: "A great title — quick start" });
     await waitFor(
       async () =>
-        (await run(world.hub.getThread(thread.id))).name === "A great title — quick start",
+        (await Effect.runPromise(world.hub.getThread(thread.id))).name ===
+        "A great title — quick start",
     );
   });
 
   it("ignores auto-title after a user rename (the rename wins forever)", async () => {
     const world = await makeWorld();
-    const thread = await run(world.hub.createThread({ name: "quick start", autoName: true }));
-    await run(world.hub.renameThread(thread.id, "user chosen"));
+    const thread = await Effect.runPromise(
+      world.hub.createThread({ name: "quick start", autoName: true }),
+    );
+    await Effect.runPromise(world.hub.renameThread(thread.id, "user chosen"));
     world.worker.report(thread.id, { name: "A late auto-title" });
-    expect((await run(world.hub.getThread(thread.id))).name).toBe("user chosen");
+    expect((await Effect.runPromise(world.hub.getThread(thread.id))).name).toBe("user chosen");
   });
 
   it("caches sessionId and broadcasts state changes", async () => {
     const world = await makeWorld();
-    const thread = await run(world.hub.createThread({ name: "t" }));
+    const thread = await Effect.runPromise(world.hub.createThread({ name: "t" }));
     world.worker.report(thread.id, { sessionId: "sess-1" });
     world.worker.report(thread.id, { state: "working" });
     await waitFor(async () => {
-      const info = await run(world.hub.getThread(thread.id));
+      const info = await Effect.runPromise(world.hub.getThread(thread.id));
       return info.sessionId === "sess-1" && info.state === "working";
     });
-    const info = await run(world.hub.getThread(thread.id));
+    const info = await Effect.runPromise(world.hub.getThread(thread.id));
     expect(info).toMatchObject({ sessionId: "sess-1", state: "working" });
     // Both reports broadcast (sessionId and state each change the wire view);
     // the forks are independent, so only the endpoints are ordered.
@@ -285,22 +305,24 @@ describe("Hub.make — worker reports", () => {
 describe("Hub.make — skills", () => {
   it("imports, lists, and deletes skills", async () => {
     const world = await makeWorld();
-    const skill = await run(world.hub.importSkill("https://github.com/foo/bar-baz.git"));
+    const skill = await Effect.runPromise(
+      world.hub.importSkill("https://github.com/foo/bar-baz.git"),
+    );
     expect(skill).toMatchObject({
       name: "bar-baz",
       scope: "personal",
       source: "https://github.com/foo/bar-baz.git",
       version: null,
     });
-    const workspace = await run(
+    const workspace = await Effect.runPromise(
       world.hub.importSkill("https://github.com/foo/team.git", "workspace"),
     );
     expect(workspace.scope).toBe("workspace");
-    const skills = await run(world.hub.listSkills());
+    const skills = await Effect.runPromise(world.hub.listSkills());
     expect(skills.map((s) => s.name)).toEqual(["bar-baz", "team"]);
-    await run(world.hub.deleteSkill(skill.id));
-    expect((await run(world.hub.listSkills())).map((s) => s.name)).toEqual(["team"]);
-    await expect(run(world.hub.deleteSkill(skill.id))).rejects.toMatchObject({
+    await Effect.runPromise(world.hub.deleteSkill(skill.id));
+    expect((await Effect.runPromise(world.hub.listSkills())).map((s) => s.name)).toEqual(["team"]);
+    await expect(Effect.runPromise(world.hub.deleteSkill(skill.id))).rejects.toMatchObject({
       message: `unknown skill: ${skill.id}`,
     });
   });
@@ -309,19 +331,19 @@ describe("Hub.make — skills", () => {
 describe("Hub.make — resolution", () => {
   it("resolves session commands by name and unambiguous prefix", async () => {
     const world = await makeWorld();
-    const a = await run(world.hub.createThread({ name: "alpha" }));
-    const b = await run(world.hub.createThread({ name: "beta" }));
+    const a = await Effect.runPromise(world.hub.createThread({ name: "alpha" }));
+    const b = await Effect.runPromise(world.hub.createThread({ name: "beta" }));
     world.worker.onCommand((_threadId, _command) =>
       Effect.succeed({
         payload: GetEntriesResponse.make({ entries: [], tailSeq: 0, leafId: null }),
         tailSeq: 0,
       }),
     );
-    await run(world.hub.runSessionCommand("alpha", { _tag: "get_entries" }));
-    await run(world.hub.runSessionCommand(b.id.slice(0, 8), { _tag: "get_entries" }));
+    await Effect.runPromise(world.hub.runSessionCommand("alpha", { _tag: "get_entries" }));
+    await Effect.runPromise(world.hub.runSessionCommand(b.id.slice(0, 8), { _tag: "get_entries" }));
     expect(world.worker.commands.map((c) => c.threadId)).toEqual([a.id, b.id]);
     await expect(
-      run(world.hub.runSessionCommand("al", { _tag: "get_entries" })),
+      Effect.runPromise(world.hub.runSessionCommand("al", { _tag: "get_entries" })),
     ).rejects.toMatchObject({
       message: /ambiguous/,
     });

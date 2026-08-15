@@ -49,7 +49,6 @@ import {
   type FileInfo,
   type LogItem,
   type MessageEntry,
-  type Result as PiResult,
 } from "@earendil-works/pi-agent-core";
 
 import type { PathsShape } from "./paths.ts";
@@ -439,14 +438,21 @@ const jsonlFsOf = (fs: FileSystem.FileSystem): JsonlSessionRepoFileSystem => {
       `filesystem error: ${error instanceof Error ? error.message : String(error)}`,
       path,
     );
-  const run = <T>(effect: Effect.Effect<T, unknown, never>): Promise<PiResult<T, FileError>> =>
-    Effect.runPromise(effect.pipe(Effect.result)).then((outcome): PiResult<T, FileError> =>
-      Result.isSuccess(outcome) ? ok(outcome.success) : err(fail("", outcome.failure)),
-    );
   return {
-    absolutePath: (path) => run(Effect.succeed(resolve(path))),
-    joinPath: (parts) => run(Effect.succeed(parts.join("/"))),
-    readTextFile: (path) => run(fs.readFileString(path)),
+    absolutePath: (path) =>
+      Effect.runPromise(Effect.succeed(resolve(path)).pipe(Effect.result)).then((outcome) =>
+        Result.isSuccess(outcome) ? ok(outcome.success) : err(fail(path, outcome.failure)),
+      ),
+    joinPath: (parts) =>
+      Effect.runPromise(Effect.succeed(parts.join("/")).pipe(Effect.result)).then((outcome) =>
+        Result.isSuccess(outcome)
+          ? ok(outcome.success)
+          : err(fail(parts.join("/"), outcome.failure)),
+      ),
+    readTextFile: (path) =>
+      Effect.runPromise(fs.readFileString(path).pipe(Effect.result)).then((outcome) =>
+        Result.isSuccess(outcome) ? ok(outcome.success) : err(fail(path, outcome.failure)),
+      ),
     writeFile: (path, content) =>
       Effect.runPromise(
         fs
