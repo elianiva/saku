@@ -56,7 +56,12 @@ export const ModelPickerRequested = Message.m("ModelPickerRequested");
 /** The daemon's answer: the models this thread can switch to. */
 export const ModelsListed = Message.m("ModelsListed", { models: S.Array(WireModelInfo) });
 export const ModelsListFailed = Message.m("ModelsListFailed", { error: WireError });
-/** A picker row was clicked: switch the thread's model. */
+/** The picker's search input changed: filter the model list. */
+export const PickerQueryChanged = Message.m("PickerQueryChanged", { text: S.String });
+/** ArrowUp/ArrowDown in the picker: move the highlighted option (delta ±1). */
+export const PickerMove = Message.m("PickerMove", { delta: S.Number });
+/** A picker row was clicked (or Enter on the highlighted one): switch the
+ *  thread's model. */
 export const ModelPicked = Message.m("ModelPicked", {
   provider: S.String,
   modelId: S.String,
@@ -102,6 +107,8 @@ export const ThreadMessage = S.Union([
   ModelPickerRequested,
   ModelsListed,
   ModelsListFailed,
+  PickerQueryChanged,
+  PickerMove,
   ModelPicked,
   ModelSet,
   ModelSetFailed,

@@ -42,6 +42,10 @@ export const Model = S.Struct({
   model: S.NullOr(WireModelInfo),
   /** The composer's model picker: Idle = closed. */
   modelPicker: ModelPicker.schema,
+  /** The picker's search filter ("" = all models). */
+  pickerQuery: S.String,
+  /** The highlighted option's index into the filtered list; -1 when empty. */
+  pickerActive: S.Number,
   /** A model switch is in flight (guards double picks). */
   modelBusy: S.Boolean,
   /** The composer's text — shared between the welcome and the thread. */
@@ -64,6 +68,8 @@ export const initialModel = () => ({
   toolsOpen: [],
   model: null,
   modelPicker: ModelPicker.Idle(),
+  pickerQuery: "",
+  pickerActive: 0,
   modelBusy: false,
   composer: "",
   starting: false,

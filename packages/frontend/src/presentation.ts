@@ -71,6 +71,21 @@ export const envPresentation = (env: ThreadEnvState) => envPresentations[env];
 export const modelLabel = (model: { readonly provider: string; readonly id: string }) =>
   model.id.includes("/") ? model.id : `${model.provider}/${model.id}`;
 
+/** The picker's filter: a case-insensitive match of the query against a
+ *  model's label, provider, and id (the label alone misses the provider
+ *  when the id already carries a prefix). Catalog order is preserved, and
+ *  an empty query returns everything. */
+export const filterModels = (models: readonly WireModelInfo[], query: string) => {
+  const q = query.trim().toLowerCase();
+  if (q === "") return models;
+  return models.filter(
+    (model) =>
+      modelLabel(model).toLowerCase().includes(q) ||
+      model.provider.toLowerCase().includes(q) ||
+      model.id.toLowerCase().includes(q),
+  );
+};
+
 /** The context badge's thresholds, humanlayer's 60/90 rule. */
 export const CONTEXT_WARNING_PERCENT = 60;
 export const CONTEXT_CRITICAL_PERCENT = 90;

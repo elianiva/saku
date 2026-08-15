@@ -30,6 +30,7 @@ import { evo } from "foldkit/struct";
 
 import type { AppRoute } from "../route.ts";
 import { OpenedThread } from "../root/message.ts";
+import { filterModels } from "../presentation.ts";
 import { Wire } from "../wire.ts";
 import {
   AbortCmd,
@@ -60,6 +61,8 @@ const resetViewFields = {
   // Model badge state is thread-owned; the welcome has no model to show.
   model: (_: Model["model"]) => null,
   modelPicker: (_: Model["modelPicker"]) => ModelPicker.Idle(),
+  pickerQuery: (_: string) => "",
+  pickerActive: (_: number) => 0,
   modelBusy: (_: boolean) => false,
   // Expanded thinking/tools are thread-owned too — a fresh selection
   // starts collapsed (ADR-consistent with the welcome's focus state).
@@ -121,12 +124,17 @@ export const update = (model: Model, message: ThreadMessage) =>
 
       // Opening is guarded: only on a pinned, non-working thread, and only
       // when closed (the badge is disabled while working — model changes
-      // are unavailable mid-run, humanlayer's rule).
+      // are unavailable mid-run, humanlayer's rule). A fresh open starts
+      // unfiltered with the first option highlighted.
       ModelPickerRequested: () =>
         model.id === null || model.info?.state === "working" || model.modelPicker._tag !== "Idle"
           ? [model, none, Option.none()]
           : [
-              evo(model, { modelPicker: (_) => ModelPicker.Loading() }),
+              evo(model, {
+                modelPicker: (_) => ModelPicker.Loading(),
+                pickerQuery: (_) => "",
+                pickerActive: (_) => 0,
+              }),
               [ListModelsCmd({ id: model.id })],
               Option.none(),
             ],
@@ -140,6 +148,22 @@ export const update = (model: Model, message: ThreadMessage) =>
         none,
         Option.none(),
       ],
+      // The search input: the filter narrows the list, and the highlight
+      // restarts at the top (the list can only shrink from here).
+      PickerQueryChanged: ({ text }) => [
+        evo(model, { pickerQuery: (_) => text, pickerActive: (_) => 0 }),
+        none,
+        Option.none(),
+      ],
+      // ArrowUp/ArrowDown: the highlight walks the filtered list, clamped
+      // at both ends; nothing to walk when the list is empty or unknown.
+      PickerMove: ({ delta }) => {
+        if (model.modelPicker._tag !== "Success") return [model, none, Option.none()];
+        const filtered = filterModels(model.modelPicker.data, model.pickerQuery);
+        if (filtered.length === 0) return [model, none, Option.none()];
+        const next = Math.min(Math.max(model.pickerActive + delta, 0), filtered.length - 1);
+        return [evo(model, { pickerActive: (_) => next }), none, Option.none()];
+      },
       // A row was clicked: the switch is guarded per pick (no double
       // switches; the row shows the in-flight state).
       ModelPicked: ({ provider, modelId }) =>

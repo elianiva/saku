@@ -22,6 +22,7 @@ import { WireError, type ThreadInfo, type WireModelInfo } from "@saku/wire";
 import fc from "fast-check";
 
 import { ThreadsRoute, ThreadRoute } from "../route.ts";
+import { filterModels } from "../presentation.ts";
 import { informRouteChanged, update } from "./update.ts";
 import { ModelPicker, type Model } from "./model.ts";
 import { Trail, type Live } from "./live.ts";
@@ -38,6 +39,8 @@ import {
   ModelSetFailed,
   ModelsListed,
   ModelsListFailed,
+  PickerMove,
+  PickerQueryChanged,
   PromptAcked,
   SendFailed,
   SendRequested,
@@ -63,9 +66,9 @@ const threadArb: fc.Arbitrary<ThreadInfo> = fc.record({
   archivedAt: fc.oneof(fc.constant(null), fc.integer()),
 });
 
-const wireErrorArb = fc.string({ maxLength: 24 }).map(
-  (message) => new WireError({ code: "command_failed", message }),
-);
+const wireErrorArb = fc
+  .string({ maxLength: 24 })
+  .map((message) => new WireError({ code: "command_failed", message }));
 
 const trailArb: fc.Arbitrary<Model["trail"]> = fc.oneof(
   fc.constant(Trail.Idle()),
@@ -108,9 +111,9 @@ const wireModelArb: fc.Arbitrary<WireModelInfo> = fc.record({
 const modelPickerArb: fc.Arbitrary<Model["modelPicker"]> = fc.oneof(
   fc.constant(ModelPicker.Idle()),
   fc.constant(ModelPicker.Loading()),
-  fc.record({ data: fc.array(wireModelArb, { maxLength: 3 }) }).map(({ data }) =>
-    ModelPicker.Success({ data }),
-  ),
+  fc
+    .record({ data: fc.array(wireModelArb, { maxLength: 3 }) })
+    .map(({ data }) => ModelPicker.Success({ data })),
   wireErrorArb.map((error) => ModelPicker.Failure({ error })),
 );
 
@@ -124,6 +127,8 @@ const modelArb: fc.Arbitrary<Model> = fc.record({
   toolsOpen: fc.array(fc.string({ maxLength: 12 }), { maxLength: 4 }),
   model: fc.oneof(fc.constant(null), wireModelArb),
   modelPicker: modelPickerArb,
+  pickerQuery: fc.string({ maxLength: 12 }),
+  pickerActive: fc.integer({ min: -1, max: 3 }),
   modelBusy: fc.boolean(),
   composer: fc.string({ maxLength: 24 }),
   starting: fc.boolean(),
@@ -179,9 +184,7 @@ describe("thread update", () => {
       fc.property(modelArb, threadArb, (model, thread) => {
         const [next, commands] = update(model, ThreadChanged({ thread }));
         expect(commands).toHaveLength(0);
-        expect(next).toEqual(
-          model.id === thread.id ? { ...model, info: thread } : model,
-        );
+        expect(next).toEqual(model.id === thread.id ? { ...model, info: thread } : model);
       }),
     );
   });
@@ -236,10 +239,17 @@ describe("thread update", () => {
       fc.property(modelArb, (model) => {
         const [next, commands] = update(model, ModelPickerRequested());
         const opens =
-          model.id !== null &&
-          model.info?.state !== "working" &&
-          model.modelPicker._tag === "Idle";
-        expect(next).toEqual(opens ? { ...model, modelPicker: ModelPicker.Loading() } : model);
+          model.id !== null && model.info?.state !== "working" && model.modelPicker._tag === "Idle";
+        expect(next).toEqual(
+          opens
+            ? {
+                ...model,
+                modelPicker: ModelPicker.Loading(),
+                pickerQuery: "",
+                pickerActive: 0,
+              }
+            : model,
+        );
         expect(commands).toHaveLength(opens ? 1 : 0);
       }),
     );
@@ -258,6 +268,34 @@ describe("thread update", () => {
           expect(failed.modelPicker).toEqual(ModelPicker.Failure({ error }));
         },
       ),
+    );
+  });
+
+  it("typing in the picker sets the filter and restarts the highlight at the top", () => {
+    fc.assert(
+      fc.property(modelArb, fc.string({ maxLength: 12 }), (model, text) => {
+        const [next] = update(model, PickerQueryChanged({ text }));
+        expect(next).toEqual({ ...model, pickerQuery: text, pickerActive: 0 });
+      }),
+    );
+  });
+
+  it("arrows move the highlight, clamped to the filtered list, and no-op without one", () => {
+    fc.assert(
+      fc.property(modelArb, fc.integer({ min: -3, max: 3 }), (model, delta) => {
+        const [next] = update(model, PickerMove({ delta }));
+        if (model.modelPicker._tag !== "Success") {
+          expect(next).toEqual(model);
+          return;
+        }
+        const filtered = filterModels(model.modelPicker.data, model.pickerQuery);
+        if (filtered.length === 0) {
+          expect(next).toEqual(model);
+          return;
+        }
+        const expected = Math.min(Math.max(model.pickerActive + delta, 0), filtered.length - 1);
+        expect(next).toEqual({ ...model, pickerActive: expected });
+      }),
     );
   });
 
@@ -382,6 +420,8 @@ describe("thread update", () => {
           focused: false,
           model: null,
           modelPicker: ModelPicker.Idle(),
+          pickerQuery: "",
+          pickerActive: 0,
           modelBusy: false,
           thinkingOpen: [],
           toolsOpen: [],

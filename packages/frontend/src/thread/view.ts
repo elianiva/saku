@@ -25,6 +25,7 @@ import {
   contextTone,
   contextUsage,
   envPresentation,
+  filterModels,
   headerState,
   modelLabel,
   statePresentation,
@@ -54,6 +55,8 @@ import {
   ModelPicked,
   ModelPickerClosed,
   ModelPickerRequested,
+  PickerMove,
+  PickerQueryChanged,
   SendRequested,
   ThinkingToggled,
   ToolToggled,
@@ -686,22 +689,72 @@ const modelBadge = (model: Model, h: HtmlBuilder<ThreadMessage>) => {
   );
 };
 
-/** The open model picker: the thread's switchable models, catalog order. */
-const modelPickerPanel = (model: Model, h: HtmlBuilder<ThreadMessage>) =>
-  h.div(
+/** The open model picker: a searchable combobox over the thread's
+ *  switchable models (the WAI-ARIA pattern — the input is the combobox
+ *  control, the list its listbox, the highlighted option tracked in the
+ *  model and announced via aria-activedescendant). Typing filters, the
+ *  arrows move the highlight, Enter picks it, and Escape closes, returning
+ *  focus to the model badge. */
+const modelPickerPanel = (model: Model, h: HtmlBuilder<ThreadMessage>) => {
+  const models = AsyncData.isSuccess(model.modelPicker) ? model.modelPicker.data : [];
+  const filtered = filterModels(models, model.pickerQuery);
+  const active = filtered.length === 0 ? -1 : Math.min(model.pickerActive, filtered.length - 1);
+  const activeModel = filtered[active];
+  const busy = model.modelBusy;
+  return h.div(
     [h.Class("border border-line bg-base mt-2")],
     [
       h.div(
+        [h.Class("flex items-center gap-2 border-b border-line px-3 py-1.5")],
         [
-          h.Class(
-            "flex items-center gap-2 px-3 py-1.5 border-b border-line text-[10px] uppercase tracking-[0.18em] text-subtle",
-          ),
-        ],
-        [
-          h.span([h.Class("flex-1")], ["models — the thread's next model"]),
+          h.input([
+            h.Class(
+              "flex-1 min-w-0 border-0 bg-transparent p-0 text-[13px] text-text outline-none placeholder:text-muted",
+            ),
+            h.Role("combobox"),
+            h.Attribute("aria-expanded", "true"),
+            h.Attribute("aria-controls", "model-list"),
+            h.Attribute("aria-autocomplete", "list"),
+            ...(active >= 0
+              ? [h.Attribute("aria-activedescendant", `model-option-${active}`)]
+              : []),
+            h.AriaLabel("models — the thread's next model"),
+            h.Placeholder("search models…"),
+            h.Value(model.pickerQuery),
+            h.OnInput((text) => PickerQueryChanged({ text })),
+            h.OnKeyDownPreventDefault((key) =>
+              key === "ArrowDown"
+                ? Option.some(PickerMove({ delta: 1 }))
+                : key === "ArrowUp"
+                  ? Option.some(PickerMove({ delta: -1 }))
+                  : key === "Enter" && activeModel !== undefined && !busy
+                    ? Option.some(
+                        ModelPicked({ provider: activeModel.provider, modelId: activeModel.id }),
+                      )
+                    : Option.none(),
+            ),
+            // Escape closes the picker and returns focus to the badge (the
+            // badge stays mounted while the panel is open, so the selector
+            // always resolves).
+            h.OnKeyDownFocus((key) =>
+              key === "Escape"
+                ? Option.some({
+                    focusSelector: '[aria-label="change model"]',
+                    message: ModelPickerClosed(),
+                  })
+                : Option.none(),
+            ),
+            h.OnMount({
+              name: "FocusModelSearch",
+              f: (element) => {
+                (element as HTMLInputElement).focus();
+                return Stream.empty;
+              },
+            }),
+          ]),
           h.button(
             [
-              h.Class("px-1 hover:text-love"),
+              h.Class("shrink-0 px-1 text-subtle hover:text-love"),
               h.OnClick(ModelPickerClosed()),
               h.AriaLabel("close model picker"),
             ],
@@ -718,15 +771,23 @@ const modelPickerPanel = (model: Model, h: HtmlBuilder<ThreadMessage>) =>
         onSuccess: (models) =>
           models.length === 0
             ? modelPickerStatus(h, "no models available")
-            : h.div(
-                [h.Class("max-h-56 overflow-y-auto")],
-                models.map((candidate) =>
-                  modelPickerRow(candidate, model.model, model.modelBusy, h),
+            : filtered.length === 0
+              ? modelPickerStatus(h, `no match for “${model.pickerQuery}”`)
+              : h.div(
+                  [
+                    h.Class("max-h-56 overflow-y-auto"),
+                    h.Role("listbox"),
+                    h.Attribute("id", "model-list"),
+                    h.AriaLabel("models"),
+                  ],
+                  filtered.map((candidate, index) =>
+                    modelPickerRow(candidate, model.model, busy, index === active, index, h),
+                  ),
                 ),
-              ),
       }),
     ],
   );
+};
 
 const modelPickerStatus = (h: HtmlBuilder<ThreadMessage>, text: string) =>
   h.div([h.Class("px-3 py-2 text-[12px] text-muted")], [text]);
@@ -735,17 +796,22 @@ const modelPickerRow = (
   candidate: WireModelInfo,
   current: WireModelInfo | null,
   busy: boolean,
+  active: boolean,
+  index: number,
   h: HtmlBuilder<ThreadMessage>,
 ) => {
   const isCurrent =
     current !== null && current.provider === candidate.provider && current.id === candidate.id;
-  return h.button(
+  return h.div(
     [
+      h.Attribute("id", `model-option-${index}`),
       h.Class(
-        `w-full flex items-center gap-2 px-3 py-1.5 border-b border-line last:border-b-0 text-left text-[12px] ${busy ? "text-muted" : "hover:bg-overlay/60"}`,
+        `flex w-full cursor-pointer items-center gap-2 border-b border-line px-3 py-1.5 text-left text-[12px] last:border-b-0 ${active ? "bg-overlay/60" : ""} ${busy ? "text-muted" : "hover:bg-overlay/60"}`,
       ),
+      h.Role("option"),
+      h.AriaSelected(isCurrent),
+      h.Attribute("aria-disabled", busy ? "true" : "false"),
       h.OnClick(ModelPicked({ provider: candidate.provider, modelId: candidate.id })),
-      h.Disabled(busy),
       h.Title(
         `${candidate.provider}/${candidate.id} · ${candidate.contextWindow.toLocaleString()} ctx${candidate.reasoning ? " · reasoning" : ""}`,
       ),

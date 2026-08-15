@@ -16,6 +16,7 @@ import {
   CONTEXT_WARNING_PERCENT,
   contextTone,
   contextUsage,
+  filterModels,
   modelLabel,
   unadoptedPiSessions,
   usageContextTokens,
@@ -81,7 +82,12 @@ describe("usageContextTokens", () => {
         fc.integer({ min: 0 }),
         fc.integer({ min: 0 }),
         (input, cacheRead, cacheWrite) => {
-          const withTotal = { input, cacheRead, cacheWrite, totalTokens: input + cacheRead + cacheWrite + 7 };
+          const withTotal = {
+            input,
+            cacheRead,
+            cacheWrite,
+            totalTokens: input + cacheRead + cacheWrite + 7,
+          };
           expect(usageContextTokens(withTotal)).toBe(withTotal.totalTokens);
           const componentSum = { input, cacheRead, cacheWrite };
           expect(usageContextTokens(componentSum)).toBe(input + cacheRead + cacheWrite);
@@ -112,14 +118,11 @@ describe("contextUsage", () => {
               usageContextTokens(entry.message.usage) !== null,
           )
           .at(-1);
-        const lastCompaction = entries
-          .filter((entry) => entry.type === "compaction")
-          .at(-1);
+        const lastCompaction = entries.filter((entry) => entry.type === "compaction").at(-1);
         const unknown =
           window <= 0 ||
           lastAssistant === undefined ||
-          (lastCompaction !== undefined &&
-            (lastCompaction.seq ?? -1) > (lastAssistant.seq ?? -1));
+          (lastCompaction !== undefined && (lastCompaction.seq ?? -1) > (lastAssistant.seq ?? -1));
         if (unknown) {
           expect(usage).toBeNull();
         } else {
@@ -133,8 +136,17 @@ describe("contextUsage", () => {
   });
 
   it("compaction entries without any assistant usage leave the badge unknown", () => {
-    expect(contextUsage([{ type: "compaction" }], { provider: "p", id: "m", contextWindow: 100, reasoning: false })).toBeNull();
-    expect(contextUsage([], { provider: "p", id: "m", contextWindow: 100, reasoning: false })).toBeNull();
+    expect(
+      contextUsage([{ type: "compaction" }], {
+        provider: "p",
+        id: "m",
+        contextWindow: 100,
+        reasoning: false,
+      }),
+    ).toBeNull();
+    expect(
+      contextUsage([], { provider: "p", id: "m", contextWindow: 100, reasoning: false }),
+    ).toBeNull();
   });
 });
 
@@ -145,6 +157,47 @@ describe("contextTone", () => {
     expect(contextTone(CONTEXT_CRITICAL_PERCENT - 1)).toBe("text-gold");
     expect(contextTone(CONTEXT_CRITICAL_PERCENT)).toBe("text-love");
     expect(contextTone(100)).toBe("text-love");
+  });
+});
+
+describe("filterModels", () => {
+  const fixed = [
+    { provider: "openai", id: "gpt-4o", contextWindow: 128000, reasoning: false },
+    { provider: "anthropic", id: "claude-3-7-sonnet", contextWindow: 200000, reasoning: true },
+    { provider: "opencode-go", id: "gemini/2.5-pro", contextWindow: 1000000, reasoning: true },
+  ] as const satisfies readonly WireModelInfo[];
+
+  it("returns everything, in catalog order, for an empty or blank query", () => {
+    expect(filterModels(fixed, "")).toEqual(fixed);
+    expect(filterModels(fixed, "   ")).toEqual(fixed);
+  });
+
+  it("matches the id, the provider, and the joined label, case-insensitively", () => {
+    expect(filterModels(fixed, "GPT-4")).toEqual([fixed[0]]);
+    // The id carries a prefix here, so the provider is only reachable via
+    // the provider field, not the label.
+    expect(filterModels(fixed, "opencode")).toEqual([fixed[2]]);
+    expect(filterModels(fixed, "gemini/2.5")).toEqual([fixed[2]]);
+    expect(filterModels(fixed, "sonnet")).toEqual([fixed[1]]);
+  });
+
+  it("no match yields an empty list", () => {
+    expect(filterModels(fixed, "llama")).toEqual([]);
+  });
+
+  it("is a subsequence of the input for any query (order preserved)", () => {
+    fc.assert(
+      fc.property(
+        fc.array(modelArb, { maxLength: 6 }),
+        fc.string({ maxLength: 12 }),
+        (models, query) => {
+          const kept = filterModels(models, query);
+          const positions = kept.map((keptModel) => models.indexOf(keptModel));
+          expect(positions).toEqual([...positions].sort((a, b) => a - b));
+          expect(positions).not.toContain(-1);
+        },
+      ),
+    );
   });
 });
 
@@ -174,14 +227,18 @@ const threadArb: fc.Arbitrary<ThreadInfo> = fc.record({
 describe("unadoptedPiSessions", () => {
   it("keeps every session when no thread is adopted from pi", () => {
     fc.assert(
-      fc.property(fc.array(threadArb, { maxLength: 4 }), fc.array(piSessionArb, { maxLength: 4 }), (threads, sessions) => {
-        const kept = unadoptedPiSessions(threads, sessions);
-        // A session path can only be claimed by a thread whose source is pi.
-        expect(kept).toHaveLength(sessions.length);
-        expect(new Set(kept.map((session) => session.path))).toEqual(
-          new Set(sessions.map((session) => session.path)),
-        );
-      }),
+      fc.property(
+        fc.array(threadArb, { maxLength: 4 }),
+        fc.array(piSessionArb, { maxLength: 4 }),
+        (threads, sessions) => {
+          const kept = unadoptedPiSessions(threads, sessions);
+          // A session path can only be claimed by a thread whose source is pi.
+          expect(kept).toHaveLength(sessions.length);
+          expect(new Set(kept.map((session) => session.path))).toEqual(
+            new Set(sessions.map((session) => session.path)),
+          );
+        },
+      ),
     );
   });
 
