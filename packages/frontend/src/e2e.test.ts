@@ -144,7 +144,7 @@ describe.skipIf(!available)("welcome end-to-end", () => {
       // The thread pane took over: header, trail with the fake run's
       // streamed entries, and the thread composer (draft consumed).
       await waitFor(
-        () => document.querySelectorAll("#trail > div").length > 0,
+        () => document.querySelectorAll("#trail > div > div").length > 0,
         "trail entries from the fake run",
       );
       expect(document.body.innerText).toContain("send ❯");

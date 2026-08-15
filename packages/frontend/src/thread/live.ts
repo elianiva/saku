@@ -7,9 +7,10 @@
  * trail dedupe, and the settled reset. It lives here — no foldkit runtime,
  * no DOM, no `Wire` service at module scope — so tests exercise it in
  * isolation. thread/update.ts delegates: wire events for the active thread
- * fold through `foldLive`, which returns the next state plus a scroll flag
- * (the event grew the scrollable view — update maps it to the scroll
- * command). Everything else about the pane stays in thread/update.ts.
+ * fold through `foldLive`, which returns the next state; the trail's chat
+ * scroller (scroller.ts) follows the growing view on the DOM side — the
+ * shadcn message-scroller pattern, observer-driven instead of scroll
+ * commands. Everything else about the pane stays in thread/update.ts.
  *
  * The trail is foldkit's AsyncData (Idle → Success/Failure): the pane
  * renders what is loaded; the fold grows `Success` in place.
@@ -66,29 +67,26 @@ export interface Live {
 export const emptyLiveRegion = () => ({ tools: [] });
 
 /** `entry_appended` on the active thread: grow the trail, dedupe by id. */
-const foldEntryAppended = (state: Live, entry: EntryProjection): readonly [Live, boolean] => {
-  if (!AsyncData.isSuccess(state.trail)) return [state, false];
+const foldEntryAppended = (state: Live, entry: EntryProjection): Live => {
+  if (!AsyncData.isSuccess(state.trail)) return state;
   const last = state.trail.data.entries[state.trail.data.entries.length - 1];
   const id = asString(entry.id);
-  if (last !== undefined && asString(last.id) === id) return [state, false];
+  if (last !== undefined && asString(last.id) === id) return state;
   // A message entry lands complete — the live region's copy of it is stale.
   const live =
     entry.type === "message"
       ? { ...state.live, message: undefined, thinking: undefined }
       : state.live;
-  return [
-    {
-      ...state,
-      trail: Trail.Success({
-        data: {
-          entries: [...state.trail.data.entries, entry],
-          tailSeq: Math.max(state.trail.data.tailSeq, entry.seq ?? 0),
-        },
-      }),
-      live,
-    },
-    true,
-  ];
+  return {
+    ...state,
+    trail: Trail.Success({
+      data: {
+        entries: [...state.trail.data.entries, entry],
+        tailSeq: Math.max(state.trail.data.tailSeq, entry.seq ?? 0),
+      },
+    }),
+    live,
+  };
 };
 
 const foldLiveTool = (
@@ -105,70 +103,61 @@ const messageLive = (state: Live, text: string) => ({
 
 /**
  * Fold one session event into the active thread's view. Returns the next
- * state and whether the event grew the scrollable view (scroll command in
- * the TEA loop; thread/update.ts maps it). The streamed live region is
- * absorbed by the trail as entries land; `settled` clears the region for the
- * next run.
+ * state; the trail's chat scroller observes growth on the DOM side
+ * (scroller.ts — the shadcn message-scroller pattern). The streamed live
+ * region is absorbed by the trail as entries land; `settled` clears the
+ * region for the next run.
  */
-export const foldLive = (state: Live, event: SessionEventProjection): readonly [Live, boolean] =>
+export const foldLive = (state: Live, event: SessionEventProjection): Live =>
   M.value(event).pipe(
-    M.withReturnType<readonly [Live, boolean]>(),
+    M.withReturnType<Live>(),
     M.tagsExhaustive({
       entry_appended: ({ entry }) => foldEntryAppended(state, entry),
-      message_start: ({ message }) => [messageLive(state, messageText(message)), true],
-      message_end: ({ message }) => [messageLive(state, messageText(message)), true],
+      message_start: ({ message }) => messageLive(state, messageText(message)),
+      message_end: ({ message }) => messageLive(state, messageText(message)),
       message_update: ({ message }) => {
         const text = messageText(message);
         const thinking = messageThinking(message);
         // Partial updates may omit a field; an absent stream keeps its value.
-        return [
-          {
-            ...state,
-            live: {
-              ...state.live,
-              message: text === "" ? state.live.message : text,
-              thinking: thinking === "" ? state.live.thinking : thinking,
-            },
+        return {
+          ...state,
+          live: {
+            ...state.live,
+            message: text === "" ? state.live.message : text,
+            thinking: thinking === "" ? state.live.thinking : thinking,
           },
-          true,
-        ];
+        };
       },
       tool_execution_start: ({ toolCallId, toolName }) => {
         const tool: LiveTool = { callId: toolCallId, name: toolName, state: "running" };
-        return [{ ...state, live: { ...state.live, tools: [...state.live.tools, tool] } }, false];
+        return { ...state, live: { ...state.live, tools: [...state.live.tools, tool] } };
       },
-      tool_execution_update: ({ toolCallId, partialResult }) => [
-        {
-          ...state,
-          live: {
-            ...state.live,
-            tools: foldLiveTool(state.live.tools, toolCallId, {
-              partial: stringifyLive(partialResult),
-            }),
-          },
+      tool_execution_update: ({ toolCallId, partialResult }) => ({
+        ...state,
+        live: {
+          ...state.live,
+          tools: foldLiveTool(state.live.tools, toolCallId, {
+            partial: stringifyLive(partialResult),
+          }),
         },
-        false,
-      ],
-      tool_execution_end: ({ toolCallId, isError, result }) => [
-        {
-          ...state,
-          live: {
-            ...state.live,
-            tools: foldLiveTool(state.live.tools, toolCallId, {
-              state: isError ? "failed" : "done",
-              result: stringifyLive(result),
-            }),
-          },
+      }),
+      tool_execution_end: ({ toolCallId, isError, result }) => ({
+        ...state,
+        live: {
+          ...state.live,
+          tools: foldLiveTool(state.live.tools, toolCallId, {
+            state: isError ? "failed" : "done",
+            result: stringifyLive(result),
+          }),
         },
-        false,
-      ],
-      settled: () => [{ ...state, live: emptyLiveRegion() }, false],
-      compaction_start: ({ reason }) => [
-        { ...state, live: { ...state.live, notice: `compacting (${reason})` } },
-        false,
-      ],
-      compaction_end: () => [{ ...state, live: { ...state.live, notice: undefined } }, false],
+      }),
+      settled: () => ({ ...state, live: emptyLiveRegion() }),
+      compaction_start: ({ reason }) => ({
+        ...state,
+        live: { ...state.live, notice: `compacting (${reason})` },
+      }),
+      compaction_end: () => ({ ...state, live: { ...state.live, notice: undefined } }),
       // Unknown pi events degrade to a named no-op instead of a silent default.
-      unhandled: () => [state, false],
+      unhandled: () => state,
     }),
   );

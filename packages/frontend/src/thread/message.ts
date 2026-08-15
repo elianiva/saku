@@ -69,9 +69,6 @@ export const CreateFailed = Message.m("CreateFailed", { message: S.String });
 export const AbortRequested = Message.m("AbortRequested");
 export const AbortDone = Message.m("AbortDone");
 
-/** The scroll command's landing (the DOM touch happened). */
-export const ScrollDone = Message.m("ScrollDone");
-
 export const ThreadMessage = S.Union([
   SessionEvent,
   ThreadChanged,
@@ -96,7 +93,6 @@ export const ThreadMessage = S.Union([
   CreateFailed,
   AbortRequested,
   AbortDone,
-  ScrollDone,
 ]);
 export type ThreadMessage = S.Schema.Type<typeof ThreadMessage>;
 

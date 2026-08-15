@@ -183,8 +183,7 @@ describe("message stream", () => {
         let message = state.live.message;
         let thinking = state.live.thinking;
         for (const event of events) {
-          const [next, scroll] = foldLive(state, event);
-          expect(scroll).toBe(true);
+          const next = foldLive(state, event);
           expect(next.trail).toEqual(state.trail);
           const text = textOf(event.message.content);
           const think = thinkingOf(event.message.content);
@@ -212,8 +211,7 @@ describe("tool execution", () => {
         (runs) => {
           let state: Live = initial();
           for (const event of toolEvents(runs)) {
-            const [next, scroll] = foldLive(state, event);
-            expect(scroll).toBe(false);
+            const next = foldLive(state, event);
             state = next;
           }
           // One row per run, in start order.
@@ -269,14 +267,14 @@ describe("tool execution", () => {
           _tag: "tool_execution_update",
           toolCallId: callId,
           partialResult: "x",
-        })[0];
+        });
         expect(updated).toEqual(state);
         const ended = foldLive(state, {
           _tag: "tool_execution_end",
           toolCallId: callId,
           isError,
           result: "y",
-        })[0];
+        });
         expect(ended).toEqual(state);
       }),
     );
@@ -295,14 +293,12 @@ describe("entry_appended", () => {
         entryArb,
         (data, live, incoming) => {
           const state: Live = { trail: Trail.Success({ data }), live };
-          const [next, scroll] = foldLive(state, entryAppended(incoming));
+          const next = foldLive(state, entryAppended(incoming));
           const last = data.entries[data.entries.length - 1];
           const same = last !== undefined && idOf(last.id) === idOf(incoming.id);
           if (same) {
             expect(next).toEqual(state);
-            expect(scroll).toBe(false);
           } else {
-            expect(scroll).toBe(true);
             expect(next.trail).toEqual(
               Trail.Success({
                 data: {
@@ -333,9 +329,8 @@ describe("entry_appended", () => {
         entryArb,
         (trail, incoming) => {
           const state: Live = { trail, live: emptyLiveRegion() };
-          const [next, scroll] = foldLive(state, entryAppended(incoming));
+          const next = foldLive(state, entryAppended(incoming));
           expect(next).toEqual(state);
-          expect(scroll).toBe(false);
         },
       ),
     );
@@ -350,7 +345,7 @@ describe("entry_appended", () => {
         };
         let previous = startSeq;
         for (const entry of entries) {
-          const [next] = foldLive(state, entryAppended(entry));
+          const next = foldLive(state, entryAppended(entry));
           if (next.trail._tag === "Success") {
             expect(next.trail.data.tailSeq).toBeGreaterThanOrEqual(previous);
             previous = next.trail.data.tailSeq;
@@ -366,10 +361,9 @@ describe("settled, compaction, and unknown events", () => {
   it("settled clears the whole live region and keeps the trail", () => {
     fc.assert(
       fc.property(stateArb, (state) => {
-        const [next, scroll] = foldLive(state, { _tag: "settled" });
+        const next = foldLive(state, { _tag: "settled" });
         expect(next.live).toEqual({ tools: [] });
         expect(next.trail).toEqual(state.trail);
-        expect(scroll).toBe(false);
       }),
     );
   });
@@ -380,12 +374,10 @@ describe("settled, compaction, and unknown events", () => {
         stateArb,
         fc.constantFrom("manual" as const, "threshold" as const, "overflow" as const),
         (state, reason) => {
-          const [started, startScroll] = foldLive(state, compactionStart(reason));
+          const started = foldLive(state, compactionStart(reason));
           expect(started.live.notice).toBe(`compacting (${reason})`);
-          expect(startScroll).toBe(false);
-          const [finished, endScroll] = foldLive(started, compactionEnd);
+          const finished = foldLive(started, compactionEnd);
           expect(finished.live.notice).toBeUndefined();
-          expect(endScroll).toBe(false);
         },
       ),
     );
@@ -394,9 +386,8 @@ describe("settled, compaction, and unknown events", () => {
   it("degrades unknown events to a no-op", () => {
     fc.assert(
       fc.property(stateArb, (state) => {
-        const [next, scroll] = foldLive(state, unhandled);
+        const next = foldLive(state, unhandled);
         expect(next).toEqual(state);
-        expect(scroll).toBe(false);
       }),
     );
   });

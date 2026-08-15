@@ -3,10 +3,11 @@
  * transitions returning the `[Model, Commands, Option<OutMessage>]` 3-tuple —
  * the OutMessage is how the pane tells the root "a quick start opened this
  * thread" (the root owns navigation). Session events for the active thread
- * fold through the live state machine (live.ts); `entry_appended` grows the
- * trail there, and a fold that grew the scrollable view fires the scroll
- * command directly (no message round-trip). The pane never computes thread
- * state — the worker broadcasts it (CONTEXT.md: Thread).
+ * fold through the live state machine (live.ts); the trail's chat scroller
+ * (scroller.ts) follows the growing view on the DOM side — no scroll
+ * commands in the loop (the shadcn message-scroller pattern). The pane
+ * never computes thread state — the worker broadcasts it (CONTEXT.md:
+ * Thread).
  *
  * The pane owns the quick-start gesture on the welcome (root route): the
  * composer draft is shared between welcome and thread, so `SendRequested`
@@ -37,7 +38,6 @@ import {
   LoadTrailCmd,
   PromptCmd,
   QuickStartCmd,
-  ScrollTrailCmd,
   SetModelCmd,
 } from "./command.ts";
 import { emptyLiveRegion, foldLive, Trail } from "./live.ts";
@@ -68,12 +68,13 @@ export const update = (model: Model, message: ThreadMessage) =>
     M.withReturnType<UpdateReturn>(),
     M.tagsExhaustive({
       // A session event for this thread (the root matched the route):
-      // fold it through the live state machine; a growing view scrolls.
+      // fold it through the live state machine; the trail's chat scroller
+      // observes the growth on the DOM side.
       SessionEvent: ({ event }) => {
-        const [next, scroll] = foldLive({ trail: model.trail, live: model.live }, event);
+        const next = foldLive({ trail: model.trail, live: model.live }, event);
         return [
           evo(model, { trail: (_) => next.trail, live: (_) => next.live }),
-          scroll ? [ScrollTrailCmd({ force: false })] : none,
+          none,
           Option.none(),
         ];
       },
@@ -86,7 +87,7 @@ export const update = (model: Model, message: ThreadMessage) =>
 
       TrailLoaded: ({ entries, tailSeq }) => [
         evo(model, { trail: (_) => Trail.Success({ data: { entries, tailSeq } }) }),
-        [ScrollTrailCmd({ force: true })],
+        none,
         Option.none(),
       ],
       TrailFailed: ({ error }) => [
@@ -201,8 +202,6 @@ export const update = (model: Model, message: ThreadMessage) =>
           ? [model, none, Option.none()]
           : [model, [AbortCmd({ id: model.id })], Option.none()],
       AbortDone: () => [model, none, Option.none()],
-
-      ScrollDone: () => [model, none, Option.none()],
     }),
   );
 

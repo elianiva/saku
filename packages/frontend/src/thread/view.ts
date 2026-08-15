@@ -51,6 +51,7 @@ import {
 } from "./message.ts";
 import type { Model } from "./model.ts";
 import type { EntryProjection, MessageProjection } from "./projection.ts";
+import { ChatScroller } from "./scroller.ts";
 
 export const view = Submodel.defineView<Model, ThreadMessage>((model, h) =>
   h.section(
@@ -112,8 +113,23 @@ const trailArea = (model: Model, h: HtmlBuilder<ThreadMessage>) =>
     onFailure: (error) => trailStatus(h, `trail unavailable — ${error}`),
     onSuccess: ({ entries }) =>
       h.div(
-        [h.Class("flex-1 min-h-0 overflow-y-auto bg-base"), h.Attribute("id", "trail")],
-        [...entries.map((entry) => renderEntry(entry, h)), liveRegion(model, h)],
+        [h.Class("relative flex-1 min-h-0 flex flex-col bg-base")],
+        [
+          h.div(
+            [
+              h.Class("flex-1 min-h-0 overflow-y-auto"),
+              h.Attribute("id", "trail"),
+              h.OnMount(ChatScroller),
+            ],
+            [
+              h.div(
+                [h.Class("min-h-full")],
+                [...entries.map((entry) => renderEntry(entry, h)), liveRegion(model, h)],
+              ),
+            ],
+          ),
+          scrollToLatestButton(h),
+        ],
       ),
   });
 
@@ -150,7 +166,7 @@ const renderMessageEntry = (message: MessageProjection, h: HtmlBuilder<ThreadMes
   const role = messageRole(message);
   if (role === "user") {
     return h.div(
-      [h.Class("px-4 py-3 border-b border-line")],
+      [h.Class("px-4 py-3 border-b border-line"), h.Attribute("data-role", "user")],
       [
         roleLabel(h, "you", "text-pine"),
         h.pre(
@@ -552,6 +568,22 @@ const composerBox = (
     ],
   );
 };
+
+/** The jump-to-latest button (the shadcn MessageScrollerButton): floats at
+ *  the trail's bottom edge, visible only while content sits below the
+ *  viewport. The scroller wires its click and toggles the data-active
+ *  attribute (scroller.ts); the base classes keep it hidden until then. */
+const scrollToLatestButton = (h: HtmlBuilder<ThreadMessage>) =>
+  h.button(
+    [
+      h.Class(
+        "absolute bottom-4 left-1/2 -translate-x-1/2 z-10 flex h-8 items-center gap-1.5 border border-line bg-surface px-3 text-[12px] text-subtle shadow-md opacity-0 pointer-events-none transition-opacity duration-200 hover:text-text data-[active=true]:opacity-100 data-[active=true]:pointer-events-auto",
+      ),
+      h.Attribute("data-scroll-to-end", ""),
+      h.AriaLabel("scroll to latest"),
+    ],
+    [h.span([h.Class("text-pine")], ["↓"]), "latest"],
+  );
 
 /** The root route's surface: wordmark, greeting, and the quick-start
  *  composer in a centered chat-app column (CONTEXT.md: Quick start). Pi's

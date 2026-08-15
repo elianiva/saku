@@ -179,7 +179,7 @@ describe("thread update", () => {
     );
   });
 
-  it("the trail lands as Success with a scroll, and failures land as Failure", () => {
+  it("the trail lands as Success, and failures land as Failure", () => {
     fc.assert(
       fc.property(
         modelArb,
@@ -193,9 +193,8 @@ describe("thread update", () => {
         fc.integer({ min: 0 }),
         fc.string({ maxLength: 24 }),
         (model, entries, tailSeq, error) => {
-          const [loaded, loadedCommands] = update(model, TrailLoaded({ entries, tailSeq }));
+          const [loaded] = update(model, TrailLoaded({ entries, tailSeq }));
           expect(loaded.trail).toEqual(Trail.Success({ data: { entries, tailSeq } }));
-          expect(loadedCommands).toHaveLength(1);
           const [failed] = update(model, TrailFailed({ error }));
           expect(failed.trail).toEqual(Trail.Failure({ error }));
         },
