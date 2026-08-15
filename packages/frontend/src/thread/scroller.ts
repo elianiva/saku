@@ -2,8 +2,9 @@
  * The trail's chat scroller (thread/scroller.ts): the shadcn message-scroller
  * pattern (ui.shadcn.com/docs/components/base/message-scroller) as a foldkit
  * mount. One mount owns the trail's scroll behavior for as long as the trail
- * element lives — listeners and observers attach on insert and release on
- * unmount, so every thread open or trail reload restarts it fresh.
+ * element lives — the listener streams and observers attach on insert and
+ * release on unmount, so every thread open or trail reload restarts it
+ * fresh.
  *
  * The follow machine mirrors shadcn's: the viewport follows the live end —
  * any content growth scrolls to the bottom — until the reader scrolls away.
@@ -16,7 +17,8 @@
  * viewport, one click returns to the live end.
  */
 
-import { Effect, Stream } from "effect";
+import { Effect, Option, Stream } from "effect";
+import { Subscription } from "foldkit";
 import type { MountAction } from "foldkit/mount";
 
 import type { ThreadMessage } from "./message.ts";
@@ -137,43 +139,81 @@ export const ChatScroller: MountAction<ThreadMessage> = {
           onContentChange();
         };
 
-        let resize: ResizeObserver | null = null;
-        if (typeof ResizeObserver !== "undefined") {
-          resize = new ResizeObserver(scheduleContentChange);
-          // The content box grows with entries and the streaming live region;
-          // the trail box only changes when the pane itself resizes.
-          if (content !== null) resize.observe(content);
-          resize.observe(trail);
-        }
-        let mutation: MutationObserver | null = null;
-        if (typeof MutationObserver !== "undefined") {
-          mutation = new MutationObserver(onMutations);
-          mutation.observe(content ?? trail, { childList: true });
-        }
+        // The listeners, foldkit-managed (Subscription.fromEventFilterMap):
+        // each stream registers its listener when the trail mount's scope
+        // opens and removes it when the mount unmounts — the acquireRelease
+        // lifecycle foldkit's fromEvent helpers own, replacing the manual
+        // add/remove pairing. The mappers run synchronously inside the
+        // browser's event dispatch (the same call stack as the native
+        // handlers they replace) and filter every event out (Option.none):
+        // the scroller stays an imperative shell that emits no messages.
+        const listeners = Stream.mergeAll(
+          [
+            button === null
+              ? Stream.empty
+              : Subscription.fromEventFilterMap<MouseEvent, ThreadMessage>({
+                  target: button,
+                  type: "click",
+                  toMessage: () => {
+                    button.blur();
+                    scrollToEnd("smooth");
+                    return Option.none();
+                  },
+                }),
+            Subscription.fromEventFilterMap<Event, ThreadMessage>({
+              target: trail,
+              type: "scroll",
+              toMessage: () => {
+                onScroll();
+                return Option.none();
+              },
+            }),
+            Subscription.fromEventFilterMap<WheelEvent, ThreadMessage>({
+              target: trail,
+              type: "wheel",
+              options: { passive: true },
+              toMessage: () => {
+                onWheel();
+                return Option.none();
+              },
+            }),
+            Subscription.fromEventFilterMap<TouchEvent, ThreadMessage>({
+              target: trail,
+              type: "touchmove",
+              options: { passive: true },
+              toMessage: () => {
+                onTouchMove();
+                return Option.none();
+              },
+            }),
+          ],
+          { concurrency: "unbounded" },
+        );
 
-        // The opening position: the live end (shadcn's defaultScrollPosition
-        // "end"). The insert hook runs after the patch, so the trail already
-        // measures the loaded entries.
-        scrollToEnd();
-
-        // Attach the listeners and observers; the release detaches them when
-        // the mount is destroyed (the acquireRelease pattern, lutra's
-        // canvas-stage).
+        // The observers and the opening position (shadcn's
+        // defaultScrollPosition "end") — the pane's imperative scope,
+        // released on unmount. The insert hook runs after the patch, so the
+        // trail already measures the loaded entries; the resources are
+        // constructed inside the acquire body (foldkit's discipline) so the
+        // release can only run with the handles it was registered for.
         yield* Effect.acquireRelease(
           Effect.sync(() => {
-            const onButtonClick = () => {
-              button?.blur();
-              scrollToEnd("smooth");
-            };
-            button?.addEventListener("click", onButtonClick);
-            trail.addEventListener("scroll", onScroll);
-            trail.addEventListener("wheel", onWheel, { passive: true });
-            trail.addEventListener("touchmove", onTouchMove, { passive: true });
+            scrollToEnd();
+            let resize: ResizeObserver | null = null;
+            if (typeof ResizeObserver !== "undefined") {
+              resize = new ResizeObserver(scheduleContentChange);
+              // The content box grows with entries and the streaming live
+              // region; the trail box only changes when the pane itself
+              // resizes.
+              if (content !== null) resize.observe(content);
+              resize.observe(trail);
+            }
+            let mutation: MutationObserver | null = null;
+            if (typeof MutationObserver !== "undefined") {
+              mutation = new MutationObserver(onMutations);
+              mutation.observe(content ?? trail, { childList: true });
+            }
             return {
-              onScroll,
-              onWheel,
-              onTouchMove,
-              onButtonClick,
               resize,
               mutation,
               cancelFrame: () => {
@@ -184,30 +224,19 @@ export const ChatScroller: MountAction<ThreadMessage> = {
               },
             };
           }),
-          (disposables) =>
+          ({ resize, mutation, cancelFrame }) =>
             Effect.sync(() => {
-              const {
-                onScroll,
-                onWheel,
-                onTouchMove,
-                onButtonClick,
-                resize,
-                mutation,
-                cancelFrame,
-              } = disposables;
               resize?.disconnect();
               mutation?.disconnect();
-              button?.removeEventListener("click", onButtonClick);
-              trail.removeEventListener("scroll", onScroll);
-              trail.removeEventListener("wheel", onWheel);
-              trail.removeEventListener("touchmove", onTouchMove);
               cancelFrame();
             }),
         );
 
-        // The mount outlives the acquire — the scroller runs until the trail
-        // unmounts, then the interrupt runs the release above.
-        return yield* Effect.never;
+        // The mount outlives the acquire — draining the merged listener
+        // streams holds the scroller open until the trail unmounts, then the
+        // interrupt closes their scopes (removing every listener) and runs
+        // the release above.
+        return yield* Stream.runDrain(listeners);
       }),
     ),
 };

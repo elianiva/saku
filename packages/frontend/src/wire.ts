@@ -15,14 +15,16 @@
  *   connect fails fast without ever dialing a socket — the offline state
  *   and the retry subscription own the wait (subscriptions.ts).
  * - `events` — a pub/sub bridge: whichever client is current forwards its
- *   wire events into one PubSub, so the subscription stream never
- *   re-attaches across client swaps and no event is dropped in the gap.
+ *   wire events into one PubSub through a per-client event stream (the
+ *   listeners register and deregister with the stream's scope), so the
+ *   subscription stream never re-attaches across client swaps and no event
+ *   is dropped in the gap.
  *
  * `connect`/commands are fired from foldkit commands; wire events arrive
  * through the subscription.
  */
 
-import { Context, Data, Effect, Layer, PubSub, Stream } from "effect";
+import { Context, Data, Effect, Fiber, Layer, PubSub, Queue, Stream } from "effect";
 import {
   HelloOk,
   SessionWireEvent,
@@ -69,35 +71,55 @@ export const WireLive = Layer.effect(
     });
     let currentEndpoint = bootEndpoint;
 
-    // The bridge: listeners on the current client forward into one PubSub.
-    // `attach` replaces the listener set; the layer is its only caller.
+    // The bridge: the current client's events flow through one PubSub, so
+    // the subscription stream never re-attaches across client swaps and no
+    // event is dropped in the gap. Each client's listeners register when
+    // its event stream's scope opens and deregister when it closes (the
+    // acquireRelease shape foldkit's fromEvent helpers use for DOM
+    // targets); `attach` forks that stream and awaits the previous bridge's
+    // interrupt, so the old listeners are gone before the new ones attach.
     const pubsub = yield* PubSub.unbounded<BridgeEvent>();
-    let detach: () => void = () => {};
+
+    /** One client's wire events as a stream (foldkit's listener-to-stream
+     *  shape): the listeners register on scope open, deregister on close. */
+    const eventsOf = (client: WireClientShape) =>
+      Stream.callback<BridgeEvent>((queue) =>
+        Effect.acquireRelease(
+          Effect.sync(() => {
+            const offs = [
+              client.on("event", (payload) => {
+                Queue.offerUnsafe(
+                  queue,
+                  BridgeEvent.event({ threadId: payload.threadId, event: payload.event }),
+                );
+              }),
+              client.on("thread_changed", (thread) => {
+                Queue.offerUnsafe(queue, BridgeEvent.thread_changed({ thread }));
+              }),
+              client.on("error", (payload) => {
+                Queue.offerUnsafe(queue, BridgeEvent.error({ message: payload.message }));
+              }),
+              client.on("close", () => {
+                Queue.offerUnsafe(queue, BridgeEvent.close());
+              }),
+            ];
+            return () => offs.forEach((off) => off());
+          }),
+          (dispose) => Effect.sync(dispose),
+        ).pipe(Effect.flatMap(() => Effect.never)),
+      );
+
+    let bridge: Fiber.Fiber<void, never> | null = null;
     const attach = (client: WireClientShape) =>
-      Effect.sync(() => {
-        detach();
-        const offs = [
-          client.on("event", (payload) => {
-            void Effect.runFork(
-              PubSub.publish(
-                pubsub,
-                BridgeEvent.event({ threadId: payload.threadId, event: payload.event }),
-              ),
-            );
-          }),
-          client.on("thread_changed", (thread) => {
-            void Effect.runFork(PubSub.publish(pubsub, BridgeEvent.thread_changed({ thread })));
-          }),
-          client.on("error", (payload) => {
-            void Effect.runFork(
-              PubSub.publish(pubsub, BridgeEvent.error({ message: payload.message })),
-            );
-          }),
-          client.on("close", () => {
-            void Effect.runFork(PubSub.publish(pubsub, BridgeEvent.close()));
-          }),
-        ];
-        detach = () => offs.forEach((off) => off());
+      Effect.gen(function* () {
+        if (bridge !== null) {
+          yield* Fiber.interrupt(bridge);
+        }
+        bridge = yield* Effect.forkDetach(
+          Stream.runDrain(
+            eventsOf(client).pipe(Stream.tap((event) => PubSub.publish(pubsub, event))),
+          ),
+        );
       });
     yield* attach(current);
 
