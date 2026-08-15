@@ -58,9 +58,14 @@ const delegateToThread = (model: Model, threadMessage: ThreadMsg.ThreadMessage):
     onNone: () => [evo(model, { thread: (_) => nextThread }), mapped],
     onSome: (out) => {
       // The pane surfaced a navigation fact (a quick start opened a
-      // thread); the root owns URLs.
+      // thread, or the new-thread button asked for the welcome); the root
+      // owns URLs.
       const navigation =
-        out._tag === "OpenedThread" ? [NavigateToCmd({ path: `/thread/${out.id}` })] : [];
+        out._tag === "OpenedThread"
+          ? [NavigateToCmd({ path: `/thread/${out.id}` })]
+          : out._tag === "NewThreadRequested"
+            ? [NavigateToCmd({ path: "/" })]
+            : [];
       return [evo(model, { thread: (_) => nextThread }), [...mapped, ...navigation]];
     },
   });

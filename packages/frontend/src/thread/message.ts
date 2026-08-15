@@ -105,6 +105,11 @@ export const CreateFailed = Message.m("CreateFailed", { message: S.String });
 export const AbortRequested = Message.m("AbortRequested");
 export const AbortDone = Message.m("AbortDone");
 
+/** The header's new-thread button: leave the pinned thread for the
+ *  welcome — the root pushes "/" (the quick-start composer is the new
+ *  thread surface, CONTEXT.md: Quick start). */
+export const NewThreadRequested = Message.m("NewThreadRequested");
+
 /** A thinking block was toggled (the `<details>`'s native toggle event). */
 export const ThinkingToggled = Message.m("ThinkingToggled", {
   messageId: S.String,
@@ -156,14 +161,18 @@ export const ThreadMessage = S.Union([
   CreateFailed,
   AbortRequested,
   AbortDone,
+  NewThreadRequested,
   ThinkingToggled,
   ToolToggled,
 ]);
 export type ThreadMessage = S.Schema.Type<typeof ThreadMessage>;
 
 /**
- * The fact the pane surfaces to the root (the informing convention, ADR
+ * The facts the pane surfaces to the root (the informing convention, ADR
  * 0009): a quick start opened a thread — the root pushes its URL, exactly
- * as if the user had clicked the rail row.
+ * as if the user had clicked the rail row — and the header's new-thread
+ * button asked for the welcome — the root pushes "/". The root owns URLs.
  */
-export type ThreadOutMessage = typeof OpenedThread.Type;
+export type ThreadOutMessage =
+  | typeof OpenedThread.Type
+  | typeof NewThreadRequested.Type;

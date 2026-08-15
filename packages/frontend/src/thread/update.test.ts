@@ -39,6 +39,7 @@ import {
   ModelSetFailed,
   ModelsListed,
   ModelsListFailed,
+  NewThreadRequested,
   PickerMove,
   PickerQueryChanged,
   PromptAcked,
@@ -190,6 +191,19 @@ describe("thread update", () => {
       fc.property(modelArb, fc.string({ maxLength: 24 }), (model, message) => {
         const [next] = update(model, CreateFailed({ message }));
         expect(next).toEqual({ ...model, starting: false, notice: message });
+      }),
+    );
+  });
+
+  it("the new-thread button surfaces NewThreadRequested on a pinned thread only", () => {
+    fc.assert(
+      fc.property(modelArb, (model) => {
+        const [next, commands, out] = update(model, NewThreadRequested());
+        expect(next).toEqual(model);
+        expect(commands).toHaveLength(0);
+        expect(out).toEqual(
+          model.id === null ? Option.none() : Option.some({ _tag: "NewThreadRequested" }),
+        );
       }),
     );
   });

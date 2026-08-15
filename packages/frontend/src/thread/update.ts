@@ -50,7 +50,7 @@ import {
 } from "./composer.ts";
 import { composerSuggestions, type ComposerSuggestion, type ComposerTrigger } from "./composer/options.ts";
 import { emptyLiveRegion, foldLive, Trail } from "./live.ts";
-import type { ThreadMessage, ThreadOutMessage } from "./message.ts";
+import { NewThreadRequested, type ThreadMessage, type ThreadOutMessage } from "./message.ts";
 import { Model, ModelPicker } from "./model.ts";
 
 export type Commands = ReadonlyArray<Command.Command<ThreadMessage, never, Wire>>;
@@ -395,6 +395,13 @@ export const update = (model: Model, message: ThreadMessage) =>
           ? [model, none, Option.none()]
           : [model, [AbortCmd({ id: model.id })], Option.none()],
       AbortDone: () => [model, none, Option.none()],
+      // The header's new-thread button: surface the fact only on a pinned
+      // thread (the welcome needs no button — it is the new thread
+      // surface); the root owns URLs and pushes "/".
+      NewThreadRequested: () =>
+        model.id === null
+          ? [model, none, Option.none()]
+          : [model, none, Option.some(NewThreadRequested())],
       CompactionFinished: () => [model, none, Option.none()],
       CompactionFailed: ({ message }) => [evo(model, { notice: (_) => message }), none, Option.none()],
       // A trail thinking block was expanded/collapsed (the `<details>`

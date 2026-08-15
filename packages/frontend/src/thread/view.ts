@@ -53,6 +53,7 @@ import {
   ModelPicked,
   ModelPickerClosed,
   ModelPickerRequested,
+  NewThreadRequested,
   PickerMove,
   PickerQueryChanged,
   SendRequested,
@@ -92,11 +93,28 @@ const threadHeader = (model: Model, h: HtmlBuilder<ThreadMessage>) => {
         [info?.mode ?? "local"],
       ),
       h.span([h.Class("flex-1")], []),
+      newThreadButton(h),
       ...(info?.state === "working" ? [abortButton(h)] : []),
       headerStateLine(info?.state, info?.env, h),
     ],
   );
 };
+
+/** The header's new-thread button: leave the pinned thread for the
+ *  welcome — the pane surfaces NewThreadRequested and the root pushes "/"
+ *  (the quick-start composer is the new thread surface). */
+const newThreadButton = (h: HtmlBuilder<ThreadMessage>) =>
+  h.button(
+    [
+      h.Class(
+        "flex h-8 shrink-0 items-center gap-1.5 border border-line px-2 text-[11px] uppercase tracking-[0.18em] text-subtle hover:border-subtle hover:text-text",
+      ),
+      h.OnClick(NewThreadRequested()),
+      h.AriaLabel("new thread"),
+      h.Title("start a new thread"),
+    ],
+    [icon(h, "plus"), "new"],
+  );
 
 /** The header's `state · env` line, from the shared derivation. */
 const headerStateLine = (
