@@ -7,7 +7,7 @@
  */
 
 import { Effect, Schema as S } from "effect";
-import { Command } from "foldkit";
+import { Command, Render } from "foldkit";
 
 import { catchWireError } from "../root/command.ts";
 import { Wire } from "../wire.ts";
@@ -178,16 +178,24 @@ export const AbortCmd = Command.define("Abort", {
  * Scroll the trail to the bottom when the user is near it (they are
  * following the run). update fires it directly when a fold grew the
  * scrollable view; the command performs the DOM touch and lands on a
- * no-op message.
+ * no-op message. The load path fires it with `force` — opening a thread
+ * always lands at the end of the trail, never at the top of its history.
+ *
+ * The touch waits for the render commit: the command is forked before the
+ * frame that carries its own update paints, so reading the trail in the
+ * same tick would size the scroll against the previous frame.
  */
 export const ScrollTrailCmd = Command.define("ScrollTrail", {
+  args: { force: S.Boolean },
   messages: [ScrollDone],
-  execute: Effect.sync(() => {
-    const el = document.getElementById("trail");
-    if (el !== null) {
-      const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 240;
-      if (nearBottom) el.scrollTop = el.scrollHeight;
-    }
-    return ScrollDone();
-  }),
+  execute: ({ force }) =>
+    Effect.gen(function* () {
+      yield* Render.afterCommit;
+      const el = document.getElementById("trail");
+      if (el !== null) {
+        const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 240;
+        if (force || nearBottom) el.scrollTop = el.scrollHeight;
+      }
+      return ScrollDone();
+    }),
 });

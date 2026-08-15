@@ -75,7 +75,7 @@ export const update = (model: Model, message: ThreadMessage) =>
         const [next, scroll] = foldLive({ trail: model.trail, live: model.live }, event);
         return [
           evo(model, { trail: (_) => next.trail, live: (_) => next.live }),
-          scroll ? [ScrollTrailCmd()] : none,
+          scroll ? [ScrollTrailCmd({ force: false })] : none,
           Option.none(),
         ];
       },
@@ -88,7 +88,7 @@ export const update = (model: Model, message: ThreadMessage) =>
 
       TrailLoaded: ({ entries, tailSeq }) => [
         evo(model, { trail: (_) => Trail.Success({ data: { entries, tailSeq } }) }),
-        [ScrollTrailCmd()],
+        [ScrollTrailCmd({ force: true })],
         Option.none(),
       ],
       TrailFailed: ({ error }) => [

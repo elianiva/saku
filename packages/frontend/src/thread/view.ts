@@ -331,11 +331,13 @@ const liveToolRow = (tool: LiveTool, h: HtmlBuilder<ThreadMessage>) => {
   );
 };
 
-/** The docked composer area under a pinned thread's trail. */
+/** The docked composer area under a pinned thread's trail. The box is
+ *  capped at the welcome's column width and centered — the textarea never
+ *  spans the whole pane (the welcome's quick-start box, view.ts). */
 const composerArea = (model: Model, h: HtmlBuilder<ThreadMessage>) =>
   h.div(
     [h.Class("shrink-0 border-t border-line bg-surface p-3")],
-    [composerBox(model, h, "thread")],
+    [h.div([h.Class("w-full max-w-xl mx-auto")], [composerBox(model, h, "thread")])],
   );
 
 /**
