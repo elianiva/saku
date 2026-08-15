@@ -49,7 +49,7 @@ export const DismissBanner = Message.m("DismissBanner");
 /** A navigation fact: open this thread. Both the rail (a row click) and the
  *  pane (a quick start landing) surface it; the root owns URLs and reacts by
  *  pushing `/thread/:id`. Hoisted here so the two submodels share one fact
- *  (ADR 0009's informing convention). */
+ *  (the informing convention). */
 export const OpenedThread = Message.m("OpenedThread", { id: S.String });
 
 export const RootMessage = S.Union([

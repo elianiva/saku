@@ -73,6 +73,8 @@ export const ThreadInfo = S.Struct({
   tailSeq: S.Number,
   /** Adopted-thread provenance; absent on threads created from scratch. */
   source: S.optional(ThreadSource),
+  /** Archive visibility lifecycle (CONTEXT.md: Archive); null when active. */
+  archivedAt: S.Union([S.Null, S.Number]),
 });
 export type ThreadInfo = S.Schema.Type<typeof ThreadInfo>;
 
@@ -96,6 +98,14 @@ export const RenameThreadCommand = S.TaggedStruct("rename_thread", {
   threadId: S.String,
   name: S.String,
 });
+/** Archive a thread: visibility-only, the trail is untouched (CONTEXT.md: Archive). */
+export const ArchiveThreadCommand = S.TaggedStruct("archive_thread", {
+  threadId: S.String,
+});
+/** Unarchive a thread: back to the active list, nothing else changes. */
+export const UnarchiveThreadCommand = S.TaggedStruct("unarchive_thread", {
+  threadId: S.String,
+});
 
 export const ThreadCommand = S.Union([
   ListThreadsCommand,
@@ -103,6 +113,8 @@ export const ThreadCommand = S.Union([
   GetThreadCommand,
   DeleteThreadCommand,
   RenameThreadCommand,
+  ArchiveThreadCommand,
+  UnarchiveThreadCommand,
 ]);
 export type ThreadCommand = S.Schema.Type<typeof ThreadCommand>;
 

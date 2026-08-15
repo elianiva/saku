@@ -24,7 +24,7 @@ the plumbing isn't. Saku is an experiment, not a competitor.
 _Avoid_: calling saku "amp for pi" (the wire is pi-native, the deployment is Durable Objects — the resemblance is the shape, not the stack)
 
 **Thread**:
-The durable unit of agent work: a pi session plus registry metadata (name, cwd, `mode`). One thread is one **worker** — a Durable Object (Cloudflare or celld) — owning one session tree: the append-only log of messages, tool calls, and compactions. Everything a worker needs survives restarts because state lives in the entry trail, never in process memory.
+The durable unit of agent work: a pi session plus registry metadata (name, cwd, `mode`, archive status). One thread is one **worker** — a Durable Object (Cloudflare or celld) — owning one session tree: the append-only log of messages, tool calls, and compactions. Everything a worker needs survives restarts because state lives in the entry trail, never in process memory.
 
 Thread state is a channel every console can read without owning it: `idle` (no run in flight), `working` (a run or compaction is live), `interrupted` (a run was left open and was recovered at first touch — derived from the trail, never a boot scan). Transitions broadcast as `thread_changed` events.
 _Avoid_: session (pi's word for the log machinery), task, job, run, conversation
@@ -86,8 +86,20 @@ Hub-owned index of threads (id → name, cwd, mode, env). Consoles list and atta
 _Avoid_: db, table, catalog
 
 **Pi sessions**:
-The pi session files on the user's machine (`~/.pi/agent/sessions/` — v3, the format pi's shell writes today, and v4, pi-agent-core's jsonl format), listed and adopted through the local daemon. The console's rail lists them naturally under the threads (only the unadopted ones — a session is a thread once opened) and a click opens one: adoption is what opening a session means, never an import gesture. Import is **adoption**: the file is read once through pi's own semantics and replayed into the thread's own trail; the pi file is never written, and the thread record's `source` provenance pins where it came from (re-import is idempotent). Only the local daemon serves these commands — the hub has no `~/.pi` (the mirror of skills being hub-only).
+The pi session files on the user's machine (`~/.pi/agent/sessions/` — v3, the format pi's shell writes today, and v4, pi-agent-core's jsonl format), listed and adopted through the local daemon. The console's rail lists them under the threads (only the unadopted ones — a session is a thread once opened) and a click opens one: adoption is what opening a session means, never an import gesture. Import is **adoption**: the file is read once through pi's own semantics and replayed into the thread's own trail; the pi file is never written, and the thread record's `source` provenance pins where it came from (re-import is idempotent). Only the local daemon serves these commands — the hub has no `~/.pi` (the mirror of skills being hub-only).
 _Avoid_: migration, bridge, sync, export
+
+**Project**:
+A cwd the user has explicitly added to the session window (the t3code-style "add project" gesture — CONTEXT.md: Add project). The window is project-scoped: the daemon lists only the added projects' pi sessions (never a full scan of `~/.pi`), matching each project's own session dir (pi's per-cwd layout) plus every subdirectory's, with the file header's real `cwd` verifying membership (pi's dir encoding is lossy — a dash in a name is indistinguishable from a separator). Projects are daemon-local state (`projects.json`), served only by the local daemon — the hub answers `projects_not_served`. A project is a scoping list entry, never a thread grouping: threads carry their own cwd, and removing a project never touches adopted threads.
+_Avoid_: workspace, repo, folder
+
+**Add project**:
+The explicit gesture that registers a cwd in the session window — the rail's `＋` input (a typed path) or `saku project add <path>`. Adding is idempotent (re-adding is a no-op); the project appears expanded with its sessions loading. Sessions themselves are lazy: a project's list loads on first expand and caches — connect never reads pi session files.
+_Avoid_: import-project (adoption is the only import, and it imports sessions, not projects)
+
+**Archive**:
+A thread's visibility lifecycle, t3code-style: archiving moves the thread out of the active list into the rail's archived view (muted rows, unarchive + delete). Metadata-only — the trail, session, and env are untouched, and unarchive is always possible. An archived thread still runs, still broadcasts, and can still be renamed.
+_Avoid_: settle (that's a run-lifecycle word: a run settles), delete, hide
 
 **Wire**:
 The protocol between consoles and the hub: pi's own session vocabulary (`pi-agent-core`'s `AgentEvent`/`Entry` types, partial snapshots stripped as pi's own shell does) extended with a thread layer (registry ops, session commands, `settled`/`entry_appended`). The standing rule: **extend pi, never shim it** — pi's public types go on the wire verbatim; saku only adds what pi lacks (threads). JSONL frames over WebSocket; the hub's domain is the address, a deployment secret the credential.

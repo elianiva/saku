@@ -8,36 +8,46 @@
  * `informRouteChanged` is the parent's hook for a route change: the rail is
  * always visible, so the only route-derived field is the row highlight.
  *
- * The rail also owns the pi-session section (CONTEXT.md: Pi sessions): the
- * list lands on refresh (the conn machine's Connected edge fires
- * RefreshRequested, so connect re-lists both the registry and ~/.pi), and a
- * row click adopts the session — the adoption landing upserts the born
- * thread and surfaces `OpenedThread`, exactly like a thread row click.
+ * The rail also owns the project window (CONTEXT.md: Project, Pi sessions):
+ * connect re-lists the registry and the added projects only — a project's
+ * sessions are lazy (fetched on first expand, cached), so startup never
+ * reads pi session files. A session row click adopts it — the adoption
+ * landing upserts the born thread and surfaces `OpenedThread`, exactly like
+ * a thread row click. Archive moves a thread between the active and
+ * archived views (both derive from one list via `archivedAt`).
  */
 
 import { Match as M, Option } from "effect";
 import { Command } from "foldkit";
 import { evo } from "foldkit/struct";
-import type { ThreadInfo } from "@saku/wire";
+import type { ProjectInfo, ThreadInfo } from "@saku/wire";
 
 import type { AppRoute } from "../route.ts";
 import { OpenedThread } from "../root/message.ts";
 import { Wire } from "../wire.ts";
 import {
   AdoptPiSessionCmd,
+  AddProjectCmd,
+  ArchiveThreadCmd,
   DeleteThreadCmd,
-  ListPiSessionsCmd,
+  ListProjectCandidatesCmd,
+  ListProjectSessionsCmd,
+  ListProjectsCmd,
   ListThreadsCmd,
+  RemoveProjectCmd,
+  RenameThreadCmd,
+  UnarchiveThreadCmd,
 } from "./command.ts";
 import { DeletedThread, type RailMessage, type RailOutMessage } from "./message.ts";
-import { Model, piSessions, threadList } from "./model.ts";
+import { Model, projectCandidates, projectSessions, projects, threadList } from "./model.ts";
 
 export type Commands = ReadonlyArray<Command.Command<RailMessage, never, Wire>>;
 export type UpdateReturn = readonly [Model, Commands, Option.Option<RailOutMessage>];
 
 const none: Commands = [];
 
-/** Upsert a thread into the list (broadcast order is registry order). */
+/** Upsert a thread into the list (broadcast order is registry order). The
+ *  list holds every thread; the views filter by `archivedAt`. */
 const upsertThread = (model: Model, thread: ThreadInfo) => {
   if (model.list._tag !== "Success") return model;
   const threads = model.list.data.some((existing) => existing.id === thread.id)
@@ -53,6 +63,29 @@ const removeThread = (model: Model, id: string) => {
   return evo(model, { list: (_) => threadList.Success({ data: threads }) });
 };
 
+/** Upsert a project into the window. */
+const upsertProject = (model: Model, project: ProjectInfo) => {
+  if (model.projects._tag !== "Success") return model;
+  const projects_ = model.projects.data.some((existing) => existing.path === project.path)
+    ? model.projects.data.map((existing) => (existing.path === project.path ? project : existing))
+    : [...model.projects.data, project];
+  return evo(model, { projects: (_) => projects.Success({ data: projects_ }) });
+};
+
+/** Issue the lazy session fetch for every expanded project (the refresh
+ *  edge reloads what is already on screen). */
+const reloadExpanded = (model: Model): Commands =>
+  Object.entries(model.expanded)
+    .filter(([, isExpanded]) => isExpanded)
+    .map(([path]) => ListProjectSessionsCmd({ path }));
+
+/** The project owning a session path (for re-listing after a failed
+ *  adoption); undefined when the window does not contain it. */
+const projectOfPath = (model: Model, path: string) =>
+  model.projects._tag === "Success"
+    ? model.projects.data.find((project) => path.startsWith(`${project.path}/`) || path === project.path)
+    : undefined;
+
 export const update = (model: Model, message: RailMessage) =>
   M.value(message).pipe(
     M.withReturnType<UpdateReturn>(),
@@ -67,9 +100,16 @@ export const update = (model: Model, message: RailMessage) =>
         none,
         Option.none(),
       ],
-      RefreshRequested: () => [model, [ListThreadsCmd(), ListPiSessionsCmd()], Option.none()],
+      // Connect re-lists the registry and the window's scope — never every
+      // pi session (the projects' sessions load lazily on expand, and the
+      // refresh edge reloads what is already on screen).
+      RefreshRequested: () => [
+        model,
+        [ListThreadsCmd(), ListProjectsCmd(), ...reloadExpanded(model)],
+        Option.none(),
+      ],
       // The registry broadcast: keep the list current (a thread's state,
-      // env, or name changed — the auto-title lands here).
+      // env, name, or archive status changed — the auto-title lands here).
       ThreadChanged: ({ thread }) => [upsertThread(model, thread), none, Option.none()],
 
       // A row clicked: surface the fact upward and let the root navigate.
@@ -88,26 +128,204 @@ export const update = (model: Model, message: RailMessage) =>
         Option.none(),
       ],
 
-      // The pi section (CONTEXT.md: Pi sessions). The list is a snapshot:
-      // the view filters it against adopted threads (presentation.ts), so
-      // an adopted session's row vanishes as soon as the registry knows
-      // the thread. A failed list (e.g. a remote hub — only the local
-      // daemon serves ~/.pi) renders nothing: no section, no noise.
-      PiSessionsListed: ({ sessions }) => [
+      // Archive (CONTEXT.md: Archive): visibility-only, reversible. The
+      // landing upserts — the views derive active/archived from archivedAt.
+      ArchiveRequested: ({ id }) => [model, [ArchiveThreadCmd({ id })], Option.none()],
+      ThreadArchived: ({ thread }) => [upsertThread(model, thread), none, Option.none()],
+      ArchiveFailed: ({ error }) => [
+        evo(model, { notice: (_) => error.message }),
+        none,
+        Option.none(),
+      ],
+      UnarchiveRequested: ({ id }) => [model, [UnarchiveThreadCmd({ id })], Option.none()],
+      ThreadUnarchived: ({ thread }) => [upsertThread(model, thread), none, Option.none()],
+      UnarchiveFailed: ({ error }) => [
+        evo(model, { notice: (_) => error.message }),
+        none,
+        Option.none(),
+      ],
+
+      // Inline rename (double-click the title): draft → commit → landing.
+      ThreadRenameRequested: ({ id }) => {
+        if (model.list._tag !== "Success") return [model, none, Option.none()];
+        const thread = model.list.data.find((t) => t.id === id);
+        if (thread === undefined) return [model, none, Option.none()];
+        return [
+          evo(model, { renaming: (_) => ({ id, value: thread.name }) }),
+          none,
+          Option.none(),
+        ];
+      },
+      ThreadRenameDraftChanged: ({ text }) => {
+        const renaming = model.renaming;
+        if (renaming === null) return [model, none, Option.none()];
+        return [
+          evo(model, { renaming: (_) => ({ id: renaming.id, value: text }) }),
+          none,
+          Option.none(),
+        ];
+      },
+      ThreadRenameCommitted: () => {
+        const renaming = model.renaming;
+        if (renaming === null) return [model, none, Option.none()];
+        return [
+          evo(model, { renaming: (_) => null }),
+          [RenameThreadCmd({ id: renaming.id, name: renaming.value.trim() })],
+          Option.none(),
+        ];
+      },
+      ThreadRenameCancelled: () => [evo(model, { renaming: (_) => null }), none, Option.none()],
+      ThreadRenamed: ({ thread }) => [upsertThread(model, thread), none, Option.none()],
+      ThreadRenameFailed: ({ error }) => [
+        evo(model, { renaming: (_) => null, notice: (_) => error.message }),
+        none,
+        Option.none(),
+      ],
+
+      // The projects window (CONTEXT.md: Project, Pi sessions).
+      ProjectsListed: ({ projects: listed }) => [
+        evo(model, { projects: (_) => projects.Success({ data: listed }) }),
+        reloadExpanded(model),
+        Option.none(),
+      ],
+      ProjectsListFailed: ({ error }) => [
+        evo(model, { projects: (_) => projects.Failure({ error }) }),
+        none,
+        Option.none(),
+      ],
+      ProjectAdded: ({ project }) => [
         evo(model, {
-          piSessions: (_) => piSessions.Success({ data: sessions }),
-          notice: (_) => null,
+          adding: (_) => false,
+          addDraft: (_) => "",
+          projects: (_) => upsertProject(model, project).projects,
+          expanded: (expanded) => ({ ...expanded, [project.path]: true }),
+        }),
+        // Immediate feedback: the new project opens with its sessions.
+        [ListProjectSessionsCmd({ path: project.path })],
+        Option.none(),
+      ],
+      ProjectAddFailed: ({ error }) => [
+        evo(model, { adding: (_) => false, notice: (_) => error.message }),
+        none,
+        Option.none(),
+      ],
+      ProjectRemoved: ({ path }) => {
+        const projectSessions_ = { ...model.projectSessions };
+        delete projectSessions_[path];
+        const expanded = { ...model.expanded };
+        delete expanded[path];
+        const sessionShowMore = { ...model.sessionShowMore };
+        delete sessionShowMore[path];
+        const projects_ =
+          model.projects._tag === "Success"
+            ? projects.Success({
+                data: model.projects.data.filter((project) => project.path !== path),
+              })
+            : model.projects;
+        return [
+          evo(model, {
+            projects: (_) => projects_,
+            projectSessions: (_) => projectSessions_,
+            expanded: (_) => expanded,
+            sessionShowMore: (_) => sessionShowMore,
+          }),
+          none,
+          Option.none(),
+        ];
+      },
+      ProjectRemoveFailed: ({ error }) => [
+        evo(model, { notice: (_) => error.message }),
+        none,
+        Option.none(),
+      ],
+      ProjectSessionsListed: ({ path, sessions: listed }) => [
+        evo(model, {
+          projectSessions: (map) => ({
+            ...map,
+            [path]: projectSessions.Success({ data: listed }),
+          }),
         }),
         none,
         Option.none(),
       ],
-      PiSessionsListFailed: ({ error }) => [
-        evo(model, { piSessions: (_) => piSessions.Failure({ error }) }),
+      ProjectSessionsListFailed: ({ path, error }) => [
+        evo(model, {
+          projectSessions: (map) => ({
+            ...map,
+            [path]: projectSessions.Failure({ error }),
+          }),
+        }),
         none,
         Option.none(),
       ],
-      // A row clicked: adoption is guarded (no double adoptions); the
-      // landed thread opens exactly like a thread row click.
+      ProjectExpanded: ({ path }) => [
+        evo(model, { expanded: (expanded) => ({ ...expanded, [path]: true }) }),
+        // Load on first expand; cached afterwards (the refresh edge reloads).
+        model.projectSessions[path] === undefined ? [ListProjectSessionsCmd({ path })] : none,
+        Option.none(),
+      ],
+      ProjectCollapsed: ({ path }) => [
+        evo(model, { expanded: (expanded) => ({ ...expanded, [path]: false }) }),
+        none,
+        Option.none(),
+      ],
+      ProjectShowMore: ({ path }) => [
+        evo(model, { sessionShowMore: (map) => ({ ...map, [path]: true }) }),
+        none,
+        Option.none(),
+      ],
+      ProjectShowLess: ({ path }) => [
+        evo(model, { sessionShowMore: (map) => ({ ...map, [path]: false }) }),
+        none,
+        Option.none(),
+      ],
+      ThreadShowMore: () => [evo(model, { threadShowMore: (_) => true }), none, Option.none()],
+      ThreadShowLess: () => [evo(model, { threadShowMore: (_) => false }), none, Option.none()],
+
+      // The rail's view: active (threads + projects window) or archived.
+      ArchivedViewRequested: () => [evo(model, { view: (_) => "archived" }), none, Option.none()],
+      ActiveViewRequested: () => [evo(model, { view: (_) => "active" }), none, Option.none()],
+
+      // The add-project gesture: open the input (and fetch the picker's
+      // candidates), draft it, commit on Enter.
+      AddProjectRequested: () => [
+        evo(model, { adding: (_) => true }),
+        [ListProjectCandidatesCmd()],
+        Option.none(),
+      ],
+      ProjectCandidatesListed: ({ candidates }) => [
+        evo(model, {
+          candidates: (_) =>
+            projectCandidates.Success({ data: [...candidates].sort() }),
+        }),
+        none,
+        Option.none(),
+      ],
+      ProjectCandidatesListFailed: ({ error }) => [
+        evo(model, { candidates: (_) => projectCandidates.Failure({ error }) }),
+        none,
+        Option.none(),
+      ],
+      AddProjectDraftChanged: ({ text }) => [
+        evo(model, { addDraft: (_) => text }),
+        none,
+        Option.none(),
+      ],
+      AddProjectCommitted: () => {
+        const path = model.addDraft.trim();
+        if (path.length === 0) return [model, none, Option.none()];
+        return [model, [AddProjectCmd({ path })], Option.none()];
+      },
+      AddProjectCancelled: () => [
+        evo(model, { adding: (_) => false, addDraft: (_) => "" }),
+        none,
+        Option.none(),
+      ],
+      RemoveProjectRequested: ({ path }) => [model, [RemoveProjectCmd({ path })], Option.none()],
+
+      // The pi section (CONTEXT.md: Pi sessions). A row clicked: adoption is
+      // guarded (no double adoptions); the landed thread opens exactly like
+      // a thread row click.
       PiSessionClicked: ({ path }) =>
         model.adopting !== null
           ? [model, none, Option.none()]
@@ -127,13 +345,19 @@ export const update = (model: Model, message: RailMessage) =>
         Option.some(OpenedThread({ id: thread.id })),
       ],
       // The adoption failed (e.g. already imported elsewhere — a stale
-      // list): show why, release the guard, and re-list both sides so the
-      // truth reconciles.
-      PiSessionAdoptFailed: ({ error }) => [
-        evo(model, { adopting: (_) => null, notice: (_) => error.message }),
-        [ListThreadsCmd(), ListPiSessionsCmd()],
-        Option.none(),
-      ],
+      // list): show why, release the guard, and re-list the truth.
+      PiSessionAdoptFailed: ({ error }) => {
+        const project = model.adopting === null ? undefined : projectOfPath(model, model.adopting);
+        return [
+          evo(model, { adopting: (_) => null, notice: (_) => error.message }),
+          [
+            ListThreadsCmd(),
+            ListProjectsCmd(),
+            ...(project === undefined ? [] : [ListProjectSessionsCmd({ path: project.path })]),
+          ],
+          Option.none(),
+        ];
+      },
     }),
   );
 

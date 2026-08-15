@@ -50,6 +50,10 @@ export interface ThreadRegistryShape extends HostRegistryShape {
     /** Adoption provenance for imported pi sessions (pi-sessions.ts). */
     source?: ThreadSource;
   }) => Effect.Effect<ThreadRecord, RegistryError>;
+  /** Archive a thread: visibility-only, the trail is untouched (CONTEXT.md: Archive). */
+  readonly archive: (threadId: string) => Effect.Effect<Option.Option<ThreadRecord>, RegistryError>;
+  /** Unarchive a thread: back to the active list, nothing else changes. */
+  readonly unarchive: (threadId: string) => Effect.Effect<Option.Option<ThreadRecord>, RegistryError>;
   /** Delete the record AND the thread's directory (sessions included). */
   readonly delete: (threadId: string) => Effect.Effect<boolean, RegistryError>;
   /** Wire projection: registry view + derived state. */
@@ -82,8 +86,14 @@ const indexLoaded = (loaded: readonly ThreadRecord[]) => {
   const records = new Map<string, ThreadRecord>();
   const states = new Map<string, ThreadState>();
   for (const record of loaded) {
-    // Records written before auto-title (ADR 0006) have no nameAuto field.
-    records.set(record.id, { ...record, nameAuto: record.nameAuto === true });
+    // Records written before auto-title (ADR 0006) have no nameAuto field;
+    // records written before archive have no archivedAt (the schema's
+    // optionalWith default fills null, this normalizes belt-and-braces).
+    records.set(record.id, {
+      ...record,
+      nameAuto: record.nameAuto === true,
+      archivedAt: record.archivedAt ?? null,
+    });
     states.set(record.id, "idle");
   }
   return { records, states };
@@ -150,6 +160,7 @@ export const ThreadRegistryLive = Layer.effect(
           createdAt: Date.now(),
           sessionId: null,
           nameAuto: input.autoName === true,
+          archivedAt: null,
           ...(input.source === undefined ? {} : { source: input.source }),
         };
         yield* records.put(`${record.id}/thread.json`, record);
@@ -163,6 +174,26 @@ export const ThreadRegistryLive = Layer.effect(
         );
         if (record === undefined) return Option.none();
         const next: ThreadRecord = { ...record, ...patch };
+        yield* records.put(`${threadId}/thread.json`, next);
+        yield* Ref.update(recordsRef, (records) => new Map(records).set(threadId, next));
+        return Option.some(next);
+      }),
+      archive: Effect.fn("archive")(function* (threadId) {
+        const record = yield* Ref.get(recordsRef).pipe(
+          Effect.map((records) => records.get(threadId)),
+        );
+        if (record === undefined) return Option.none();
+        const next: ThreadRecord = { ...record, archivedAt: Date.now() };
+        yield* records.put(`${threadId}/thread.json`, next);
+        yield* Ref.update(recordsRef, (records) => new Map(records).set(threadId, next));
+        return Option.some(next);
+      }),
+      unarchive: Effect.fn("unarchive")(function* (threadId) {
+        const record = yield* Ref.get(recordsRef).pipe(
+          Effect.map((records) => records.get(threadId)),
+        );
+        if (record === undefined) return Option.none();
+        const next: ThreadRecord = { ...record, archivedAt: null };
         yield* records.put(`${threadId}/thread.json`, next);
         yield* Ref.update(recordsRef, (records) => new Map(records).set(threadId, next));
         return Option.some(next);
@@ -210,6 +241,7 @@ export const ThreadRegistryLive = Layer.effect(
           sessionId: record.sessionId,
           tailSeq,
           ...(record.source === undefined ? {} : { source: record.source }),
+          archivedAt: record.archivedAt ?? null,
         });
       }),
     });

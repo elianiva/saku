@@ -37,7 +37,10 @@ export const PiSessionInfo = S.Struct({
 });
 export type PiSessionInfo = S.Schema.Type<typeof PiSessionInfo>;
 
-export const ListPiSessionsCommand = S.TaggedStruct("list_pi_sessions", {});
+export const ListPiSessionsCommand = S.TaggedStruct("list_pi_sessions", {
+  /** Scope the list to one added project's path; absent = every added project. */
+  project: S.optional(S.String),
+});
 export const ImportPiSessionCommand = S.TaggedStruct("import_pi_session", {
   /** A `PiSessionInfo.path`, as returned by `list_pi_sessions`. */
   path: S.String,

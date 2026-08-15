@@ -28,6 +28,7 @@
 
 import { WebSocketServer } from "ws";
 import { NodeFileSystem } from "@effect/platform-node";
+import { resolve } from "node:path";
 import {
   Context,
   Effect,
@@ -43,18 +44,25 @@ import {
 } from "effect";
 
 import {
+  AddProjectResponse,
+  ArchiveThreadResponse,
   CreateThreadResponse,
   DeleteThreadResponse,
   EventFrame,
   GetThreadResponse,
   ImportPiSessionResponse,
   ListPiSessionsResponse,
+  ListProjectCandidatesResponse,
+  ListProjectsResponse,
   ListThreadsResponse,
+  RemoveProjectResponse,
   RenameThreadResponse,
   ThreadChanged,
+  UnarchiveThreadResponse,
   resolveThread,
   shortThreadId,
   type PiSessionCommand,
+  type ProjectCommand,
   type ResponsePayload,
   type SessionCommand as SessionCommandType,
   type SessionWireEvent,
@@ -95,7 +103,8 @@ import {
 import { SessionHost, SessionHostError } from "./session-host.ts";
 import { runSessionCommand } from "./session-commands.ts";
 import { DoSessionRepo } from "./do-session.ts";
-import { listPiSessions, readPiSession } from "./pi-sessions.ts";
+import { listPiSessions, listProjectCandidates, readPiSession } from "./pi-sessions.ts";
+import { addProject, listProjects, removeProject } from "./projects.ts";
 
 export interface DaemonOptions {
   /** Override the URL file path (tests). Defaults to ~/.saku/worker.url. */
@@ -114,6 +123,7 @@ export class DaemonError extends Schema.TaggedError<DaemonError>()("DaemonError"
     "unknown_command",
     "startup",
     "resolution",
+    "projects",
   ]),
   message: Schema.String,
   cause: Schema.optional(Schema.Unknown),
@@ -193,7 +203,7 @@ export class SakuDaemon extends Context.Service<SakuDaemon, SakuDaemonShape>()("
     });
 
     const runHubCommand = Effect.fn("runHubCommand")(function* (
-      command: ThreadCommand | SkillCommand | PiSessionCommand,
+      command: ThreadCommand | SkillCommand | PiSessionCommand | ProjectCommand,
     ) {
       // The skills store is hub-hosted (ADR 0007); the local daemon
       // deliberately does not implement it.
@@ -263,13 +273,51 @@ export class SakuDaemon extends Context.Service<SakuDaemon, SakuDaemonShape>()("
             yield* emitThreadChanged(info);
             return RenameThreadResponse.make({ thread: info });
           }),
+          archive_thread: Effect.fn("archive_thread")(function* (command) {
+            // Archive is visibility-only (CONTEXT.md: Archive): the trail,
+            // session, and env are untouched; unarchive is always possible.
+            const threadId = yield* resolveThreadId(command.threadId);
+            const archived = yield* registry.archive(threadId);
+            if (Option.isNone(archived)) {
+              return yield* Effect.fail(
+                new DaemonError({
+                  code: "unknown_thread",
+                  message: `unknown thread: ${command.threadId}`,
+                }),
+              );
+            }
+            const info = yield* infoOf(threadId);
+            yield* emitThreadChanged(info);
+            return ArchiveThreadResponse.make({ thread: info });
+          }),
+          unarchive_thread: Effect.fn("unarchive_thread")(function* (command) {
+            const threadId = yield* resolveThreadId(command.threadId);
+            const unarchived = yield* registry.unarchive(threadId);
+            if (Option.isNone(unarchived)) {
+              return yield* Effect.fail(
+                new DaemonError({
+                  code: "unknown_thread",
+                  message: `unknown thread: ${command.threadId}`,
+                }),
+              );
+            }
+            const info = yield* infoOf(threadId);
+            yield* emitThreadChanged(info);
+            return UnarchiveThreadResponse.make({ thread: info });
+          }),
           list_skills: skillsNotServed,
           import_skill: skillsNotServed,
           delete_skill: skillsNotServed,
-          list_pi_sessions: Effect.fn("list_pi_sessions")(function* () {
+          list_pi_sessions: Effect.fn("list_pi_sessions")(function* (command) {
             // pi's session files live on the user's machine; only the local
-            // daemon can read them (the mirror of skills_not_served).
-            const sessions = yield* listPiSessions(fs, paths).pipe(
+            // daemon can read them (the mirror of skills_not_served). The
+            // list is the window's scope (CONTEXT.md: Project): a filter
+            // arg scopes to one project, otherwise every added project.
+            const projects =
+              command.project === undefined
+                ? (yield* listProjects(fs, paths)).map((project) => project.path)
+                : [resolve(command.project)];
+            const sessions = yield* listPiSessions(fs, paths, projects).pipe(
               Effect.mapError(
                 (error) =>
                   new DaemonError({
@@ -280,6 +328,31 @@ export class SakuDaemon extends Context.Service<SakuDaemon, SakuDaemonShape>()("
               ),
             );
             return ListPiSessionsResponse.make({ sessions });
+          }),
+          list_projects: Effect.fn("list_projects")(function* () {
+            const projects = yield* listProjects(fs, paths);
+            return ListProjectsResponse.make({ projects });
+          }),
+          add_project: Effect.fn("add_project")(function* (command) {
+            const project = yield* addProject(fs, paths, command.path);
+            return AddProjectResponse.make({ project });
+          }),
+          remove_project: Effect.fn("remove_project")(function* (command) {
+            yield* removeProject(fs, paths, command.path);
+            return RemoveProjectResponse.make({});
+          }),
+          list_project_candidates: Effect.fn("list_project_candidates")(function* () {
+            const candidates = yield* listProjectCandidates(fs, paths).pipe(
+              Effect.mapError(
+                (error) =>
+                  new DaemonError({
+                    code: "pi_sessions",
+                    message: error.message,
+                    cause: error,
+                  }),
+              ),
+            );
+            return ListProjectCandidatesResponse.make({ candidates });
           }),
           import_pi_session: Effect.fn("import_pi_session")(function* (command) {
             // Adoption is idempotent per pi session file: one thread per

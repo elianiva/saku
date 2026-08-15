@@ -18,6 +18,7 @@ import { type WebSocket } from "ws";
 
 import {
   AbortResponse,
+  ArchiveThreadResponse,
   BranchResponse,
   CompactResponse,
   CreateThreadResponse,
@@ -45,6 +46,9 @@ import {
   SteerResponse,
   THINKING_LEVELS,
   ThreadChanged,
+  UnarchiveThreadResponse,
+  type PiSessionCommand,
+  type ProjectCommand,
   type ResponsePayload,
   type SessionCommand,
   type SkillCommand,
@@ -53,7 +57,6 @@ import {
   type ThreadCommand,
   type ThreadInfo,
   type ThreadMode,
-  type PiSessionCommand,
 } from "../src/index.ts";
 import { WireServer, listenWs, wsUrlOf } from "../src/server-core.ts";
 
@@ -74,6 +77,7 @@ export class FixtureError extends S.TaggedError<FixtureError>()("FixtureError", 
     "unknown_entry",
     "unknown_skill",
     "pi_sessions_not_served",
+    "projects_not_served",
   ]),
   message: S.String,
 }) {}
@@ -86,6 +90,7 @@ interface ScriptedThread {
   autoName: boolean;
   sessionId: string | null;
   state: "idle" | "working";
+  archivedAt: number | null;
   thinkingLevel: ThinkingLevel;
   nextSeq: number;
   entries: Array<{ seq: number; type: string; id: string }>;
@@ -133,6 +138,7 @@ export const startHubFixture = Effect.fn("startHubFixture")(function* () {
     env: "ready",
     sessionId: thread.sessionId,
     tailSeq: thread.nextSeq - 1,
+    archivedAt: thread.archivedAt,
   });
 
   const threadChanged = (thread: ScriptedThread) =>
@@ -160,6 +166,7 @@ export const startHubFixture = Effect.fn("startHubFixture")(function* () {
       autoName: input.autoName === true,
       sessionId: null,
       state: "idle",
+      archivedAt: null,
       thinkingLevel: "off",
       nextSeq: 1,
       entries: [],
@@ -182,7 +189,9 @@ export const startHubFixture = Effect.fn("startHubFixture")(function* () {
     yield* core.broadcast(EventFrame.make({ threadId: thread.id, event: { type: "settled" } }));
   });
 
-  const runHubCommand = (command: ThreadCommand | SkillCommand | PiSessionCommand) =>
+  const runHubCommand = (
+    command: ThreadCommand | SkillCommand | PiSessionCommand | ProjectCommand,
+  ) =>
     Match.value(command).pipe(
       Match.withReturnType<Effect.Effect<ResponsePayload, FixtureError, never>>(),
       Match.tagsExhaustive({
@@ -228,6 +237,34 @@ export const startHubFixture = Effect.fn("startHubFixture")(function* () {
           thread.name = name;
           yield* threadChanged(thread);
           return RenameThreadResponse.make({ thread: threadInfo(thread) });
+        }),
+        archive_thread: Effect.fn("archive_thread")(function* (command) {
+          const thread = findThread(command.threadId);
+          if (thread === undefined) {
+            return yield* Effect.fail(
+              new FixtureError({
+                kind: "unknown_thread",
+                message: `unknown thread: ${command.threadId}`,
+              }),
+            );
+          }
+          thread.archivedAt = Date.now();
+          yield* threadChanged(thread);
+          return ArchiveThreadResponse.make({ thread: threadInfo(thread) });
+        }),
+        unarchive_thread: Effect.fn("unarchive_thread")(function* (command) {
+          const thread = findThread(command.threadId);
+          if (thread === undefined) {
+            return yield* Effect.fail(
+              new FixtureError({
+                kind: "unknown_thread",
+                message: `unknown thread: ${command.threadId}`,
+              }),
+            );
+          }
+          thread.archivedAt = null;
+          yield* threadChanged(thread);
+          return UnarchiveThreadResponse.make({ thread: threadInfo(thread) });
         }),
         delete_thread: Effect.fn("delete_thread")(function* (command) {
           const thread = findThread(command.threadId);
@@ -288,6 +325,36 @@ export const startHubFixture = Effect.fn("startHubFixture")(function* () {
             new FixtureError({
               kind: "pi_sessions_not_served",
               message: "pi sessions are served by the local daemon, not the hub",
+            }),
+          ),
+        // The fixture is the hub's shape: the project list scopes the local
+        // daemon's pi-session window, so the hub rejects it too.
+        list_projects: () =>
+          Effect.fail(
+            new FixtureError({
+              kind: "projects_not_served",
+              message: "projects are served by the local daemon, not the hub",
+            }),
+          ),
+        add_project: () =>
+          Effect.fail(
+            new FixtureError({
+              kind: "projects_not_served",
+              message: "projects are served by the local daemon, not the hub",
+            }),
+          ),
+        remove_project: () =>
+          Effect.fail(
+            new FixtureError({
+              kind: "projects_not_served",
+              message: "projects are served by the local daemon, not the hub",
+            }),
+          ),
+        list_project_candidates: () =>
+          Effect.fail(
+            new FixtureError({
+              kind: "projects_not_served",
+              message: "projects are served by the local daemon, not the hub",
             }),
           ),
       }),

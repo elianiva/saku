@@ -47,7 +47,7 @@ export const RefreshRailCmd = Command.define("RefreshRail", {
 });
 
 /** Push a URL; the navigation layer reports the change back as ChangedRoute,
- *  which drives the route-derived submodel state (ADR 0009). */
+ *  which drives the route-derived submodel state (the informing convention). */
 export const NavigateToCmd = Command.define("NavigateTo", {
   args: { path: S.String },
   messages: [NavigatedTo],

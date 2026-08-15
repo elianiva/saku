@@ -10,7 +10,12 @@ import { describe, expect, it } from "vitest";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect, FileSystem, Result } from "effect";
 
-import { listPiSessions, readPiSession, PiSessionsError } from "../src/pi-sessions.ts";
+import {
+  listPiSessions,
+  listProjectCandidates,
+  readPiSession,
+  PiSessionsError,
+} from "../src/pi-sessions.ts";
 import { Paths, PathsTest, type PathsShape } from "../src/paths.ts";
 
 const fs = await Effect.runPromise(Effect.provide(NodeFileSystem.layer)(Effect.gen(function* () {
@@ -60,7 +65,7 @@ describe("listPiSessions", () => {
     await withPiAgentDir(async (root, paths) => {
       const path = await writeSession(root, "--tmp-pi-workspace--", "2026-01-31T22-33-31-764Z_v3sess0001.jsonl", V3_SESSION);
 
-      const sessions = await Effect.runPromise(listPiSessions(fs, paths));
+      const sessions = await Effect.runPromise(listPiSessions(fs, paths, ["/tmp/pi-workspace"]));
       expect(sessions).toHaveLength(1);
       expect(sessions[0]).toMatchObject({
         id: "v3sess0001",
@@ -75,10 +80,10 @@ describe("listPiSessions", () => {
 
   it("skips malformed and non-session files silently", async () => {
     await withPiAgentDir(async (root, paths) => {
-      await writeSession(root, "--tmp-other--", "not-json.jsonl", "not json at all\n");
-      await writeSession(root, "--tmp-other--", "empty.jsonl", "");
-      await writeSession(root, "--tmp-other--", "good.jsonl", V3_SESSION);
-      const sessions = await Effect.runPromise(listPiSessions(fs, paths));
+      await writeSession(root, "--tmp-pi-workspace--", "not-json.jsonl", "not json at all\n");
+      await writeSession(root, "--tmp-pi-workspace--", "empty.jsonl", "");
+      await writeSession(root, "--tmp-pi-workspace--", "good.jsonl", V3_SESSION);
+      const sessions = await Effect.runPromise(listPiSessions(fs, paths, ["/tmp/pi-workspace"]));
       expect(sessions).toHaveLength(1);
       expect(sessions[0]?.id).toBe("v3sess0001");
     });
@@ -94,7 +99,7 @@ describe("listPiSessions", () => {
       ].join("\n") + "\n";
       await writeSession(root, "--tmp-v4-workspace--", "2026-01-31T22-33-31-764Z_v4sess0001.jsonl", content);
 
-      const sessions = await Effect.runPromise(listPiSessions(fs, paths));
+      const sessions = await Effect.runPromise(listPiSessions(fs, paths, ["/tmp/v4-workspace"]));
       expect(sessions).toHaveLength(1);
       expect(sessions[0]).toMatchObject({
         id: "v4sess0001",
@@ -112,9 +117,95 @@ describe("listPiSessions", () => {
       const newContent = V3_SESSION.replace("v3sess0001", "v3sess0002").replace("/tmp/pi-workspace", "/tmp/pi-other");
       await writeSession(root, "--tmp-pi-workspace--", "2026-01-31T22-33-31-764Z_v3sess0001.jsonl", oldContent);
       const newPath = await writeSession(root, "--tmp-pi-other--", "2026-02-01T22-33-31-764Z_v3sess0002.jsonl", newContent);
-      const sessions = await Effect.runPromise(listPiSessions(fs, paths));
+      const sessions = await Effect.runPromise(
+        listPiSessions(fs, paths, ["/tmp/pi-workspace", "/tmp/pi-other"]),
+      );
       expect(sessions.map((s) => s.id)).toEqual(["v3sess0002", "v3sess0001"]);
       expect(sessions[0]?.path).toBe(newPath);
+    });
+  });
+
+  it("lists only the added projects' sessions, subtree included", async () => {
+    await withPiAgentDir(async (root, paths) => {
+      const rootContent = V3_SESSION;
+      const nestedContent = V3_SESSION.replace("v3sess0001", "v3sess0003").replace(
+        "/tmp/pi-workspace",
+        "/tmp/pi-workspace/apps/web",
+      );
+      const otherContent = V3_SESSION.replace("v3sess0001", "v3sess0004").replace(
+        "/tmp/pi-workspace",
+        "/tmp/other",
+      );
+      await writeSession(root, "--tmp-pi-workspace--", "s1.jsonl", rootContent);
+      await writeSession(root, "--tmp-pi-workspace-apps-web--", "s3.jsonl", nestedContent);
+      await writeSession(root, "--tmp-other--", "s4.jsonl", otherContent);
+
+      // The project claims its own dir AND subdirectories (sessions started
+      // inside apps/web are part of the project); other projects stay out.
+      const scoped = await Effect.runPromise(listPiSessions(fs, paths, ["/tmp/pi-workspace"]));
+      expect(scoped.map((s) => s.id).sort()).toEqual(["v3sess0001", "v3sess0003"]);
+
+      // The other project sees only its own.
+      const other = await Effect.runPromise(listPiSessions(fs, paths, ["/tmp/other"]));
+      expect(other.map((s) => s.id)).toEqual(["v3sess0004"]);
+
+      // No projects: an empty window, nothing scanned.
+      const none = await Effect.runPromise(listPiSessions(fs, paths, []));
+      expect(none).toHaveLength(0);
+    });
+  });
+
+  it("verifies the header cwd so lossy dir names can't misattribute", async () => {
+    await withPiAgentDir(async (root, paths) => {
+      // The dir name `--tmp-pi-workspace-foo--` is ambiguous: it encodes
+      // either the child /tmp/pi-workspace/foo or the dash-named sibling
+      // /tmp/pi-workspace-foo. The header's real cwd decides.
+      const child = V3_SESSION.replace("v3sess0001", "v3sess0005").replace(
+        "/tmp/pi-workspace",
+        "/tmp/pi-workspace/foo",
+      );
+      const sibling = V3_SESSION.replace("v3sess0001", "v3sess0006").replace(
+        "/tmp/pi-workspace",
+        "/tmp/pi-workspace-foo",
+      );
+      await writeSession(root, "--tmp-pi-workspace-foo--", "child.jsonl", child);
+      await writeSession(root, "--tmp-pi-workspace-foo--", "sibling.jsonl", sibling);
+
+      const sessions = await Effect.runPromise(listPiSessions(fs, paths, ["/tmp/pi-workspace"]));
+      expect(sessions.map((s) => s.id)).toEqual(["v3sess0005"]);
+    });
+  });
+
+  it("keeps pre-cwd sessions (empty header cwd) on their dir match", async () => {
+    await withPiAgentDir(async (root, paths) => {
+      const old = [
+        '{"type":"session","version":3,"id":"old000001","timestamp":"2026-01-31T22:00:00.000Z","cwd":""}',
+        '{"type":"message","id":"a","parentId":null,"timestamp":"2026-01-31T22:00:01.000Z","message":{"role":"user","content":"ancient"}}',
+      ].join("\n") + "\n";
+      await writeSession(root, "--tmp-pi-workspace--", "old.jsonl", old);
+
+      const sessions = await Effect.runPromise(listPiSessions(fs, paths, ["/tmp/pi-workspace"]));
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0]?.id).toBe("old000001");
+    });
+  });
+
+  it("lists the picker's candidates: every cwd pi has sessions for, decoded", async () => {
+    await withPiAgentDir(async (root, paths) => {
+      await writeSession(root, "--tmp-pi-workspace--", "a.jsonl", V3_SESSION);
+      await writeSession(root, "--tmp-pi-workspace-apps-web--", "b.jsonl", V3_SESSION);
+      // The degenerate root dir (a session started at "/") decodes to "/"
+      // and is not a candidate — nobody adds "/".
+      await writeSession(root, "--", "c.jsonl", V3_SESSION);
+
+      const candidates = await Effect.runPromise(listProjectCandidates(fs, paths));
+      // The decode is lossy (dashes read as separators — the documented
+      // limit of the picker): `/tmp/pi-workspace` decodes as
+      // `/tmp/pi/workspace`. The committed path is what the user edits.
+      expect(candidates).toEqual([
+        "/tmp/pi/workspace",
+        "/tmp/pi/workspace/apps/web",
+      ]);
     });
   });
 });

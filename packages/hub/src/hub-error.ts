@@ -21,6 +21,7 @@ export type HubErrorKind =
   | "resolution" // unknown/ambiguous thread input
   | "skills" // unknown skill
   | "pi_sessions" // local-daemon-only commands (the hub never sees ~/.pi)
+  | "projects" // local-daemon-only commands (the window's scope lives on the machine)
   | "command" // command validation (empty name, missing threadId)
   | "startup"; // the hub's wire server failed to come up
 
@@ -32,6 +33,7 @@ export class HubError extends Schema.TaggedError<HubError>()("HubError", {
     "resolution",
     "skills",
     "pi_sessions",
+    "projects",
     "command",
     "startup",
   ]),

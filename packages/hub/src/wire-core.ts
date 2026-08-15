@@ -14,6 +14,7 @@
 import { Context, Effect, Match, Scope } from "effect";
 
 import {
+  ArchiveThreadResponse,
   CreateThreadResponse,
   DeleteSkillResponse,
   DeleteThreadResponse,
@@ -24,7 +25,9 @@ import {
   ListThreadsResponse,
   RenameThreadResponse,
   ThreadChanged,
+  UnarchiveThreadResponse,
   type PiSessionCommand,
+  type ProjectCommand,
   type ResponsePayload,
   type SkillCommand,
   type ThreadCommand,
@@ -53,7 +56,7 @@ export interface WireCoreShape {
 
 /** The hub-shaped thread/skill routing (the semantics live in `hub.ts`). */
 const runHubCommand =
-  (hub: HubShape) => (command: ThreadCommand | SkillCommand | PiSessionCommand) =>
+  (hub: HubShape) => (command: ThreadCommand | SkillCommand | PiSessionCommand | ProjectCommand) =>
     Match.value(command).pipe(
       Match.withReturnType<Effect.Effect<ResponsePayload, HubError, never>>(),
       Match.tagsExhaustive({
@@ -76,6 +79,14 @@ const runHubCommand =
           hub
             .renameThread(command.threadId, command.name)
             .pipe(Effect.map((thread) => RenameThreadResponse.make({ thread }))),
+        archive_thread: (command) =>
+          hub
+            .archiveThread(command.threadId)
+            .pipe(Effect.map((thread) => ArchiveThreadResponse.make({ thread }))),
+        unarchive_thread: (command) =>
+          hub
+            .unarchiveThread(command.threadId)
+            .pipe(Effect.map((thread) => UnarchiveThreadResponse.make({ thread }))),
         delete_thread: (command) =>
           hub.deleteThread(command.threadId).pipe(Effect.map(() => DeleteThreadResponse.make({}))),
         list_skills: () =>
@@ -100,6 +111,36 @@ const runHubCommand =
             new HubError({
               kind: "pi_sessions",
               message: "pi sessions are served by the local daemon, not the hub",
+            }),
+          ),
+        // Projects scope the local daemon's pi-session window; the hub has
+        // no ~/.pi, so the window (and its scope) is local-daemon-only.
+        list_projects: () =>
+          Effect.fail(
+            new HubError({
+              kind: "projects",
+              message: "projects are served by the local daemon, not the hub",
+            }),
+          ),
+        add_project: () =>
+          Effect.fail(
+            new HubError({
+              kind: "projects",
+              message: "projects are served by the local daemon, not the hub",
+            }),
+          ),
+        remove_project: () =>
+          Effect.fail(
+            new HubError({
+              kind: "projects",
+              message: "projects are served by the local daemon, not the hub",
+            }),
+          ),
+        list_project_candidates: () =>
+          Effect.fail(
+            new HubError({
+              kind: "projects",
+              message: "projects are served by the local daemon, not the hub",
             }),
           ),
       }),

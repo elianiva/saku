@@ -157,6 +157,31 @@ describe("thread lifecycle", () => {
     await run(client.disconnect());
   });
 
+  it("archives and unarchives a thread (visibility-only)", async () => {
+    const client = await connect();
+    await run(client.connect());
+    const id = await newThread(client, "alpha");
+
+    const archived = await run(client.archiveThread(id));
+    expect(archived.archivedAt).not.toBeNull();
+
+    const unarchived = await run(client.unarchiveThread(id));
+    expect(unarchived.archivedAt).toBeNull();
+    expect(unarchived.name).toBe("alpha");
+
+    await run(client.disconnect());
+  });
+
+  it("archiving an unknown thread fails command_failed", async () => {
+    const client = await connect();
+    await run(client.connect());
+
+    await expect(run(client.archiveThread("nope"))).rejects.toMatchObject({
+      code: "command_failed",
+    });
+    await run(client.disconnect());
+  });
+
   it("fails command_failed for unknown threads", async () => {
     const client = await connect();
     await run(client.connect());
@@ -344,6 +369,26 @@ describe("pi sessions", () => {
       code: "command_failed",
       message: "pi sessions are served by the local daemon, not the hub",
     });
+    await run(client.disconnect());
+  });
+});
+
+describe("projects", () => {
+  it("rejects the project commands at the hub (they are local-daemon-only)", async () => {
+    const client = await connect();
+    await run(client.connect());
+
+    for (const attempt of [
+      () => run(client.listProjects()),
+      () => run(client.addProject("/tmp/work")),
+      () => run(client.removeProject("/tmp/work")),
+      () => run(client.listProjectCandidates()),
+    ]) {
+      await expect(attempt()).rejects.toMatchObject({
+        code: "command_failed",
+        message: "projects are served by the local daemon, not the hub",
+      });
+    }
     await run(client.disconnect());
   });
 });

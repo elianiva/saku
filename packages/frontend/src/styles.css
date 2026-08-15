@@ -4,8 +4,8 @@
  * Saku console — humanlayer-style, pseudo-TUI, rose pine light.
  *
  * A terminal-shaped web console: Space Grotesk everywhere, hard corners, 1px
- * borders on an off-white base, uppercase tracking labels, and glyph-driven
- * status (● ○ ◐ ▸ ◇ ✕). The rose pine light palette is the only color:
+ * borders on an off-white base, uppercase tracking labels, and icon-driven
+ * status. The rose pine light palette is the only color:
  * pine for the live accent, gold for working, love for errors.
  */
 @theme {
@@ -48,6 +48,12 @@ body {
   color-scheme: light;
 }
 
+.saku-icon {
+  display: inline-block;
+  flex-shrink: 0;
+  vertical-align: -0.125em;
+}
+
 ::selection {
   background: var(--color-overlay);
 }
@@ -81,6 +87,11 @@ body {
   }
 }
 .saku-cursor {
+  display: inline-block;
+  width: 0.55em;
+  height: 1em;
+  vertical-align: -0.15em;
+  background: currentColor;
   animation: saku-blink 1s step-end infinite;
 }
 
@@ -125,7 +136,7 @@ body {
     @apply my-0.5;
   }
   .saku-md-task {
-    @apply font-mono text-[11px] text-pine mr-1;
+    @apply inline-flex text-[11px] text-pine mr-1;
   }
   .saku-md-pre {
     @apply my-2 border border-line bg-surface p-2 overflow-x-auto text-[12px] leading-relaxed;

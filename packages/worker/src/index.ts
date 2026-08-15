@@ -37,6 +37,7 @@ export {
   type ThreadRecord,
   type ThreadRegistryShape,
 } from "./registry.ts";
+export { listProjects, addProject, removeProject, type ProjectRecord } from "./projects.ts";
 export {
   SakuDaemon,
   SakuDaemonLive,

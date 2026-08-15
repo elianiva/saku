@@ -3,14 +3,15 @@
  * and the two submodel slots — the thread rail and the thread pane, always
  * mounted (the rail is persistent; the pane renders its empty state until
  * the route pins a thread). Everything is drawn with the html builder;
- * status is glyphs, not words, per the pseudo-TUI style. The root embeds
+ * status uses icons, not words, per the pseudo-TUI style. The root embeds
  * the rail and pane via `h.submodel`, wrapping every child message in the
- * `Got*Message` boundary (ADR 0009).
+ * `Got*Message` boundary (the informing convention).
  */
 
 import { Match } from "effect";
 import type { Document, Html, HtmlBuilder } from "foldkit/html";
 
+import { icon } from "../icon.ts";
 import { view as railView } from "../rail/view.ts";
 import { view as threadView } from "../thread/view.ts";
 import {
@@ -68,8 +69,16 @@ const topBar = (model: Model, h: HtmlBuilder<RootMessage>) =>
 const connStatus = (model: Model, h: HtmlBuilder<RootMessage>) =>
   Match.value(model.conn).pipe(
     Match.tagsExhaustive({
-      Connecting: () => h.span([h.Class("text-muted")], ["◇ connecting"]),
-      Online: (conn) => h.span([h.Class("text-foam")], [`● online · pid ${conn.pid}`]),
+      Connecting: () =>
+        h.span(
+          [h.Class("text-muted flex items-center gap-1")],
+          [icon(h, "circleDashed"), "connecting"],
+        ),
+      Online: (conn) =>
+        h.span(
+          [h.Class("text-foam flex items-center gap-1")],
+          [icon(h, "circleCheck"), "online", h.span([h.Class("text-subtle")], [`pid ${conn.pid}`])],
+        ),
       Offline: (conn) =>
         // The retry subscription (root/subscriptions.ts) reconnects
         // automatically every couple of seconds, so offline always means
@@ -77,8 +86,8 @@ const connStatus = (model: Model, h: HtmlBuilder<RootMessage>) =>
         h.div(
           [h.Class("flex items-center gap-2")],
           [
-            h.span([h.Class("text-love")], ["✕ offline"]),
-            h.span([h.Class("text-muted")], ["· retrying"]),
+            h.span([h.Class("text-love flex items-center gap-1")], [icon(h, "circleX"), "offline"]),
+            h.span([h.Class("text-muted")], ["retrying"]),
             conn.error === undefined
               ? null
               : h.span([h.Class("text-subtle max-w-64 truncate")], [conn.error]),
@@ -111,7 +120,7 @@ const banner = (model: Model, h: HtmlBuilder<RootMessage>) =>
               h.OnClick(DismissBanner()),
               h.AriaLabel("dismiss"),
             ],
-            ["✕"],
+            [icon(h, "x")],
           ),
         ],
       );

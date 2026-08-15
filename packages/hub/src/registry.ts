@@ -44,6 +44,8 @@ export interface HubRecord {
   env: ThreadEnvState;
   /** The persisted env handle (url + token + box id); null before provisioning. */
   envHandle: EnvHandle | null;
+  /** Archive visibility lifecycle (CONTEXT.md: Archive); null when active. */
+  archivedAt: number | null;
 }
 
 export interface HubRegistryShape {
@@ -57,7 +59,7 @@ export interface HubRegistryShape {
   }) => Effect.Effect<HubRecord, HubError>;
   readonly update: (
     threadId: string,
-    patch: Partial<Pick<HubRecord, "name" | "sessionId" | "autoName">>,
+    patch: Partial<Pick<HubRecord, "name" | "sessionId" | "autoName" | "archivedAt">>,
   ) => Effect.Effect<Option.Option<HubRecord>, HubError>;
   /** Persist the env axis (stopped → provisioning → ready → error). */
   readonly setEnv: (
@@ -135,6 +137,7 @@ export class HubRegistry extends Context.Service<HubRegistry, HubRegistryShape>(
           // A Box is not provisioned until the first prompt (lazy, ADR 0003).
           env: input.mode === "sandbox" ? "stopped" : "ready",
           envHandle: null,
+          archivedAt: null,
         };
         yield* records.put(`${record.id}/record`, record);
         yield* Ref.update(recordsRef, (records) => new Map(records).set(record.id, record));
@@ -189,6 +192,7 @@ export class HubRegistry extends Context.Service<HubRegistry, HubRegistryShape>(
           env: record.env,
           sessionId: record.sessionId,
           tailSeq,
+          archivedAt: record.archivedAt ?? null,
         } satisfies ThreadInfo);
       }),
     };

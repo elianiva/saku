@@ -16,7 +16,7 @@
  * so a failed create/send keeps the user's words.
  *
  * `informRouteChanged` is the parent's hook for a route change (the
- * informingSubmodels convention, ADR 0009): the root owns the route, the
+ * informingSubmodels convention): the root owns the route, the
  * pane derives its state from it. A Thread route pins the id, resets the
  * trail + live run, and re-reads the trail (a fresh selection always loads,
  * matching the pre-routing behavior); the Threads route unpins the id and
@@ -234,7 +234,7 @@ export const update = (model: Model, message: ThreadMessage) =>
     }),
   );
 
-/** The root's hook for a route change (ADR 0009's informing convention). */
+/** The root's hook for a route change (the informing convention). */
 export const informRouteChanged = (model: Model, route: AppRoute): RouteChangedReturn =>
   route._tag === "Thread"
     ? [

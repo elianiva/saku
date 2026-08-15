@@ -3,9 +3,13 @@
  * The saku CLI: steward of the local worker and its threads.
  *
  *   saku daemon start|stop|restart|status  worker lifecycle
- *   saku list                      list threads
+ *   saku list                      list threads (archived marked)
  *   saku new <name> [--cwd <dir>]  create a thread (--mode local|sandbox|any)
  *   saku rm <thread>               delete a thread and its session
+ *   saku archive|unarchive <t>     the visibility lifecycle (CONTEXT.md: Archive)
+ *   saku project add|list|remove   the session window's scope (CONTEXT.md: Project)
+ *   saku pi list [project]         the added projects' pi sessions
+ *   saku pi import <id-or-path>    adopt a pi session as a thread
  *
  * The daemon auto-starts on demand for every command except `daemon stop`.
  */
@@ -97,12 +101,17 @@ const cmdList = Effect.fn("cmdList")(function* () {
     return;
   }
   yield* Effect.logInfo(
-    pad("ID", 10) + pad("NAME", 28) + pad("MODE", 10) + pad("STATE", 12) + pad("ENV", 12) + "CWD",
+    pad("ID", 10) +
+      pad("NAME", 28) +
+      pad("MODE", 10) +
+      pad("STATE", 12) +
+      pad("ENV", 12) +
+      "CWD",
   );
   for (const thread of threads) {
     yield* Effect.logInfo(
       pad(shortThreadId(thread.id), 10) +
-        pad(thread.name, 28) +
+        pad(thread.name + (thread.archivedAt === null ? "" : " [archived]"), 28) +
         pad(thread.mode, 10) +
         pad(thread.state, 12) +
         pad(thread.env, 12) +
@@ -162,12 +171,17 @@ const fmtWhen = (ms: number) => {
   return date.toLocaleDateString();
 };
 
-/** saku pi list — pi's sessions on this machine, through the local daemon. */
-const cmdPiList = Effect.fn("cmdPiList")(function* () {
+/** saku pi list [project] — the added projects' pi sessions on this machine
+ *  (CONTEXT.md: Project: the window is project-scoped, never a full scan). */
+const cmdPiList = Effect.fn("cmdPiList")(function* (project: string | undefined) {
   const client = yield* connect;
-  const sessions = yield* run(client.listPiSessions(), "list pi sessions");
+  const sessions = yield* run(client.listPiSessions(project), "list pi sessions");
   if (sessions.length === 0) {
-    yield* Effect.logInfo("no pi sessions found — nothing to import yet");
+    yield* Effect.logInfo(
+      project === undefined
+        ? "no pi sessions — add a project first: saku project add <path>"
+        : `no pi sessions under ${project}`, 
+    );
     yield* client.disconnect();
     return;
   }
@@ -187,7 +201,9 @@ const cmdPiList = Effect.fn("cmdPiList")(function* () {
   yield* client.disconnect();
 });
 
-/** saku pi import <id-or-path> — adopt a pi session as a saku thread. */
+/** saku pi import <id-or-path> — adopt a pi session as a saku thread. A
+ *  full `.jsonl` path imports directly (explicit gestures bypass the
+ *  window); anything else resolves against the added projects' sessions. */
 const cmdPiImport = Effect.fn("cmdPiImport")(function* (arg: string | undefined) {
   if (arg === undefined || arg.length === 0) {
     return yield* Effect.fail(
@@ -198,7 +214,17 @@ const cmdPiImport = Effect.fn("cmdPiImport")(function* (arg: string | undefined)
     );
   }
   const client = yield* connect;
-  // Accept a session id, a bare filename, or a full path.
+  // An explicit path is an explicit gesture: no window lookup needed.
+  if (arg.endsWith(".jsonl")) {
+    const thread = yield* run(client.importPiSession(arg), "import pi session");
+    yield* Effect.logInfo(
+      `imported ${arg.split("/").pop()} as ${shortThreadId(thread.id)} (${thread.name}) — continue with any saku command`,
+    );
+    yield* client.disconnect();
+    return;
+  }
+  // Accept a session id, a bare filename, or a full path, scoped to the
+  // window (the added projects' sessions).
   const sessions = yield* run(client.listPiSessions(), "list pi sessions");
   const match =
     sessions.find((session) => session.id === arg) ??
@@ -208,7 +234,7 @@ const cmdPiImport = Effect.fn("cmdPiImport")(function* (arg: string | undefined)
     return yield* Effect.fail(
       new CliError({
         code: "resolution",
-        message: `no pi session matches "${arg}" — try: saku pi list`,
+        message: `no pi session matches "${arg}" — try: saku pi list`, 
       }),
     );
   }
@@ -222,12 +248,87 @@ const cmdPiImport = Effect.fn("cmdPiImport")(function* (arg: string | undefined)
 const cmdPi = Effect.fn("cmdPi")(function* (sub: string | undefined, arg: string | undefined) {
   yield* Match.value(sub).pipe(
     Match.withReturnType<Effect.Effect<void, WireError | CliError, Paths>>(),
-    Match.when("list", () => cmdPiList()),
+    Match.when("list", () => cmdPiList(arg)),
     Match.when("import", () => cmdPiImport(arg)),
     Match.orElse(() =>
       Effect.fail(new CliError({ code: "usage", message: "saku pi <list|import>" })),
     ),
   );
+});
+
+/** saku project add|list|remove — the window's scope (CONTEXT.md: Project). */
+const cmdProject = Effect.fn("cmdProject")(function* (sub: string | undefined, arg: string | undefined) {
+  yield* Match.value(sub).pipe(
+    Match.withReturnType<Effect.Effect<void, WireError | CliError, Paths>>(),
+    Match.when("add", () =>
+      Effect.gen(function* () {
+        if (arg === undefined || arg.length === 0) {
+          return yield* Effect.fail(
+            new CliError({ code: "usage", message: "saku project add requires a path" }),
+          );
+        }
+        const client = yield* connect;
+        const project = yield* run(client.addProject(arg), "add project");
+        yield* Effect.logInfo(`added ${project.path}`);
+        yield* client.disconnect();
+      }),
+    ),
+    Match.when("list", () =>
+      Effect.gen(function* () {
+        const client = yield* connect;
+        const projects = yield* run(client.listProjects(), "list projects");
+        if (projects.length === 0) {
+          yield* Effect.logInfo("no projects — add one with: saku project add <path>");
+        } else {
+          for (const project of projects) {
+            yield* Effect.logInfo(`${project.path}  (added ${fmtWhen(project.addedAt)})`);
+          }
+        }
+        yield* client.disconnect();
+      }),
+    ),
+    Match.when("remove", () =>
+      Effect.gen(function* () {
+        if (arg === undefined || arg.length === 0) {
+          return yield* Effect.fail(
+            new CliError({ code: "usage", message: "saku project remove requires a path" }),
+          );
+        }
+        const client = yield* connect;
+        yield* run(client.removeProject(arg), "remove project");
+        yield* Effect.logInfo(`removed ${arg} from the window`);
+        yield* client.disconnect();
+      }),
+    ),
+    Match.orElse(() =>
+      Effect.fail(new CliError({ code: "usage", message: "saku project <add|list|remove>" })),
+    ),
+  );
+});
+
+/** saku archive|unarchive <thread> — visibility-only (CONTEXT.md: Archive). */
+const cmdArchive = Effect.fn("cmdArchive")(function* (threadArg: string | undefined, unarchive: boolean) {
+  if (threadArg === undefined) {
+    return yield* Effect.fail(
+      new CliError({
+        code: "usage",
+        message: `saku ${unarchive ? "unarchive" : "archive"} requires a thread: saku ${unarchive ? "unarchive" : "archive"} <id-or-name>`,
+      }),
+    );
+  }
+  const client = yield* connect;
+  const threads = yield* run(client.listThreads(), "list threads");
+  const resolved = resolveThread(threads, threadArg);
+  if (Result.isFailure(resolved)) {
+    return yield* Effect.fail(new CliError({ code: "resolution", message: resolved.failure }));
+  }
+  const thread = unarchive
+    ? yield* run(client.unarchiveThread(resolved.success.id), "unarchive thread")
+    : yield* run(client.archiveThread(resolved.success.id), "archive thread");
+  yield* Effect.logInfo(
+    `${unarchive ? "unarchived" : "archived"} ${shortThreadId(thread.id)} (${thread.name}) — the trail is untouched`,
+  );
+  yield* client.disconnect();
 });
 
 const cmdDaemon = Effect.fn("cmdDaemon")(function* (sub: string | undefined) {
@@ -363,7 +464,10 @@ usage:
   saku list
   saku new <name> [--cwd <dir>] [--mode local|sandbox|any]
   saku rm <thread>
-  saku pi list
+  saku archive <thread>
+  saku unarchive <thread>
+  saku project <add|list|remove>
+  saku pi list [project]
   saku pi import <id-or-path>
 `;
 
@@ -393,6 +497,9 @@ const main = Effect.fn("main")(function* () {
       return cmdNew(name, cwd, mode);
     }),
     Match.when("pi", () => cmdPi(rest[0], rest[1])),
+    Match.when("project", () => cmdProject(rest[0], rest[1])),
+    Match.when("archive", () => cmdArchive(rest[0], false)),
+    Match.when("unarchive", () => cmdArchive(rest[0], true)),
     Match.whenOr("rm", "remove", "delete", () => cmdRm(rest[0])),
     Match.whenOr("help", "--help", "-h", () => Effect.logInfo(usage())),
     Match.orElse((command) =>

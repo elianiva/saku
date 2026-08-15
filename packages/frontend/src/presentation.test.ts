@@ -168,6 +168,7 @@ const threadArb: fc.Arbitrary<ThreadInfo> = fc.record({
   env: fc.constantFrom("stopped", "provisioning", "ready", "error"),
   sessionId: fc.oneof(fc.constant(null), fc.string({ maxLength: 24 })),
   tailSeq: fc.integer({ min: 0 }),
+  archivedAt: fc.oneof(fc.constant(null), fc.integer()),
 });
 
 describe("unadoptedPiSessions", () => {
@@ -199,6 +200,7 @@ describe("unadoptedPiSessions", () => {
             env: "stopped" as const,
             sessionId: session.id,
             tailSeq: 0,
+            archivedAt: null,
             source: { kind: "pi", sessionId: session.id, path: session.path },
           }));
           const kept = unadoptedPiSessions(threads, sessions);
@@ -220,6 +222,7 @@ describe("unadoptedPiSessions", () => {
           env: "stopped",
           sessionId: null,
           tailSeq: 0,
+          archivedAt: null,
           source: { kind: "pi", sessionId: session.id, path: session.path },
         };
         expect(unadoptedPiSessions([duplicate, duplicate], [session])).toEqual([]);

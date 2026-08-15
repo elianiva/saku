@@ -27,6 +27,7 @@ const recordOf = (id: string) => ({
   createdAt: 1234,
   sessionId: null,
   nameAuto: true,
+  archivedAt: null,
 });
 
 /** Write a record file exactly as the registry persists it (`threads/<id>/thread.json`). */
@@ -146,5 +147,86 @@ describe("registry disk round-trip", () => {
     const decoded = DECODE_THREAD_RECORD(content);
     expect(decoded).toEqual(record);
     expect(Schema.decodeUnknownSync(ThreadRecordSchema)(JSON.parse(content))).toEqual(record);
+  });
+
+  it("decodes records written before archive as active (missing archivedAt)", async () => {
+    const home = await mkdtemp(join(tmpdir(), "saku-registry-legacy-"));
+    try {
+      const legacy = recordOf("9".repeat(32));
+      delete (legacy as Partial<typeof legacy>).archivedAt;
+      // Boot 1 seeds the layout with a pre-archive record.
+      await runRegistry(
+        Effect.gen(function* () {
+          yield* writeRecordFile(legacy as ThreadRecord);
+        }),
+        home,
+      );
+      // Boot 2 (a restarted daemon) reads it back as active (archivedAt null).
+      const threads = await runRegistry(
+        Effect.gen(function* () {
+          return yield* ThreadRegistry.pipe(Effect.flatMap((registry) => registry.list()));
+        }),
+        home,
+      );
+      expect(threads[0]!.archivedAt).toBeNull();
+      expect(threads[0]!.name).toBe("round trip");
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("archives and unarchives, and the archive survives a reload", async () => {
+    const home = await mkdtemp(join(tmpdir(), "saku-registry-archive-"));
+    try {
+      const created = await runRegistry(
+        Effect.gen(function* () {
+          const registry = yield* ThreadRegistry;
+          return yield* registry.create(recordOf("7".repeat(32)));
+        }),
+        home,
+      );
+      const id = created.id;
+      const archived = await runRegistry(
+        Effect.gen(function* () {
+          const registry = yield* ThreadRegistry;
+          const result = yield* registry.archive(id);
+          return result; // Option<ThreadRecord>
+        }),
+        home,
+      );
+      expect(archived._tag).toBe("Some");
+      expect(archived.value.archivedAt).not.toBeNull();
+
+      // A fresh boot (a restarted daemon) keeps the archive flag.
+      const reloaded = await runRegistry(
+        Effect.gen(function* () {
+          return yield* ThreadRegistry.pipe(Effect.flatMap((registry) => registry.list()));
+        }),
+        home,
+      );
+      expect(reloaded[0]!.archivedAt).not.toBeNull();
+
+      const unarchived = await runRegistry(
+        Effect.gen(function* () {
+          const registry = yield* ThreadRegistry;
+          return yield* registry.unarchive(id);
+        }),
+        home,
+      );
+      expect(unarchived._tag).toBe("Some");
+      expect(unarchived.value.archivedAt).toBeNull();
+
+      // Archiving an unknown thread answers None.
+      const missing = await runRegistry(
+        Effect.gen(function* () {
+          const registry = yield* ThreadRegistry;
+          return yield* registry.archive("8".repeat(32));
+        }),
+        home,
+      );
+      expect(missing._tag).toBe("None");
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
   });
 });

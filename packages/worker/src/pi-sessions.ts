@@ -91,6 +91,14 @@ export interface PiSessionData {
 /** The sessions root under pi's agent dir (from the caller's layout). */
 const sessionsRootOf = (paths: PathsShape) => join(paths.agentDir, "sessions");
 
+/** pi's per-cwd session dir name (session-manager.ts's getDefaultSessionDirPath):
+ *  `--` + the cwd minus its leading slash, with `/`, `\\`, and `:` replaced
+ *  by `-`, then `--`. The encoding is lossy (a literal dash in a name is
+ *  indistinguishable from a separator) — so dir names only ever pick
+ *  *candidates*; the file header's real cwd is the membership check. */
+export const sessionDirNameOf = (cwd: string) =>
+  `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
+
 const parseLine = (line: string) => {
   const trimmed = line.trim();
   if (trimmed.length === 0) return undefined;
@@ -600,17 +608,59 @@ const scanFile = Effect.fn("scanFile")(function* (fs: FileSystem.FileSystem, pat
   });
 });
 
-/** List every readable pi session under the sessions root, newest first. */
-export const listPiSessions = Effect.fn("listPiSessions")(function* (
+/** Whether a session's real cwd sits under the given projects (the header
+ *  verification: dir names are lossy, the header's cwd is not). Sessions
+ *  from before cwd was recorded ("") pass on their dir match alone. */
+const underProjects = (cwd: string, projects: readonly { path: string }[]) => {
+  if (cwd.length === 0) return true;
+  const resolved = resolve(cwd);
+  return projects.some((project) => resolved === project.path || resolved.startsWith(`${project.path}/`));
+};
+
+/** The add-project picker's source (CONTEXT.md: Add project): every cwd pi
+ *  has sessions for, decoded lossily from the session dir names (the
+ *  encoding can't distinguish dashes from separators — good enough for a
+ *  picker; the added path is what the user commits). No file reads. */
+export const listProjectCandidates = Effect.fn("listProjectCandidates")(function* (
   fs: FileSystem.FileSystem,
   paths: PathsShape,
-): Effect.fn.Return<readonly PiSessionSummary[], PiSessionsError, never> {
+): Effect.fn.Return<readonly string[], PiSessionsError, never> {
   const root = sessionsRootOf(paths);
   const dirs = yield* fs
     .readDirectory(root)
     .pipe(Effect.catch(() => Effect.succeed([] as string[])));
+  return dirs
+    .map((dir) => `/${dir.slice(2, -2).replace(/-/g, "/")}`)
+    .filter((decoded) => decoded !== "/" && decoded.length > 1)
+    .sort();
+});
+
+/**
+ * List the pi sessions under the given projects, newest first. The projects
+ * are the scope of the window (CONTEXT.md: Project): only their session
+ * dirs are read (dir-name prefix match — zero file reads for anything
+ * else), and every listed session's header cwd is verified to sit under a
+ * project, so pi's lossy dir encoding can never misattribute a session.
+ * An empty project list is an empty window — nothing is scanned.
+ */
+export const listPiSessions = Effect.fn("listPiSessions")(function* (
+  fs: FileSystem.FileSystem,
+  paths: PathsShape,
+  projects: readonly string[],
+): Effect.fn.Return<readonly PiSessionSummary[], PiSessionsError, never> {
+  if (projects.length === 0) return [];
+  const root = sessionsRootOf(paths);
+  const encoded = projects.map((path) => ({ path, dir: sessionDirNameOf(path) }));
+  const dirs = yield* fs
+    .readDirectory(root)
+    .pipe(Effect.catch(() => Effect.succeed([] as string[])));
+  const candidates = dirs.filter((dir) =>
+    encoded.some(
+      ({ dir: projectDir }) => dir === projectDir || dir.startsWith(`${projectDir.slice(0, -2)}-`),
+    ),
+  );
   const files: string[] = [];
-  for (const dir of dirs) {
+  for (const dir of candidates) {
     const entries = yield* fs
       .readDirectory(`${root}/${dir}`)
       .pipe(Effect.catch(() => Effect.succeed([] as string[])));
@@ -624,6 +674,7 @@ export const listPiSessions = Effect.fn("listPiSessions")(function* (
   return scanned
     .filter((entry): entry is Option.Some<PiSessionSummary> => Option.isSome(entry))
     .map((entry) => entry.value)
+    .filter((session) => underProjects(session.cwd, encoded))
     .sort((a, b) => b.modifiedAt - a.modifiedAt);
 });
 

@@ -10,7 +10,7 @@
  * Any other path falls back to Threads — the console has no NotFound screen;
  * the root route is the safe landing. Selection IS navigation: clicking a
  * rail row pushes `/thread/:id`, and the URL change drives the thread
- * submodel (ADR 0009's route-derived submodel state).
+ * submodel (the informing convention: route-derived submodel state).
  */
 
 import { pipe, Schema as S } from "effect";

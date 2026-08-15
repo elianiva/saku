@@ -47,11 +47,13 @@ import { WireCommand, WireEvent } from "./envelope.ts";
 import { decodeFrame, parseFrame, serializeFrame } from "./transport.ts";
 import { ThreadCommand, ThreadInfo, type ThreadMode } from "./thread.ts";
 import {
+  ArchiveThreadCommand,
   CreateThreadCommand,
   DeleteThreadCommand,
   GetThreadCommand,
   ListThreadsCommand,
   RenameThreadCommand,
+  UnarchiveThreadCommand,
 } from "./thread.ts";
 import {
   AbortCommand,
@@ -92,6 +94,14 @@ import {
   PiSessionCommand,
   PiSessionInfo,
 } from "./pi-sessions.ts";
+import {
+  AddProjectCommand,
+  ListProjectCandidatesCommand,
+  ListProjectsCommand,
+  ProjectCommand,
+  ProjectInfo,
+  RemoveProjectCommand,
+} from "./projects.ts";
 import { WIRE_VERSION } from "./version.ts";
 
 export class WireError extends Schema.TaggedError<WireError>()("WireError", {
@@ -429,7 +439,9 @@ const makeMachine = (deps: ClientDeps) =>
 interface CommandSpec<A extends object, K extends ResponsePayload["_tag"], T> {
   /** The command's schema; its static `make` builds the wire payload. */
   readonly schema: {
-    readonly make: (args: A) => SessionCommand | ThreadCommand | SkillCommand | PiSessionCommand;
+    readonly make: (
+      args: A,
+    ) => SessionCommand | ThreadCommand | SkillCommand | PiSessionCommand | ProjectCommand;
   };
   /** Session commands ride the frame's threadId; hub-level commands don't. */
   readonly threadScoped: boolean;
@@ -444,7 +456,9 @@ const command = <A extends object, K extends ResponsePayload["_tag"], T>(
   threadScoped: boolean,
   tag: K,
   schema: {
-    readonly make: (args: A) => SessionCommand | ThreadCommand | SkillCommand | PiSessionCommand;
+    readonly make: (
+      args: A,
+    ) => SessionCommand | ThreadCommand | SkillCommand | PiSessionCommand | ProjectCommand;
   },
   extract: (payload: SessionResponse<K>) => T,
 ) => ({ schema, threadScoped, tag, extract });
@@ -455,6 +469,8 @@ const COMMANDS = {
   createThread: command(false, "create_thread", CreateThreadCommand, (p) => p.thread),
   getThread: command(false, "get_thread", GetThreadCommand, (p) => p.thread),
   renameThread: command(false, "rename_thread", RenameThreadCommand, (p) => p.thread),
+  archiveThread: command(false, "archive_thread", ArchiveThreadCommand, (p) => p.thread),
+  unarchiveThread: command(false, "unarchive_thread", UnarchiveThreadCommand, (p) => p.thread),
   deleteThread: command(false, "delete_thread", DeleteThreadCommand, () => undefined),
   prompt: command(true, "prompt", PromptCommand, () => undefined),
   steer: command(true, "steer", SteerCommand, () => undefined),
@@ -496,6 +512,15 @@ const COMMANDS = {
   deleteSkill: command(false, "delete_skill", DeleteSkillCommand, () => undefined),
   listPiSessions: command(false, "list_pi_sessions", ListPiSessionsCommand, (p) => [...p.sessions]),
   importPiSession: command(false, "import_pi_session", ImportPiSessionCommand, (p) => p.thread),
+  listProjects: command(false, "list_projects", ListProjectsCommand, (p) => [...p.projects]),
+  addProject: command(false, "add_project", AddProjectCommand, (p) => p.project),
+  removeProject: command(false, "remove_project", RemoveProjectCommand, () => undefined),
+  listProjectCandidates: command(
+    false,
+    "list_project_candidates",
+    ListProjectCandidatesCommand,
+    (p) => [...p.candidates],
+  ),
 };
 
 /** Resolve a correlated request; a late/abandoned id is a no-op. */
@@ -589,8 +614,15 @@ export interface WireClientShape {
     name: string,
   ) => Effect.Effect<ThreadInfo, WireError, never>;
   readonly deleteThread: (threadId: string) => Effect.Effect<void, WireError, never>;
-  readonly listPiSessions: () => Effect.Effect<PiSessionInfo[], WireError, never>;
+  readonly archiveThread: (threadId: string) => Effect.Effect<ThreadInfo, WireError, never>;
+  readonly unarchiveThread: (threadId: string) => Effect.Effect<ThreadInfo, WireError, never>;
+  readonly listPiSessions: (project?: string) => Effect.Effect<PiSessionInfo[], WireError, never>;
   readonly importPiSession: (path: string) => Effect.Effect<ThreadInfo, WireError, never>;
+  readonly listProjects: () => Effect.Effect<ProjectInfo[], WireError, never>;
+  readonly addProject: (path: string) => Effect.Effect<ProjectInfo, WireError, never>;
+  readonly removeProject: (path: string) => Effect.Effect<void, WireError, never>;
+  /** Every cwd pi has sessions for (the add-project picker's source). */
+  readonly listProjectCandidates: () => Effect.Effect<string[], WireError, never>;
   readonly prompt: (
     threadId: string,
     text: string,
@@ -799,6 +831,8 @@ export class WireClient extends Context.Service<WireClient, WireClientShape>()("
       createThread: (name, options) => request(COMMANDS.createThread, { name, ...options }),
       getThread: (threadId) => request(COMMANDS.getThread, { threadId }),
       renameThread: (threadId, name) => request(COMMANDS.renameThread, { threadId, name }),
+      archiveThread: (threadId) => request(COMMANDS.archiveThread, { threadId }),
+      unarchiveThread: (threadId) => request(COMMANDS.unarchiveThread, { threadId }),
       deleteThread: (threadId) => request(COMMANDS.deleteThread, { threadId }),
       prompt: (threadId, text, images) => request(COMMANDS.prompt, { text, images }, threadId),
       steer: (threadId, text) => request(COMMANDS.steer, { text }, threadId),
@@ -825,8 +859,12 @@ export class WireClient extends Context.Service<WireClient, WireClientShape>()("
       listSkills: () => request(COMMANDS.listSkills, {}),
       importSkill: (source, scope) => request(COMMANDS.importSkill, { source, scope }),
       deleteSkill: (id) => request(COMMANDS.deleteSkill, { id }),
-      listPiSessions: () => request(COMMANDS.listPiSessions, {}),
+      listPiSessions: (project) => request(COMMANDS.listPiSessions, { project }),
       importPiSession: (path) => request(COMMANDS.importPiSession, { path }),
+      listProjects: () => request(COMMANDS.listProjects, {}),
+      addProject: (path) => request(COMMANDS.addProject, { path }),
+      removeProject: (path) => request(COMMANDS.removeProject, { path }),
+      listProjectCandidates: () => request(COMMANDS.listProjectCandidates, {}),
     };
   }),
 }) {}

@@ -24,6 +24,7 @@ import type {
 
 import { SkillResponse } from "./skills.ts";
 import { PiSessionResponse } from "./pi-sessions.ts";
+import { ProjectResponse } from "./projects.ts";
 import { ThreadInfo } from "./thread.ts";
 
 /** The thinking-level ladder (pi's own `ThinkingLevel` vocabulary). */
@@ -156,6 +157,10 @@ export const CreateThreadResponse = S.TaggedStruct("create_thread", { thread: Th
 export const GetThreadResponse = S.TaggedStruct("get_thread", { thread: ThreadInfo });
 export const DeleteThreadResponse = S.TaggedStruct("delete_thread", {});
 export const RenameThreadResponse = S.TaggedStruct("rename_thread", { thread: ThreadInfo });
+export const ArchiveThreadResponse = S.TaggedStruct("archive_thread", { thread: ThreadInfo });
+export const UnarchiveThreadResponse = S.TaggedStruct("unarchive_thread", {
+  thread: ThreadInfo,
+});
 
 export const ResponsePayload = S.Union([
   PromptResponse,
@@ -180,8 +185,11 @@ export const ResponsePayload = S.Union([
   GetThreadResponse,
   DeleteThreadResponse,
   RenameThreadResponse,
+  ArchiveThreadResponse,
+  UnarchiveThreadResponse,
   SkillResponse,
   PiSessionResponse,
+  ProjectResponse,
 ]);
 export type ResponsePayload = S.Schema.Type<typeof ResponsePayload>;
 

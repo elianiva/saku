@@ -72,6 +72,10 @@ export interface HubShape {
     threadIdInput: string,
     name: string,
   ) => Effect.Effect<ThreadInfo, HubError, never>;
+  /** Archive a thread: visibility-only, the trail is untouched (CONTEXT.md: Archive). */
+  readonly archiveThread: (threadIdInput: string) => Effect.Effect<ThreadInfo, HubError, never>;
+  /** Unarchive a thread: back to the active list, nothing else changes. */
+  readonly unarchiveThread: (threadIdInput: string) => Effect.Effect<ThreadInfo, HubError, never>;
   /** Delete the thread; returns the removed info (for the broadcast). */
   readonly deleteThread: (threadIdInput: string) => Effect.Effect<ThreadInfo, HubError, never>;
   readonly runSessionCommand: (
@@ -318,6 +322,30 @@ export class Hub extends Context.Service<Hub, HubShape>()("Hub", {
         }
         // A user rename wins over auto-title forever (CONTEXT.md: Auto-title).
         yield* registry.update(threadId, { name: trimmed, autoName: false });
+        const info = yield* infoOf(threadId);
+        yield* emitThreadChanged(info);
+        return info;
+      }),
+      archiveThread: Effect.fn("archiveThread")(function* (threadIdInput: string) {
+        const threadId = yield* resolveThreadId(registry, threadIdInput);
+        const record = yield* registry.update(threadId, { archivedAt: Date.now() });
+        if (Option.isNone(record)) {
+          return yield* Effect.fail(
+            new HubError({ kind: "registry", message: `unknown thread: ${threadIdInput}` }),
+          );
+        }
+        const info = yield* infoOf(threadId);
+        yield* emitThreadChanged(info);
+        return info;
+      }),
+      unarchiveThread: Effect.fn("unarchiveThread")(function* (threadIdInput: string) {
+        const threadId = yield* resolveThreadId(registry, threadIdInput);
+        const record = yield* registry.update(threadId, { archivedAt: null });
+        if (Option.isNone(record)) {
+          return yield* Effect.fail(
+            new HubError({ kind: "registry", message: `unknown thread: ${threadIdInput}` }),
+          );
+        }
         const info = yield* infoOf(threadId);
         yield* emitThreadChanged(info);
         return info;

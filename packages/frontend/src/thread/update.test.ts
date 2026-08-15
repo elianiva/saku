@@ -60,6 +60,7 @@ const threadArb: fc.Arbitrary<ThreadInfo> = fc.record({
   env: fc.constantFrom("stopped", "provisioning", "ready", "error"),
   sessionId: fc.oneof(fc.constant(null), fc.string({ maxLength: 24 })),
   tailSeq: fc.integer({ min: 0 }),
+  archivedAt: fc.oneof(fc.constant(null), fc.integer()),
 });
 
 const wireErrorArb = fc.string({ maxLength: 24 }).map(

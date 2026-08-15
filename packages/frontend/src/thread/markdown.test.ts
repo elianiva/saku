@@ -100,7 +100,11 @@ describe("markdown body", () => {
     const ol = child(root, 1);
     expect(ul.sel).toBe("ul");
     const items = kids(ul);
-    expect(items.map((li) => textOf(li as TestNode))).toEqual(["one", "[✓]two", "[ ]three"]);
+    expect(items.map((li) => textOf(li as TestNode))).toEqual(["one", "two", "three"]);
+    expect(classNames(child(items[1] as TestNode, 0))).toContain("saku-md-task");
+    expect(child(child(items[1] as TestNode, 0), 0).sel).toBe("svg");
+    expect(classNames(child(items[2] as TestNode, 0))).toContain("saku-md-task");
+    expect(child(child(items[2] as TestNode, 0), 0).sel).toBe("svg");
     expect(ol.sel).toBe("ol");
   });
 

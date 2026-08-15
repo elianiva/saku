@@ -1,10 +1,10 @@
 /**
  * The rail update's property tests (update.test.ts): the grid transitions
- * (list/refresh/broadcast upsert), the delete flow, the pi-session section
- * (list landing, guarded adoption, adopt-open), and the OutMessages the
- * rail surfaces to the root. (The quick-start flow moved to the pane with
- * the gesture — thread/update.test.ts covers it.) Exercised as pure
- * updates; the commands are asserted, never executed.
+ * (list/refresh/broadcast upsert), the delete flow, the projects window
+ * (list landing, lazy per-project sessions, expand, add/remove, the guarded
+ * adoption), the archive flow (request → landing moves the thread between
+ * views), and the OutMessages the rail surfaces to the root. Exercised as
+ * pure updates; the commands are asserted, never executed.
  *
  * The list semantics are pinned as properties over arbitrary lists and
  * threads: a broadcast upserts in place when the id is present (replacing
@@ -15,13 +15,21 @@
 
 import { describe, expect, it } from "vitest";
 import { Option } from "effect";
-import { WireError, type PiSessionInfo, type ThreadInfo } from "@saku/wire";
+import { WireError, type PiSessionInfo, type ProjectInfo, type ThreadInfo } from "@saku/wire";
 import fc from "fast-check";
 
 import { ThreadsRoute, ThreadRoute } from "../route.ts";
 import { update, informRouteChanged } from "./update.ts";
-import { initialModel, piSessions } from "./model.ts";
+import { initialModel, projectSessions, projects } from "./model.ts";
 import {
+  ActiveViewRequested,
+  AddProjectCancelled,
+  AddProjectCommitted,
+  AddProjectDraftChanged,
+  AddProjectRequested,
+  ArchiveFailed,
+  ArchiveRequested,
+  ArchivedViewRequested,
   ClickedThread,
   DeleteFailed,
   DeleteRequested,
@@ -29,12 +37,25 @@ import {
   PiSessionAdoptFailed,
   PiSessionAdopted,
   PiSessionClicked,
-  PiSessionsListed,
-  PiSessionsListFailed,
+  ProjectAdded,
+  ProjectCollapsed,
+  ProjectExpanded,
+  ProjectRemoved,
+  ProjectSessionsListed,
+  ProjectsListed,
   RefreshRequested,
+  ThreadArchived,
   ThreadChanged,
   ThreadDeleted,
+  ThreadRenameCancelled,
+  ThreadRenameCommitted,
+  ThreadRenameDraftChanged,
+  ThreadRenameRequested,
+  ThreadRenamed,
   ThreadsListed,
+  ThreadShowMore,
+  ThreadShowLess,
+  UnarchiveRequested,
 } from "./message.ts";
 
 /** Any registry thread the wire could broadcast. */
@@ -47,6 +68,7 @@ const threadArb: fc.Arbitrary<ThreadInfo> = fc.record({
   env: fc.constantFrom("stopped", "provisioning", "ready", "error"),
   sessionId: fc.oneof(fc.constant(null), fc.string({ maxLength: 24 })),
   tailSeq: fc.integer({ min: 0 }),
+  archivedAt: fc.oneof(fc.constant(null), fc.integer()),
 });
 
 const listArb = fc.array(threadArb, { maxLength: 8 });
@@ -60,6 +82,11 @@ const piSessionArb: fc.Arbitrary<PiSessionInfo> = fc.record({
   messageCount: fc.integer({ min: 0 }),
   firstMessage: fc.string({ maxLength: 24 }),
   path: fc.string({ maxLength: 24 }),
+});
+
+const projectArb: fc.Arbitrary<ProjectInfo> = fc.record({
+  path: fc.string({ maxLength: 24 }),
+  addedAt: fc.integer(),
 });
 
 const wireErrorArb = fc.string({ maxLength: 24 }).map(
@@ -97,7 +124,7 @@ describe("rail update", () => {
     );
   });
 
-  it("refresh re-lists the registry and the pi sessions from any state", () => {
+  it("refresh re-lists the registry and the projects — never pi sessions", () => {
     fc.assert(
       fc.property(fc.oneof(fc.constant(initialModel()), listArb.map((threads) => listed(threads))), (model) => {
         const [next, commands] = update(model, RefreshRequested());
@@ -172,24 +199,137 @@ describe("rail update", () => {
     );
   });
 
-  it("the pi list lands as Success (clearing the notice) and a failed list lands as Failure", () => {
+  it("archive: request fires the command; the landing upserts the thread", () => {
     fc.assert(
-      fc.property(
-        fc.array(piSessionArb, { maxLength: 3 }),
-        fc.oneof(fc.constant(null), fc.string({ maxLength: 24 })),
-        wireErrorArb,
-        (sessions, staleNotice, error) => {
-          const [listed] = update(
-            { ...initialModel(), notice: staleNotice },
-            PiSessionsListed({ sessions }),
-          );
-          expect(listed.piSessions).toEqual(piSessions.Success({ data: sessions }));
-          expect(listed.notice).toBeNull();
-          const [failed] = update(initialModel(), PiSessionsListFailed({ error }));
-          expect(failed.piSessions).toEqual(piSessions.Failure({ error }));
-        },
-      ),
+      fc.property(listArb, threadArb, (threads, thread) => {
+        const [, commands] = update(listed(threads), ArchiveRequested({ id: thread.id }));
+        expect(commands).toHaveLength(1);
+        const [model] = update(listed(threads), ThreadArchived({ thread }));
+        const expected = threads.some((existing) => existing.id === thread.id)
+          ? threads.map((existing) => (existing.id === thread.id ? thread : existing))
+          : [...threads, thread];
+        expect(model.list).toEqual({ _tag: "Success", data: expected });
+      }),
     );
+  });
+
+  it("unarchive request fires the command; a failed archive shows the notice", () => {
+    fc.assert(
+      fc.property(threadArb, wireErrorArb, (thread, error) => {
+        const [, commands] = update(initialModel(), UnarchiveRequested({ id: thread.id }));
+        expect(commands).toHaveLength(1);
+        const [model] = update(initialModel(), ArchiveFailed({ error }));
+        expect(model.notice).toBe(error.message);
+      }),
+    );
+  });
+
+  it("rename: double-click opens the draft, typing updates it, Enter commits the command", () => {
+    const threads = [thread("t1", "old name")];
+    const [drafting] = update(listed(threads), ThreadRenameRequested({ id: "t1" }));
+    expect(drafting.renaming).toEqual({ id: "t1", value: "old name" });
+
+    const [typed] = update(drafting, ThreadRenameDraftChanged({ text: "new name" }));
+    expect(typed.renaming).toEqual({ id: "t1", value: "new name" });
+
+    const [committed, commands] = update(typed, ThreadRenameCommitted());
+    expect(committed.renaming).toBeNull();
+    expect(commands).toHaveLength(1);
+
+    // Escape cancels without a command.
+    const [cancelled, cancelledCommands] = update(drafting, ThreadRenameCancelled());
+    expect(cancelled.renaming).toBeNull();
+    expect(cancelledCommands).toHaveLength(0);
+  });
+
+  it("a renamed landing upserts the thread", () => {
+    const threads = [thread("t1", "old name")];
+    const renamed = { ...threads[0]!, name: "new name" };
+    const [model] = update(listed(threads), ThreadRenamed({ thread: renamed }));
+    expect(model.list).toEqual({ _tag: "Success", data: [renamed] });
+  });
+
+  it("projects: the list lands, and refresh re-fetches the expanded projects' sessions", () => {
+    const model = {
+      ...initialModel(),
+      expanded: { "/a": true, "/b": false },
+    };
+    const [landed] = update(model, ProjectsListed({ projects: [project("/a"), project("/b")] }));
+    expect(landed.projects).toEqual(
+      projects.Success({ data: [project("/a"), project("/b")] }),
+    );
+    const [, commands] = update(landed, RefreshRequested());
+    // Threads + projects + the one expanded project's sessions.
+    expect(commands).toHaveLength(3);
+  });
+
+  it("adding a project expands it, fetches its sessions, and closes the input", () => {
+    const [added, commands] = update(
+      initialModel(),
+      ProjectAdded({ project: project("/a") }),
+    );
+    expect(added.adding).toBe(false);
+    expect(added.addDraft).toBe("");
+    expect(added.expanded["/a"]).toBe(true);
+    expect(commands).toHaveLength(1);
+
+    // The draft flow: open → type → commit (empty commits are no-ops).
+    const [opened] = update(initialModel(), AddProjectRequested());
+    expect(opened.adding).toBe(true);
+    const [typed] = update(opened, AddProjectDraftChanged({ text: "/a" }));
+    const [committed, commitCommands] = update(typed, AddProjectCommitted());
+    expect(commitCommands).toHaveLength(1);
+    const [empty] = update(typed, AddProjectDraftChanged({ text: "  " }));
+    const [, emptyCommands] = update(empty, AddProjectCommitted());
+    expect(emptyCommands).toHaveLength(0);
+    const [cancelled] = update(typed, AddProjectCancelled());
+    expect(cancelled.adding).toBe(false);
+    expect(cancelled.addDraft).toBe("");
+  });
+
+  it("expanding a project fetches its sessions once; collapsing and removing clean up", () => {
+    const withProjects = update(
+      initialModel(),
+      ProjectsListed({ projects: [project("/a")] }),
+    )[0];
+    const [expanded, commands] = update(withProjects, ProjectExpanded({ path: "/a" }));
+    expect(expanded.expanded["/a"]).toBe(true);
+    expect(commands).toHaveLength(1);
+
+    // The landed session list is cached under the project's path.
+    const [landed] = update(
+      expanded,
+      ProjectSessionsListed({ path: "/a", sessions: [piSession("/a/s1")] }),
+    );
+    expect(landed.projectSessions["/a"]).toEqual(
+      projectSessions.Success({ data: [piSession("/a/s1")] }),
+    );
+
+    // Re-expanding after collapse does not refetch (cached).
+    const [collapsed] = update(landed, ProjectCollapsed({ path: "/a" }));
+    const [reExpanded, againCommands] = update(collapsed, ProjectExpanded({ path: "/a" }));
+    expect(againCommands).toHaveLength(0);
+    expect(reExpanded.expanded["/a"]).toBe(true);
+
+    // Removing the project drops its cached sessions and expansion.
+    const [removed, removeCommands] = update(reExpanded, ProjectRemoved({ path: "/a" }));
+    expect(removeCommands).toHaveLength(0);
+    expect(removed.projectSessions["/a"]).toBeUndefined();
+    expect(removed.expanded["/a"]).toBeUndefined();
+  });
+
+  it("the view toggles between active and archived", () => {
+    const [archived] = update(initialModel(), ArchivedViewRequested());
+    expect(archived.view).toBe("archived");
+    const [active] = update(archived, ActiveViewRequested());
+    expect(active.view).toBe("active");
+  });
+
+  it("the thread preview expands and collapses", () => {
+    const [more] = update(initialModel(), ThreadShowMore());
+    expect(more.threadShowMore).toBe(true);
+    const [less] = update(more, ThreadShowLess());
+    expect(less.threadShowMore).toBe(false);
   });
 
   it("a pi session click is guarded: one adoption in flight, then no-ops", () => {
@@ -214,7 +354,7 @@ describe("rail update", () => {
     );
   });
 
-  it("an adopted session joins the registry list and surfaces OpenedThread; a failure shows the notice and re-lists", () => {
+  it("an adopted session joins the registry list and surfaces OpenedThread; a failure re-lists the window", () => {
     fc.assert(
       fc.property(listArb, threadArb, wireErrorArb, (threads, thread, error) => {
         const [adopted, , out] = update(listed(threads), PiSessionAdopted({ thread }));
@@ -224,11 +364,19 @@ describe("rail update", () => {
         expect(adopted.list).toEqual({ _tag: "Success", data: expected });
         expect(adopted.adopting).toBeNull();
         expect(out).toEqual(Option.some({ _tag: "OpenedThread", id: thread.id }));
-        const [failed, failedCommands] = update(initialModel(), PiSessionAdoptFailed({ error }));
+
+        const model = update(
+          initialModel(),
+          ProjectsListed({ projects: [project("/a")] }),
+        )[0];
+        const [failed, failedCommands] = update(
+          { ...model, adopting: "/a/s1" },
+          PiSessionAdoptFailed({ error }),
+        );
         expect(failed.adopting).toBeNull();
         expect(failed.notice).toBe(error.message);
-        // The failure re-lists both sides so a stale list reconciles.
-        expect(failedCommands).toHaveLength(2);
+        // The failure re-lists threads + projects + the containing project.
+        expect(failedCommands).toHaveLength(3);
       }),
     );
   });
@@ -245,4 +393,32 @@ describe("rail update", () => {
       ),
     );
   });
+});
+
+/** A minimal thread helper (archive-neutral). */
+const thread = (id: string, name: string): ThreadInfo => ({
+  id,
+  name,
+  cwd: null,
+  mode: "local",
+  state: "idle",
+  env: "ready",
+  sessionId: null,
+  tailSeq: 0,
+  archivedAt: null,
+});
+
+/** A minimal project helper. */
+const project = (path: string): ProjectInfo => ({ path, addedAt: 1 });
+
+/** A minimal pi session helper. */
+const piSession = (path: string): PiSessionInfo => ({
+  id: path,
+  cwd: "/a",
+  name: "session",
+  createdAt: 1,
+  modifiedAt: 1,
+  messageCount: 1,
+  firstMessage: "hi",
+  path,
 });

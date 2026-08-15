@@ -9,6 +9,7 @@
  *   threads/<id>/
  *     thread.json             registry record (name, cwd, mode, sessionId)
  *     trail/                  the thread session's KvStore (meta + log/*)
+ *   projects.json             the added-projects list (session window scope)
  * ```
  *
  * The two roots are `Config` values — `SAKU_HOME` (default `~/.saku`) and
@@ -31,6 +32,8 @@ export interface PathsShape {
   readonly authPath: string;
   readonly workerLogPath: string;
   readonly threadsDir: string;
+  /** The added-projects list (the session window's scope; CONTEXT.md: Project). */
+  readonly projectsPath: string;
   /** Per-thread directory (removed wholesale on registry delete). */
   readonly threadDir: (threadId: string) => string;
   /** The thread session's KvStore root (meta + log/* under it, see do-session.ts). */
@@ -56,6 +59,7 @@ const makePaths = (sakuHome: string, agentDir: string): PathsShape => ({
   authPath: join(sakuHome, "auth"),
   workerLogPath: join(sakuHome, "worker.log"),
   threadsDir: join(sakuHome, "threads"),
+  projectsPath: join(sakuHome, "projects.json"),
   threadDir: (threadId) => join(sakuHome, "threads", threadId),
   threadTrailRoot: (threadId) => join(sakuHome, "threads", threadId, "trail"),
   agentDir,

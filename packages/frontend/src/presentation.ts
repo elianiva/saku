@@ -1,50 +1,70 @@
 /**
  * Thread presentation (presentation.ts): the one derivation of how a thread
- * is shown. The state/env glyph classification (char, tone, title), the mode
- * glyph char, the header's `state · env` line, and the rail's pi-session
- * filter all live here — the rail and pane views render from these, so
- * adding a state or env value touches exactly one file. Rendered output is
- * unchanged; only the derivation is shared.
+ * is shown. The state/env icon classification (icon, tone, title), the mode
+ * icon, the header's state/env presentation, and the rail's pi-session filter
+ * all live here — the rail and pane views render from these, so adding a state
+ * or env value touches exactly one file. The derivation is shared.
  */
 
-import type { PiSessionInfo, ThreadEnvState, ThreadInfo, ThreadMode, ThreadState, WireModelInfo } from "@saku/wire";
+import type {
+  PiSessionInfo,
+  ThreadEnvState,
+  ThreadInfo,
+  ThreadMode,
+  ThreadState,
+  WireModelInfo,
+} from "@saku/wire";
 
+import type { IconName } from "./icon.ts";
 import type { EntryProjection } from "./thread/projection.ts";
 
+const modeIcons = {
+  local: "laptop",
+  sandbox: "box",
+  any: "shuffle",
+} satisfies Record<ThreadMode, IconName>;
 
-/** The rail's mode glyph: the hands-policy initial (CONTEXT.md: Mode). */
-export const modeChar = (mode: ThreadMode) =>
-  mode === "sandbox" ? "S" : mode === "any" ? "A" : "L";
+/** The rail's mode icon: the hands-policy mode (CONTEXT.md: Mode). */
+export const modeIcon = (mode: ThreadMode) => modeIcons[mode];
 
-/** How the rail draws a thread state: glyph char, tone, title. */
+/** How the rail draws a thread state: icon, tone, title. */
 export interface StatePresentation {
-  readonly glyph: string;
+  readonly icon: IconName;
   readonly tone: string;
   readonly title: string;
 }
 
-export const statePresentation = (state: ThreadState) =>
-  state === "idle"
-    ? { glyph: "○", tone: "text-muted", title: "idle" }
-    : state === "working"
-      ? { glyph: "●", tone: "text-gold animate-pulse", title: "working" }
-      : { glyph: "◐", tone: "text-rose", title: "interrupted — recovery on next command" };
+const statePresentations = {
+  idle: { icon: "circle", tone: "text-muted", title: "idle" },
+  working: { icon: "loaderCircle", tone: "text-gold animate-spin", title: "working" },
+  interrupted: {
+    icon: "circleAlert",
+    tone: "text-rose",
+    title: "interrupted — recovery on next command",
+  },
+} satisfies Record<ThreadState, StatePresentation>;
 
-/** How the rail draws a thread's env: glyph char, tone, title. */
+export const statePresentation = (state: ThreadState) => statePresentations[state];
+
+/** How the rail draws a thread's env: icon, tone, title. */
 export interface EnvPresentation {
-  readonly glyph: string;
+  readonly icon: IconName;
   readonly tone: string;
   readonly title: string;
 }
 
-export const envPresentation = (env: ThreadEnvState) =>
-  env === "ready"
-    ? { glyph: "▸", tone: "text-foam", title: "env ready" }
-    : env === "provisioning"
-      ? { glyph: "◇", tone: "text-gold animate-pulse", title: "env provisioning" }
-      : env === "stopped"
-        ? { glyph: "▽", tone: "text-muted", title: "env stopped — resumes on prompt" }
-        : { glyph: "✕", tone: "text-love", title: "env error — next prompt retries" };
+const envPresentations = {
+  ready: { icon: "circleCheck", tone: "text-foam", title: "env ready" },
+  provisioning: {
+    icon: "loaderCircle",
+    tone: "text-gold animate-spin",
+    title: "env provisioning",
+  },
+  stopped: { icon: "circleStop", tone: "text-muted", title: "env stopped — resumes on prompt" },
+  error: { icon: "circleX", tone: "text-love", title: "env error — next prompt retries" },
+} satisfies Record<ThreadEnvState, EnvPresentation>;
+
+export const envPresentation = (env: ThreadEnvState) => envPresentations[env];
 
 /** The composer's model badge: the id when it already carries the provider
  *  prefix, else `provider/id` (humanlayer's strip-the-prefix rule). */
@@ -83,10 +103,7 @@ export const usageContextTokens = (usage: unknown) => {
  *  or a compaction since the last usage — pi's own shell rule: context is
  *  unknown until the next assistant response). A pure read of the trail;
  *  the console never computes thread state elsewhere (ADR 0004). */
-export const contextUsage = (
-  entries: readonly EntryProjection[],
-  model: WireModelInfo | null,
-) => {
+export const contextUsage = (entries: readonly EntryProjection[], model: WireModelInfo | null) => {
   const window = model?.contextWindow ?? 0;
   if (window <= 0) return null;
   let tokens: number | null = null;
@@ -128,16 +145,41 @@ export const unadoptedPiSessions = (
   return sessions.filter((session) => !adopted.has(session.path));
 };
 
-/** The header's `state · env` line: text and tone. */
-export const headerState = (
-  state: ThreadState | undefined,
-  env: ThreadEnvState | undefined,
-) => {
-  const pieces: string[] = [];
-  if (state !== undefined) pieces.push(state);
-  if (env !== undefined) pieces.push(`env ${env}`);
-  return {
-    text: pieces.join(" · "),
-    tone: state === "working" ? "text-gold" : env === "error" ? "text-love" : "text-subtle",
-  };
+/** The t3code-style preview: only a few rows at a time (CONTEXT.md: Archive
+ *  sidebar mechanics); "show more" expands. */
+export const PREVIEW_LIMIT = 6;
+
+/** Slice to the preview when collapsed; everything when expanded. */
+export const previewSlice = <T>(items: readonly T[], showMore: boolean) =>
+  showMore || items.length <= PREVIEW_LIMIT ? items : items.slice(0, PREVIEW_LIMIT);
+
+/** The active threads: the list minus the archived (CONTEXT.md: Archive). */
+export const activeThreads = (threads: readonly ThreadInfo[]) =>
+  threads.filter((thread) => thread.archivedAt === null);
+
+/** The archived threads: settled out of the active list. */
+export const archivedThreads = (threads: readonly ThreadInfo[]) =>
+  threads.filter((thread) => thread.archivedAt !== null);
+
+/** A project's display name: the path's basename. */
+export const projectName = (path: string) => path.split("/").filter(Boolean).pop() ?? path;
+
+/** A compact relative time ("just now", "5m", "3h", "2d", then a date). */
+export const relativeTime = (ms: number) => {
+  const seconds = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+  if (seconds < 60) return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  return new Date(ms).toLocaleDateString();
 };
+
+/** The header's state/env presentation: values and tone. */
+export const headerState = (state: ThreadState | undefined, env: ThreadEnvState | undefined) => ({
+  state,
+  env,
+  tone: state === "working" ? "text-gold" : env === "error" ? "text-love" : "text-subtle",
+});

@@ -12,6 +12,7 @@ import { Schema as S } from "effect";
 import { HelloOk } from "./hello.ts";
 import { ThreadChanged } from "./thread.ts";
 import { PiSessionCommand } from "./pi-sessions.ts";
+import { ProjectCommand } from "./projects.ts";
 import { ResponsePayload, SessionCommand } from "./session.ts";
 import { SkillCommand } from "./skills.ts";
 import { ThreadCommand } from "./thread.ts";
@@ -21,7 +22,13 @@ export const WireCommand = S.TaggedStruct("command", {
   id: S.String,
   /** Present on session commands; hub-level commands (threads, skills, pi sessions) omit it. */
   threadId: S.optional(S.String),
-  command: S.Union([SessionCommand, ThreadCommand, SkillCommand, PiSessionCommand]),
+  command: S.Union([
+    SessionCommand,
+    ThreadCommand,
+    SkillCommand,
+    PiSessionCommand,
+    ProjectCommand,
+  ]),
 });
 export type WireCommand = S.Schema.Type<typeof WireCommand>;
 

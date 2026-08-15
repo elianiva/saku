@@ -23,6 +23,10 @@ export const ThreadRecordSchema = Schema.Struct({
   nameAuto: Schema.Boolean,
   /** Adoption provenance; absent on threads created from scratch. */
   source: Schema.optional(ThreadSource),
+  /** Archive visibility lifecycle (CONTEXT.md: Archive); null when active. The
+   * optional key keeps records written before archive readable (normalized
+   * to null at load — the schema never sees the missing key). */
+  archivedAt: Schema.optionalKey(Schema.Union([Schema.Null, Schema.Number])),
 });
 
 /**

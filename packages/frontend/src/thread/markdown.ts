@@ -25,6 +25,8 @@ import { init as md4xInit, parseAST } from "md4x/standalone";
 import type { ComarkElement, ComarkElementAttributes, ComarkNode } from "md4x";
 import type { Html, HtmlBuilder } from "foldkit/html";
 
+import { icon } from "../icon.ts";
+
 /** A foldkit child: a built node or a text run. */
 type FoldkitChild = Html | string;
 
@@ -99,7 +101,8 @@ const holdsBlock = (nodes: readonly ComarkNode[]): boolean =>
   nodes.some((node) => typeof node !== "string" && (isBlockTag(node[0]) || holdsBlock(tail(node))));
 
 /** The streaming cursor (live region): a blinking block appended in-line. */
-const cursorSpan = <M>(h: HtmlBuilder<M>) => h.span([h.Class("saku-cursor")], ["▊"]);
+const cursorSpan = <M>(h: HtmlBuilder<M>) =>
+  h.span([h.Class("saku-cursor"), h.Attribute("aria-hidden", "true")], []);
 
 /** The pre-markdown fallback: the old plain pre-wrap body. */
 const plainBody = <M>(h: HtmlBuilder<M>, text: string) =>
@@ -182,7 +185,15 @@ const convert = <M>(h: HtmlBuilder<M>, node: ComarkNode, cursor: boolean): Rende
           [h.Class("saku-md-li")],
           [
             ...(props.task === true
-              ? [h.span([h.Class("saku-md-task")], [props.checked === true ? "[✓]" : "[ ]"])]
+              ? [
+                  h.span(
+                    [
+                      h.Class("saku-md-task"),
+                      h.AriaLabel(props.checked === true ? "completed task" : "incomplete task"),
+                    ],
+                    [icon(h, props.checked === true ? "squareCheck" : "square")],
+                  ),
+                ]
               : []),
             ...kids(),
           ],

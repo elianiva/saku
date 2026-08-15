@@ -20,9 +20,11 @@ import { Match, Option, Stream } from "effect";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import type { ThreadEnvState, ThreadState, WireModelInfo } from "@saku/wire";
 
+import { icon, type IconName } from "../icon.ts";
 import {
   contextTone,
   contextUsage,
+  envPresentation,
   headerState,
   modelLabel,
   statePresentation,
@@ -97,8 +99,24 @@ const headerStateLine = (
   env: ThreadEnvState | undefined,
   h: HtmlBuilder<ThreadMessage>,
 ) => {
-  const { text, tone } = headerState(state, env);
-  return h.span([h.Class(`${tone} text-[11px] uppercase tracking-[0.18em] shrink-0`)], [text]);
+  const { tone } = headerState(state, env);
+  return h.span(
+    [h.Class(`${tone} flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] shrink-0`)],
+    [
+      state === undefined
+        ? null
+        : h.span(
+            [h.Class("flex items-center gap-1"), h.Title(statePresentation(state).title)],
+            [icon(h, statePresentation(state).icon), state],
+          ),
+      env === undefined
+        ? null
+        : h.span(
+            [h.Class("flex items-center gap-1"), h.Title(envPresentation(env).title)],
+            [icon(h, envPresentation(env).icon), `env ${env}`],
+          ),
+    ],
+  );
 };
 
 const abortButton = (h: HtmlBuilder<ThreadMessage>) =>
@@ -111,7 +129,7 @@ const abortButton = (h: HtmlBuilder<ThreadMessage>) =>
       h.AriaLabel("abort thread"),
       h.Title("abort the running thread"),
     ],
-    ["■ abort"],
+    [icon(h, "square"), "abort"],
   );
 
 const trailArea = (model: Model, h: HtmlBuilder<ThreadMessage>) =>
@@ -164,25 +182,32 @@ const renderEntry = (
     Match.when("message", () =>
       renderMessageEntry(entry.message ?? {}, h, entry.id ?? "", model, index),
     ),
-    Match.when("compaction", () => metaRow(h, `▚ compacted — ${summaryLine(entry.summary)}`)),
-    Match.when("branch_summary", () => metaRow(h, `⑂ branch — ${summaryLine(entry.summary)}`)),
+    Match.when("compaction", () =>
+      metaRow(h, "layers", `compacted — ${summaryLine(entry.summary)}`),
+    ),
+    Match.when("branch_summary", () =>
+      metaRow(h, "gitBranch", `branch — ${summaryLine(entry.summary)}`),
+    ),
     Match.when("model_change", () =>
-      metaRow(h, `~ model → ${asString(entry.provider)}/${asString(entry.modelId)}`),
+      metaRow(h, "arrowRight", `model ${asString(entry.provider)}/${asString(entry.modelId)}`),
     ),
     Match.when("thinking_level_change", () =>
-      metaRow(h, `~ thinking → ${asString(entry.thinkingLevel)}`),
+      metaRow(h, "brain", `thinking ${asString(entry.thinkingLevel)}`),
     ),
     Match.when("active_tools_change", () => {
       const tools = Array.isArray(entry.activeToolNames)
         ? entry.activeToolNames.map(asString).join(", ")
         : "";
-      return metaRow(h, `~ tools → ${tools}`);
+      return metaRow(h, "wrench", `tools ${tools}`);
     }),
-    Match.orElse((type) => metaRow(h, `· ${asString(type) || "entry"}`)),
+    Match.orElse((type) => metaRow(h, "circleDot", asString(type) || "entry")),
   );
 
-const metaRow = (h: HtmlBuilder<ThreadMessage>, text: string) =>
-  h.div([h.Class("px-4 py-1 text-[11px] text-subtle italic")], [text]);
+const metaRow = (h: HtmlBuilder<ThreadMessage>, iconName: IconName, text: string) =>
+  h.div(
+    [h.Class("flex items-center gap-2 px-4 py-1 text-[11px] text-subtle italic")],
+    [icon(h, iconName), text],
+  );
 
 const renderMessageEntry = (
   message: MessageProjection,
@@ -194,10 +219,7 @@ const renderMessageEntry = (
   const role = messageRole(message);
   if (role === "user") {
     return h.div(
-      [
-        h.Class("bg-surface border-l-2 border-pine/60 px-4 py-3"),
-        h.Attribute("data-role", "user"),
-      ],
+      [h.Class("bg-surface border-l-2 border-pine/60 px-4 py-3"), h.Attribute("data-role", "user")],
       [
         roleLabel(h, "you", "text-pine font-bold"),
         h.pre(
@@ -218,10 +240,10 @@ const renderMessageEntry = (
       h.span(
         [
           h.Class(
-            `text-[10px] uppercase tracking-[0.18em] ${result.isError ? "text-love" : "text-subtle"}`,
+            `flex items-center gap-1 text-[10px] uppercase tracking-[0.18em] ${result.isError ? "text-love" : "text-subtle"}`,
           ),
         ],
-        [result.isError ? "tool ✗" : "tool"],
+        [icon(h, result.isError ? "circleX" : "wrench"), "tool"],
       ),
       h.span([h.Class("text-[11px] text-muted font-bold")], [result.name]),
     ];
@@ -249,10 +271,10 @@ const renderMessageEntry = (
             h.span(
               [
                 h.Class(
-                  "text-[10px] uppercase tracking-[0.18em] text-muted inline-block transition-transform duration-150 group-open:rotate-90",
+                  "text-[10px] text-muted inline-block transition-transform duration-150 group-open:rotate-90",
                 ),
               ],
-              ["▸"],
+              [icon(h, "chevronRight")],
             ),
             ...header,
           ],
@@ -310,14 +332,18 @@ const renderMessageEntry = (
   }
   // Other roles (system, custom): render as a dim rail with the raw text.
   const text = messageText(message);
-  return metaRow(h, `· ${role || "message"}${text === "" ? "" : ` — ${summaryLine(text)}`}`);
+  return metaRow(
+    h,
+    "circleDot",
+    `${role || "message"}${text === "" ? "" : ` — ${summaryLine(text)}`}`,
+  );
 };
 
 /**
  * One merged tool row: the call's arguments AND its output in a single
  * collapsible block (the trail used to split them across the assistant
  * message and a separate toolResult entry). The collapsed summary shows
- * the tool name, its per-tool rendered args, and a ✓/✗ completion glyph;
+ * the tool name, its per-tool rendered args, and a completion icon;
  * expanding reveals the args and the output under it.
  */
 const toolCallRow = (
@@ -347,7 +373,7 @@ const toolCallRow = (
                 "text-pine shrink-0 inline-block transition-transform duration-150 group-open:rotate-90",
               ),
             ],
-            ["▸"],
+            [icon(h, "chevronRight")],
           ),
           h.span([h.Class("font-bold shrink-0")], [call.name]),
           h.span([h.Class("text-muted truncate")], [call.args.preview]),
@@ -356,7 +382,7 @@ const toolCallRow = (
             : [
                 h.span(
                   [h.Class(`${result.isError ? "text-love" : "text-foam"} shrink-0 text-[11px]`)],
-                  [result.isError ? "✗" : "✓"],
+                  [icon(h, result.isError ? "circleX" : "check")],
                 ),
               ]),
         ],
@@ -366,46 +392,53 @@ const toolCallRow = (
       ...(result === undefined || result.text === ""
         ? []
         : [
-            h.div([h.Class("mt-1 border-t border-line/70 pt-1")], [
-              h.div(
-                [
-                  h.Class(
-                    `text-[10px] uppercase tracking-[0.18em] ${result.isError ? "text-love" : "text-subtle"}`,
-                  ),
-                ],
-                [result.isError ? "error" : "output"],
-              ),
-              h.pre(
-                [
-                  h.Class(
-                    "whitespace-pre-wrap text-[12px] text-subtle mt-0.5 max-h-64 overflow-y-auto",
-                  ),
-                ],
-                [result.text],
-              ),
-            ]),
+            h.div(
+              [h.Class("mt-1 border-t border-line/70 pt-1")],
+              [
+                h.div(
+                  [
+                    h.Class(
+                      `text-[10px] uppercase tracking-[0.18em] ${result.isError ? "text-love" : "text-subtle"}`,
+                    ),
+                  ],
+                  [result.isError ? "error" : "output"],
+                ),
+                h.pre(
+                  [
+                    h.Class(
+                      "whitespace-pre-wrap text-[12px] text-subtle mt-0.5 max-h-64 overflow-y-auto",
+                    ),
+                  ],
+                  [result.text],
+                ),
+              ],
+            ),
           ]),
     ],
   );
 
 /** The per-tool argument rendering: labels for short fields, code blocks
- *  for paths/content/commands, and −/+ lines for edit diffs. */
+ *  for paths/content/commands, and plus/minus icons for edit diffs. */
 const toolArgsLines = (args: ToolArgsView, h: HtmlBuilder<ThreadMessage>) =>
   args.lines.map((line: ToolArgLine) =>
     line.kind === "label"
       ? h.div([h.Class("mt-1 text-[10px] uppercase tracking-[0.18em] text-subtle")], [line.text])
       : line.kind === "code"
         ? h.pre(
-            [h.Class("mt-0.5 whitespace-pre-wrap text-[12px] text-subtle max-h-40 overflow-y-auto")],
+            [
+              h.Class(
+                "mt-0.5 whitespace-pre-wrap text-[12px] text-subtle max-h-40 overflow-y-auto",
+              ),
+            ],
             [line.text],
           )
         : h.div(
             [
               h.Class(
-                `mt-0.5 whitespace-pre-wrap text-[12px] font-mono ${line.kind === "removed" ? "text-love/80" : "text-foam/80"}`,
+                `mt-0.5 flex items-start gap-1 whitespace-pre-wrap text-[12px] font-mono ${line.kind === "removed" ? "text-love/80" : "text-foam/80"}`,
               ),
             ],
-            [`${line.kind === "removed" ? "−" : "+"} ${line.text}`],
+            [icon(h, line.kind === "removed" ? "minus" : "plus"), line.text],
           ),
   );
 
@@ -445,7 +478,7 @@ const thinkingBlock = (
                 "text-iris shrink-0 inline-block transition-transform duration-150 group-open:rotate-90",
               ),
             ],
-            ["▸"],
+            [icon(h, "chevronRight")],
           ),
           h.span([h.Class("font-bold text-iris shrink-0")], ["thinking"]),
           h.span([h.Class("text-muted truncate")], ["internal reasoning"]),
@@ -464,7 +497,7 @@ const liveRegion = (model: Model, h: HtmlBuilder<ThreadMessage>) => {
   return h.div(
     [h.Class("border-t-2 border-pine/40 bg-surface")],
     [
-      ...(hasNotice ? [metaRow(h, live.notice ?? "")] : []),
+      ...(hasNotice ? [metaRow(h, "circleAlert", live.notice ?? "")] : []),
       ...(hasMessage
         ? [
             h.div(
@@ -494,7 +527,8 @@ const liveRegion = (model: Model, h: HtmlBuilder<ThreadMessage>) => {
 };
 
 const liveToolRow = (tool: LiveTool, open: readonly string[], h: HtmlBuilder<ThreadMessage>) => {
-  const glyph = tool.state === "running" ? "◌" : tool.state === "done" ? "✓" : "✗";
+  const iconName: IconName =
+    tool.state === "running" ? "loaderCircle" : tool.state === "done" ? "check" : "circleX";
   const tone =
     tool.state === "running" ? "text-gold" : tool.state === "done" ? "text-foam" : "text-love";
   const output =
@@ -520,9 +554,9 @@ const liveToolRow = (tool: LiveTool, open: readonly string[], h: HtmlBuilder<Thr
                 "text-muted shrink-0 inline-block transition-transform duration-150 group-open:rotate-90",
               ),
             ],
-            ["▸"],
+            [icon(h, "chevronRight")],
           ),
-          h.span([h.Class(`${tone} shrink-0`), h.Title(tool.callId)], [glyph]),
+          h.span([h.Class(`${tone} shrink-0`), h.Title(tool.callId)], [icon(h, iconName)]),
           h.span([h.Class("font-bold")], [tool.name]),
           ...(args.preview === ""
             ? []
@@ -548,7 +582,7 @@ const liveToolRow = (tool: LiveTool, open: readonly string[], h: HtmlBuilder<Thr
  *  the trail above it. */
 const composerArea = (model: Model, h: HtmlBuilder<ThreadMessage>) =>
   h.div(
-    [h.Class("shrink-0 border-t border-line bg-surface p-4")],
+    [h.Class("shrink-0 p-4")],
     [h.div([h.Class("w-full max-w-4xl mx-auto")], [composerBox(model, h, "thread")])],
   );
 
@@ -602,13 +636,16 @@ const sendButton = (h: HtmlBuilder<ThreadMessage>, kind: "thread" | "welcome", b
       h.AriaLabel(kind === "welcome" ? "start thread" : "send prompt"),
       h.Title(kind === "welcome" ? "start thread" : "send prompt"),
     ],
-    [h.span([h.Class("sr-only")], [kind === "welcome" ? "start ❯" : "send ❯"]), "↑"],
+    [h.span([h.Class("sr-only")], [kind === "welcome" ? "start" : "send"]), icon(h, "arrowUp")],
   );
 
-/** The state glyph + word, from the shared derivation (presentation.ts). */
+/** The state icon + word, from the shared derivation (presentation.ts). */
 const stateBadge = (state: ThreadState, h: HtmlBuilder<ThreadMessage>) => {
   const p = statePresentation(state);
-  return h.span([h.Class(`text-[11px] ${p.tone}`), h.Title(p.title)], [`${p.glyph} ${state}`]);
+  return h.span(
+    [h.Class(`flex items-center gap-1 text-[11px] ${p.tone}`), h.Title(p.title)],
+    [icon(h, p.icon), state],
+  );
 };
 
 /** The context-usage badge: the trail's last assistant usage against the
@@ -645,7 +682,7 @@ const modelBadge = (model: Model, h: HtmlBuilder<ThreadMessage>) => {
       h.Title(working ? "model changes unavailable while working" : "change the thread's model"),
       h.AriaLabel("change model"),
     ],
-    [h.span([h.Class("truncate")], [label]), h.span([h.Class("text-muted")], ["✎"])],
+    [h.span([h.Class("truncate")], [label]), icon(h, "pencil")],
   );
 };
 
@@ -668,7 +705,7 @@ const modelPickerPanel = (model: Model, h: HtmlBuilder<ThreadMessage>) =>
               h.OnClick(ModelPickerClosed()),
               h.AriaLabel("close model picker"),
             ],
-            ["✕"],
+            [icon(h, "x")],
           ),
         ],
       ),
@@ -715,8 +752,8 @@ const modelPickerRow = (
     ],
     [
       h.span(
-        [h.Class(`${isCurrent ? "text-pine" : "text-muted"} shrink-0`)],
-        [isCurrent ? "▸" : "·"],
+        [h.Class(`${isCurrent ? "text-pine" : "text-muted"} w-[1em] shrink-0`)],
+        isCurrent ? [icon(h, "check")] : [],
       ),
       h.span([h.Class("flex-1 truncate min-w-0")], [modelLabel(candidate)]),
       h.span([h.Class("text-muted shrink-0")], [`${candidate.contextWindow.toLocaleString()} ctx`]),
@@ -751,7 +788,7 @@ const composerBox = (model: Model, h: HtmlBuilder<ThreadMessage>, kind: "thread"
       h.div(
         [
           h.Class(
-            "flex flex-col overflow-hidden border border-line bg-surface shadow-sm transition-colors focus-within:border-subtle",
+            "flex flex-col overflow-hidden border border-line bg-surface transition-colors focus-within:border-subtle",
           ),
         ],
         [
@@ -760,9 +797,9 @@ const composerBox = (model: Model, h: HtmlBuilder<ThreadMessage>, kind: "thread"
             [
               h.textarea([
                 h.Class(
-                  "block min-h-36 w-full resize-y border-0 bg-transparent p-0 font-mono text-[13px] leading-relaxed text-text outline-none placeholder:text-muted focus:ring-0",
+                  "block w-full resize-y border-0 bg-transparent p-0 font-mono text-[13px] leading-relaxed text-text outline-none placeholder:text-muted focus:ring-0",
                 ),
-                h.Rows(5),
+                h.Rows(3),
                 h.Placeholder(placeholder),
                 h.Spellcheck(false),
                 h.Disabled(busy),
@@ -813,7 +850,7 @@ const scrollToLatestButton = (h: HtmlBuilder<ThreadMessage>) =>
       h.Attribute("data-scroll-to-end", ""),
       h.AriaLabel("scroll to latest"),
     ],
-    [h.span([h.Class("text-pine")], ["↓"]), "latest"],
+    [h.span([h.Class("text-pine")], [icon(h, "arrowDown")]), "latest"],
   );
 
 /** The root route's surface: wordmark, greeting, and the quick-start
