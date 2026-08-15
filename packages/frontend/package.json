@@ -18,6 +18,7 @@
     "@saku/wire": "workspace:*",
     "effect": "rc",
     "foldkit": "0.141.2",
+    "md4x": "^0.0.27",
     "tailwindcss": "^4.3.3"
   },
   "devDependencies": {

@@ -37,6 +37,7 @@ import {
   messageToolResult,
   summaryLine,
 } from "./format.ts";
+import { markdownBody } from "./markdown.ts";
 import type { LiveTool } from "./live.ts";
 import {
   AbortRequested,
@@ -232,13 +233,11 @@ const renderMessageEntry = (message: MessageProjection, h: HtmlBuilder<ThreadMes
           ? []
           : [
               h.div(
-                [h.Class("text-[12px] text-muted italic mt-1 border-l-2 border-muted/40 pl-2")],
-                [thinking],
+                [h.Class("mt-1 text-[12px] text-muted border-l-2 border-muted/40 pl-2")],
+                [markdownBody(h, thinking)],
               ),
             ]),
-        ...(text === ""
-          ? []
-          : [h.pre([h.Class("whitespace-pre-wrap text-[13px] leading-relaxed mt-1")], [text])]),
+        ...(text === "" ? [] : [markdownBody(h, text)]),
         ...(calls.length === 0
           ? []
           : [
@@ -285,21 +284,15 @@ const liveRegion = (model: Model, h: HtmlBuilder<ThreadMessage>) => {
         ? [
             h.div(
               [h.Class("px-4 py-3")],
-              [
-                roleLabel(h, "saku", "text-iris"),
-                h.pre(
-                  [h.Class("whitespace-pre-wrap text-[13px] leading-relaxed mt-1")],
-                  [`${live.message ?? ""}▊`, h.span([h.Class("saku-cursor")], [])],
-                ),
-              ],
+              [roleLabel(h, "saku", "text-iris"), markdownBody(h, live.message ?? "", true)],
             ),
           ]
         : []),
       ...(live.thinking !== undefined && live.thinking !== ""
         ? [
             h.div(
-              [h.Class("px-4 pt-2 text-[12px] text-muted italic border-l-2 border-muted/40 ml-4")],
-              [live.thinking],
+              [h.Class("px-4 pt-2 text-[12px] text-muted border-l-2 border-muted/40 ml-4")],
+              [markdownBody(h, live.thinking)],
             ),
           ]
         : []),
@@ -408,9 +401,7 @@ const modelBadge = (model: Model, h: HtmlBuilder<ThreadMessage>) => {
       ),
       h.OnClick(ModelPickerRequested()),
       h.Disabled(working),
-      h.Title(
-        working ? "model changes unavailable while working" : "change the thread's model",
-      ),
+      h.Title(working ? "model changes unavailable while working" : "change the thread's model"),
       h.AriaLabel("change model"),
     ],
     [label, h.span([h.Class("text-muted")], ["✎"])],
@@ -423,11 +414,19 @@ const modelPickerPanel = (model: Model, h: HtmlBuilder<ThreadMessage>) =>
     [h.Class("border border-line bg-base mt-2")],
     [
       h.div(
-        [h.Class("flex items-center gap-2 px-3 py-1.5 border-b border-line text-[10px] uppercase tracking-[0.18em] text-subtle")],
+        [
+          h.Class(
+            "flex items-center gap-2 px-3 py-1.5 border-b border-line text-[10px] uppercase tracking-[0.18em] text-subtle",
+          ),
+        ],
         [
           h.span([h.Class("flex-1")], ["models — the thread's next model"]),
           h.button(
-            [h.Class("px-1 hover:text-love"), h.OnClick(ModelPickerClosed()), h.AriaLabel("close model picker")],
+            [
+              h.Class("px-1 hover:text-love"),
+              h.OnClick(ModelPickerClosed()),
+              h.AriaLabel("close model picker"),
+            ],
             ["✕"],
           ),
         ],
@@ -443,7 +442,9 @@ const modelPickerPanel = (model: Model, h: HtmlBuilder<ThreadMessage>) =>
             ? modelPickerStatus(h, "no models available")
             : h.div(
                 [h.Class("max-h-56 overflow-y-auto")],
-                models.map((candidate) => modelPickerRow(candidate, model.model, model.modelBusy, h)),
+                models.map((candidate) =>
+                  modelPickerRow(candidate, model.model, model.modelBusy, h),
+                ),
               ),
       }),
     ],
@@ -478,9 +479,7 @@ const modelPickerRow = (
       ),
       h.span([h.Class("flex-1 truncate min-w-0")], [modelLabel(candidate)]),
       h.span([h.Class("text-muted shrink-0")], [`${candidate.contextWindow.toLocaleString()} ctx`]),
-      ...(candidate.reasoning
-        ? [h.span([h.Class("text-muted shrink-0")], ["reasoning"])]
-        : []),
+      ...(candidate.reasoning ? [h.span([h.Class("text-muted shrink-0")], ["reasoning"])] : []),
     ],
   );
 };
@@ -496,11 +495,7 @@ const modelPickerRow = (
  * welcome's box autofocuses on mount — every arrival at the root route
  * lands the cursor in the composer (the thread box never autofocuses).
  */
-const composerBox = (
-  model: Model,
-  h: HtmlBuilder<ThreadMessage>,
-  kind: "thread" | "welcome",
-) => {
+const composerBox = (model: Model, h: HtmlBuilder<ThreadMessage>, kind: "thread" | "welcome") => {
   const working = model.info?.state === "working";
   const busy = kind === "thread" ? working : model.starting;
   const placeholder =

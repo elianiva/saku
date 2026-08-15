@@ -83,3 +83,123 @@ body {
 .saku-cursor {
   animation: saku-blink 1s step-end infinite;
 }
+
+/*
+ * Markdown bodies (thread/markdown.ts): LLM assistant text and thinking,
+ * parsed with md4x into foldkit nodes. The container keeps soft line
+ * breaks (pre-line) the way the old pre-wrap body did; each element
+ * styles itself in the rose-pine surface language.
+ */
+@layer components {
+  .saku-md {
+    @apply mt-1 text-[13px] leading-relaxed whitespace-pre-line wrap-break-word;
+  }
+  .saku-md-p {
+    @apply my-1.5;
+  }
+  .saku-md-h {
+    @apply font-bold text-text mt-3 mb-1.5;
+  }
+  .saku-md-h1 {
+    @apply text-[16px] mt-4;
+  }
+  .saku-md-h2 {
+    @apply text-[15px] mt-3;
+  }
+  .saku-md-h3,
+  .saku-md-h4,
+  .saku-md-h5,
+  .saku-md-h6 {
+    @apply text-[14px] mt-2;
+  }
+  .saku-md-blockquote {
+    @apply border-l-2 border-muted/40 pl-2 my-2 text-subtle;
+  }
+  .saku-md-ul {
+    @apply my-2 pl-4 list-disc;
+  }
+  .saku-md-ol {
+    @apply my-2 pl-4 list-decimal;
+  }
+  .saku-md-li {
+    @apply my-0.5;
+  }
+  .saku-md-task {
+    @apply font-mono text-[11px] text-pine mr-1;
+  }
+  .saku-md-pre {
+    @apply my-2 border border-line bg-surface p-2 overflow-x-auto text-[12px] leading-relaxed;
+  }
+  .saku-md-pre-file {
+    @apply text-[10px] uppercase tracking-[0.18em] text-muted mb-1;
+  }
+  .saku-md-code-block {
+    @apply font-mono;
+  }
+  .saku-md-code-inline {
+    @apply bg-overlay px-1 py-px text-[12px] font-mono;
+  }
+  .saku-md-a {
+    @apply text-pine underline decoration-pine/40;
+  }
+  .saku-md-hr {
+    @apply my-3 border-line;
+  }
+  .saku-md-table-wrap {
+    @apply my-2 overflow-x-auto;
+  }
+  .saku-md-table {
+    @apply border-collapse text-[12px];
+  }
+  .saku-md-th {
+    @apply border border-line bg-overlay px-2 py-1 font-bold;
+  }
+  .saku-md-td {
+    @apply border border-line px-2 py-1;
+  }
+  .saku-md-alert {
+    @apply my-2 border-l-2 border-line py-1 pl-2;
+  }
+  .saku-md-alert-label {
+    @apply text-[10px] uppercase tracking-[0.18em] text-muted mb-0.5;
+  }
+  .saku-md-alert-note {
+    @apply border-pine/60;
+  }
+  .saku-md-alert-tip {
+    @apply border-foam/60;
+  }
+  .saku-md-alert-warning {
+    @apply border-gold/60;
+  }
+  .saku-md-alert-important {
+    @apply border-love/60;
+  }
+  .saku-md-alert-caution {
+    @apply border-rose/60;
+  }
+  .saku-md-math {
+    @apply bg-overlay px-1 py-px font-mono text-[12px];
+  }
+  .saku-md-math-display {
+    @apply my-2 border border-line bg-surface p-2 font-mono text-[12px] overflow-x-auto;
+  }
+  .saku-md-img {
+    @apply my-2 max-w-full h-auto;
+  }
+  .saku-md-mark {
+    @apply bg-gold/20;
+  }
+  .saku-md-footnotes {
+    @apply mt-3 border-t border-line pt-2 text-[11px] text-subtle;
+  }
+  .saku-md-footnote {
+    @apply my-0.5;
+  }
+  .saku-md-footnote-label {
+    @apply text-pine;
+  }
+  .saku-md-footnote-ref {
+    @apply text-pine;
+  }
+}
