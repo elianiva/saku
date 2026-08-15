@@ -61,8 +61,8 @@ import {
   wireStateOf,
   LANE,
   HostEvent,
+  HostMachine,
   HostState,
-  makeHostMachine,
   type HostCommandEvent,
   type HostDeps,
   type HostEventSink,
@@ -288,7 +288,7 @@ export const SessionHost = {
           Effect.runPromise(handleAgentEvent(deps, event)),
       );
 
-      const actor = yield* Machine.spawn(makeHostMachine(deps));
+      const actor = yield* Machine.spawn(HostMachine.make(deps));
       yield* actor.start;
 
       const command = (event: HostCommandEvent) =>

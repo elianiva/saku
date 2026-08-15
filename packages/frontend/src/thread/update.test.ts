@@ -1,22 +1,30 @@
 /**
- * The thread update's unit tests (update.test.ts): the session-event fold
- * wiring (scroll command on a growing view), the trail landing, the
- * composer's gating, the welcome's quick-start flow (the gesture lives on
- * the pane now), and the route-derived `informRouteChanged`. Exercised as
- * pure updates; the commands are asserted, never executed.
+ * The thread update's property tests (update.test.ts): the session-event
+ * fold wiring, the trail landing, the composer's gating, the welcome's
+ * quick-start flow, the pi picker, and the route-derived
+ * `informRouteChanged`. Exercised as pure updates; the commands are
+ * asserted, never executed.
+ *
+ * The gating contracts are properties over arbitrary models: send prompts
+ * or quick-starts exactly when the draft is non-blank (trimmed), the
+ * starting guard absorbs Enter while a create is in flight, the registry
+ * broadcast updates the header only for the pinned thread, and the picker
+ * and import guards hold from any state. `informRouteChanged` is specified
+ * field-by-field: pin/unpin, view reset, composer preserved, and the
+ * load-trail command riding along exactly on a Thread route.
  */
 
 import { describe, expect, it } from "vitest";
 import { Option } from "effect";
 import { WireError, type PiSessionInfo, type ThreadInfo } from "@saku/wire";
+import fc from "fast-check";
 
 import { ThreadsRoute, ThreadRoute } from "../route.ts";
 import { informRouteChanged, update } from "./update.ts";
-import { initialModel, PiPicker, type Model } from "./model.ts";
-import { Trail } from "./live.ts";
+import { PiPicker, type Model } from "./model.ts";
+import { Trail, type Live } from "./live.ts";
 import {
   ComposerBlurred,
-  ComposerChanged,
   ComposerFocused,
   CreateFailed,
   PiImportFailed,
@@ -29,226 +37,266 @@ import {
   PromptAcked,
   SendFailed,
   SendRequested,
-  SessionEvent,
   ThreadChanged,
   ThreadCreated,
   TrailFailed,
   TrailLoaded,
 } from "./message.ts";
 
-const modelWith = (id: string | null = "a") => ({ ...initialModel(), id });
-
-const threadInfo = (id: string, name = id): ThreadInfo => ({
-  id,
-  name,
-  cwd: null,
-  mode: "local",
-  state: "idle",
-  env: "ready",
-  sessionId: null,
-  tailSeq: 0,
+const threadArb: fc.Arbitrary<ThreadInfo> = fc.record({
+  id: fc.string({ maxLength: 24 }),
+  name: fc.string({ maxLength: 24 }),
+  cwd: fc.oneof(fc.constant(null), fc.string({ maxLength: 24 })),
+  mode: fc.constantFrom("local", "sandbox", "any"),
+  state: fc.constantFrom("idle", "working", "interrupted"),
+  env: fc.constantFrom("stopped", "provisioning", "ready", "error"),
+  sessionId: fc.oneof(fc.constant(null), fc.string({ maxLength: 24 })),
+  tailSeq: fc.integer({ min: 0 }),
 });
 
-const piSession = (id: string) => ({
-  id,
-  cwd: "/tmp/work",
-  name: "adopt me",
-  createdAt: 1,
-  modifiedAt: 2,
-  messageCount: 3,
-  firstMessage: "hi",
-  path: `/tmp/work/${id}.jsonl`,
+const piSessionArb: fc.Arbitrary<PiSessionInfo> = fc.record({
+  id: fc.string({ maxLength: 24 }),
+  cwd: fc.string({ maxLength: 24 }),
+  name: fc.string({ maxLength: 24 }),
+  createdAt: fc.integer(),
+  modifiedAt: fc.integer(),
+  messageCount: fc.integer({ min: 0 }),
+  firstMessage: fc.string({ maxLength: 24 }),
+  path: fc.string({ maxLength: 24 }),
+});
+
+const wireErrorArb = fc.string({ maxLength: 24 }).map(
+  (message) => new WireError({ code: "command_failed", message }),
+);
+
+const trailArb: fc.Arbitrary<Model["trail"]> = fc.oneof(
+  fc.constant(Trail.Idle()),
+  fc
+    .record({
+      entries: fc.array(
+        fc.record({
+          id: fc.option(fc.string({ maxLength: 12 }), { nil: undefined }),
+          seq: fc.option(fc.integer(), { nil: undefined }),
+        }),
+        { maxLength: 4 },
+      ),
+      tailSeq: fc.integer({ min: 0 }),
+    })
+    .map((data) => Trail.Success({ data })),
+  fc.constant(Trail.Failure({ error: "boom" })),
+);
+
+const liveArb: fc.Arbitrary<Live["live"]> = fc.record({
+  message: fc.option(fc.string({ maxLength: 24 }), { nil: undefined }),
+  thinking: fc.option(fc.string({ maxLength: 24 }), { nil: undefined }),
+  tools: fc.array(
+    fc.record({
+      callId: fc.string({ maxLength: 12 }),
+      name: fc.string({ maxLength: 12 }),
+      state: fc.constantFrom("running", "done", "failed"),
+    }),
+    { maxLength: 3 },
+  ),
+  notice: fc.option(fc.string({ maxLength: 24 }), { nil: undefined }),
+});
+
+const piPickerArb: fc.Arbitrary<Model["piPicker"]> = fc.oneof(
+  fc.constant(PiPicker.Idle()),
+  fc.constant(PiPicker.Loading()),
+  fc.record({ data: fc.array(piSessionArb, { maxLength: 3 }) }).map(({ data }) =>
+    PiPicker.Success({ data }),
+  ),
+  wireErrorArb.map((error) => PiPicker.Failure({ error })),
+);
+
+/** Any pane model the update loop could hold. */
+const modelArb: fc.Arbitrary<Model> = fc.record({
+  id: fc.oneof(fc.constant(null), fc.string({ maxLength: 24 })),
+  info: fc.oneof(fc.constant(null), threadArb),
+  trail: trailArb,
+  live: liveArb,
+  composer: fc.string({ maxLength: 24 }),
+  starting: fc.boolean(),
+  focused: fc.boolean(),
+  notice: fc.oneof(fc.constant(null), fc.string({ maxLength: 24 })),
+  piPicker: piPickerArb,
+  importing: fc.oneof(fc.constant(null), fc.string({ maxLength: 24 })),
 });
 
 describe("thread update", () => {
-  it("folds a session event and fires the scroll command when the view grew", () => {
-    const [model, commands] = update(
-      modelWith(),
-      SessionEvent({ event: { _tag: "message_start", message: { content: "hi" } } }),
+  it("send prompts or quick-starts exactly when the draft is non-blank", () => {
+    fc.assert(
+      fc.property(modelArb, (model) => {
+        const [next, commands] = update(model, SendRequested());
+        const text = model.composer.trim();
+        if (text === "") {
+          expect(next).toEqual(model);
+          expect(commands).toHaveLength(0);
+        } else if (model.id !== null) {
+          expect(next).toEqual(model);
+          expect(commands).toHaveLength(1);
+        } else if (model.starting) {
+          expect(next).toEqual(model);
+          expect(commands).toHaveLength(0);
+        } else {
+          expect(next).toEqual({ ...model, starting: true });
+          expect(commands).toHaveLength(1);
+        }
+      }),
     );
-    expect(model.live.message).toBe("hi");
-    expect(commands).toHaveLength(1);
   });
 
-  it("a settled event clears the live region without a scroll", () => {
-    const streamed = update(
-      modelWith(),
-      SessionEvent({ event: { _tag: "message_start", message: { content: "hi" } } }),
-    )[0];
-    const [model, commands] = update(streamed, SessionEvent({ event: { _tag: "settled" } }));
-    expect(model.live).toEqual({ tools: [] });
-    expect(commands).toHaveLength(0);
-  });
-
-  it("ignores a registry broadcast for another thread", () => {
-    const [model, commands] = update(modelWith("a"), ThreadChanged({ thread: threadInfo("b") }));
-    expect(model.info).toBeNull();
-    expect(commands).toHaveLength(0);
-  });
-
-  it("keeps the header info current from a broadcast for this thread", () => {
-    const [model] = update(modelWith("a"), ThreadChanged({ thread: threadInfo("a", "new name") }));
-    expect(model.info?.name).toBe("new name");
-  });
-
-  it("lands the trail read as Success and scrolls", () => {
-    const [model, commands] = update(modelWith(), TrailLoaded({ entries: [], tailSeq: 3 }));
-    expect(model.trail).toEqual(Trail.Success({ data: { entries: [], tailSeq: 3 } }));
-    expect(commands).toHaveLength(1);
-  });
-
-  it("lands a trail failure", () => {
-    const [model] = update(modelWith(), TrailFailed({ error: "boom" }));
-    expect(model.trail).toEqual(Trail.Failure({ error: "boom" }));
-  });
-
-  it("send requires a pinned thread and non-blank text", () => {
-    // No thread pinned and no draft: nothing to do (the welcome is idle).
-    const [, noId] = update(initialModel(), SendRequested());
-    expect(noId).toHaveLength(0);
-    // Blank text on a pinned thread: nothing to send.
-    const blank = update({ ...modelWith(), composer: "   " }, SendRequested());
-    expect(blank[1]).toHaveLength(0);
-    // A real draft on a pinned thread: prompt the thread.
-    const [, commands] = update({ ...modelWith(), composer: "hello" }, SendRequested());
-    expect(commands).toHaveLength(1);
-  });
-
-  it("on the welcome, send is the quick start: it trims the draft and fires the command", () => {
-    const [model, commands] = update(
-      { ...initialModel(), composer: "  build it  " },
-      SendRequested(),
+  it("a created thread clears the draft and guard, and surfaces OpenedThread", () => {
+    fc.assert(
+      fc.property(modelArb, threadArb, (model, thread) => {
+        const [next, commands, out] = update(model, ThreadCreated({ thread }));
+        expect(next).toEqual({ ...model, starting: false, composer: "", focused: false });
+        expect(commands).toHaveLength(0);
+        expect(out).toEqual(Option.some({ _tag: "OpenedThread", id: thread.id }));
+      }),
     );
-    expect(model.starting).toBe(true);
-    expect(commands).toHaveLength(1);
-  });
-
-  it("the starting guard ignores send while a quick start is in flight", () => {
-    const inFlight = { ...initialModel(), composer: "build it", starting: true };
-    const [model, commands] = update(inFlight, SendRequested());
-    expect(model.starting).toBe(true);
-    expect(commands).toHaveLength(0);
-  });
-
-  it("a created thread clears the draft and guard, and surfaces OpenedThread to the root", () => {
-    const [model, , out] = update(
-      { ...initialModel(), composer: "build it", starting: true, focused: true },
-      ThreadCreated({ thread: threadInfo("b", "build it") }),
-    );
-    expect(model.composer).toBe("");
-    expect(model.starting).toBe(false);
-    expect(model.focused).toBe(false);
-    expect(out).toEqual(Option.some({ _tag: "OpenedThread", id: "b" }));
   });
 
   it("a failed create releases the guard, keeps the draft, and shows the notice", () => {
-    const [model] = update(
-      { ...initialModel(), composer: "build it", starting: true },
-      CreateFailed({ message: "nope" }),
+    fc.assert(
+      fc.property(modelArb, fc.string({ maxLength: 24 }), (model, message) => {
+        const [next] = update(model, CreateFailed({ message }));
+        expect(next).toEqual({ ...model, starting: false, notice: message });
+      }),
     );
-    expect(model.starting).toBe(false);
-    expect(model.composer).toBe("build it");
-    expect(model.notice).toBe("nope");
   });
 
-  it("focus and blur drive the focus-aware placeholder", () => {
-    expect(update(initialModel(), ComposerFocused())[0].focused).toBe(true);
-    expect(update({ ...initialModel(), focused: true }, ComposerBlurred())[0].focused).toBe(false);
+  it("keeps the header current from a broadcast for the pinned thread only", () => {
+    fc.assert(
+      fc.property(modelArb, threadArb, (model, thread) => {
+        const [next, commands] = update(model, ThreadChanged({ thread }));
+        expect(commands).toHaveLength(0);
+        expect(next).toEqual(
+          model.id === thread.id ? { ...model, info: thread } : model,
+        );
+      }),
+    );
   });
 
-  it("an acked prompt clears the composer; a failed one shows the notice", () => {
-    const typed = update(modelWith(), ComposerChanged({ text: "hello" }))[0];
-    expect(update(typed, PromptAcked())[0].composer).toBe("");
-    expect(update(typed, SendFailed({ message: "nope" }))[0].notice).toBe("nope");
+  it("the trail lands as Success with a scroll, and failures land as Failure", () => {
+    fc.assert(
+      fc.property(
+        modelArb,
+        fc.array(
+          fc.record({
+            id: fc.option(fc.string({ maxLength: 12 }), { nil: undefined }),
+            seq: fc.option(fc.integer(), { nil: undefined }),
+          }),
+          { maxLength: 4 },
+        ),
+        fc.integer({ min: 0 }),
+        fc.string({ maxLength: 24 }),
+        (model, entries, tailSeq, error) => {
+          const [loaded, loadedCommands] = update(model, TrailLoaded({ entries, tailSeq }));
+          expect(loaded.trail).toEqual(Trail.Success({ data: { entries, tailSeq } }));
+          expect(loadedCommands).toHaveLength(1);
+          const [failed] = update(model, TrailFailed({ error }));
+          expect(failed.trail).toEqual(Trail.Failure({ error }));
+        },
+      ),
+    );
   });
 
-  it("informRouteChanged pins a Thread route, resets the view, and reads the trail", () => {
-    const [model, commands] = informRouteChanged(initialModel(), ThreadRoute({ id: "a" }));
-    expect(model.id).toBe("a");
-    expect(model.info).toBeNull();
-    expect(model.trail).toEqual(Trail.Idle());
-    expect(model.live).toEqual({ tools: [] });
-    expect(commands).toHaveLength(1);
+  it("focus, blur, prompt-ack, and send-failure drive their one field", () => {
+    fc.assert(
+      fc.property(modelArb, fc.string({ maxLength: 24 }), (model, message) => {
+        expect(update(model, ComposerFocused())[0]).toEqual({ ...model, focused: true });
+        expect(update(model, ComposerBlurred())[0]).toEqual({ ...model, focused: false });
+        expect(update(model, PromptAcked())[0]).toEqual({ ...model, composer: "" });
+        expect(update(model, SendFailed({ message }))[0]).toEqual({ ...model, notice: message });
+      }),
+    );
   });
 
-  it("informRouteChanged unpins on the Threads route without commands", () => {
-    const seeded = informRouteChanged(initialModel(), ThreadRoute({ id: "a" }))[0];
-    const [model, commands] = informRouteChanged(seeded, ThreadsRoute());
-    expect(model.id).toBeNull();
-    expect(model.trail).toEqual(Trail.Idle());
-    expect(commands).toHaveLength(0);
-  });
-
-  it("informRouteChanged preserves the composer draft", () => {
-    const drafted = { ...modelWith(), composer: "draft" };
-    const [model] = informRouteChanged(drafted, ThreadRoute({ id: "b" }));
-    expect(model.composer).toBe("draft");
-  });
-
-  it("informRouteChanged resets the focus state across routes", () => {
-    const focused = { ...initialModel(), focused: true };
-    expect(informRouteChanged(focused, ThreadRoute({ id: "a" }))[0].focused).toBe(false);
-    expect(informRouteChanged(focused, ThreadsRoute())[0].focused).toBe(false);
-  });
-
-  it("the pi picker opens on the welcome and fires the list command", () => {
-    const [model, commands] = update(initialModel(), PiSessionsRequested());
-    expect(model.piPicker._tag).toBe("Loading");
-    expect(commands).toHaveLength(1);
-  });
-
-  it("the pi picker will not open on a pinned thread", () => {
-    const [model, commands] = update(modelWith("a"), PiSessionsRequested());
-    expect(model.piPicker._tag).toBe("Idle");
-    expect(commands).toHaveLength(0);
+  it("the pi picker opens only on the welcome when closed", () => {
+    fc.assert(
+      fc.property(modelArb, (model) => {
+        const [next, commands] = update(model, PiSessionsRequested());
+        const opens = model.id === null && model.piPicker._tag === "Idle";
+        expect(next).toEqual(opens ? { ...model, piPicker: PiPicker.Loading() } : model);
+        expect(commands).toHaveLength(opens ? 1 : 0);
+      }),
+    );
   });
 
   it("the pi list lands as Success and a failed list lands as Failure", () => {
-    const opened = update(initialModel(), PiSessionsRequested())[0];
-    const [listed] = update(opened, PiSessionsListed({ sessions: [piSession("s1")] }));
-    expect(listed.piPicker).toEqual(PiPicker.Success({ data: [piSession("s1")] }));
-
-    const error = new WireError({ code: "command_failed", message: "scan failed" });
-    const [failed] = update(initialModel(), PiSessionsListFailed({ error }));
-    expect(failed.piPicker._tag).toBe("Failure");
-  });
-
-  it("a row click fires the import command, guarded per path", () => {
-    const session = piSession("s1");
-    const [importing, commands] = update(initialModel(), PiImportRequested({ path: session.path }));
-    expect(importing.importing).toBe(session.path);
-    expect(commands).toHaveLength(1);
-    // A second click while in flight is a no-op.
-    const [again, againCommands] = update(importing, PiImportRequested({ path: session.path }));
-    expect(again.importing).toBe(session.path);
-    expect(againCommands).toHaveLength(0);
-  });
-
-  it("an imported thread clears the picker and surfaces OpenedThread", () => {
-    const opened = {
-      ...initialModel(),
-      piPicker: PiPicker.Success({ data: [piSession("s1")] }),
-      importing: "/tmp/work/s1.jsonl",
-    };
-    const [model, , out] = update(opened, PiImported({ thread: threadInfo("b", "adopt me") }));
-    expect(model.piPicker._tag).toBe("Idle");
-    expect(model.importing).toBeNull();
-    expect(out).toEqual(Option.some({ _tag: "OpenedThread", id: "b" }));
-  });
-
-  it("a failed import releases the guard and shows the notice", () => {
-    const opened = { ...initialModel(), importing: "/tmp/work/s1.jsonl" };
-    const [model] = update(
-      opened,
-      PiImportFailed({ error: new WireError({ code: "command_failed", message: "nope" }) }),
+    fc.assert(
+      fc.property(
+        modelArb,
+        fc.array(piSessionArb, { maxLength: 3 }),
+        wireErrorArb,
+        (model, sessions, error) => {
+          const [listed] = update(model, PiSessionsListed({ sessions }));
+          expect(listed.piPicker).toEqual(PiPicker.Success({ data: sessions }));
+          const [failed] = update(model, PiSessionsListFailed({ error }));
+          expect(failed.piPicker).toEqual(PiPicker.Failure({ error }));
+        },
+      ),
     );
-    expect(model.importing).toBeNull();
-    expect(model.notice).toBe("nope");
+  });
+
+  it("an import is guarded per path: one in flight, then no-ops", () => {
+    fc.assert(
+      fc.property(modelArb, fc.string({ maxLength: 24 }), (model, path) => {
+        const [next, commands] = update(model, PiImportRequested({ path }));
+        if (model.importing !== null) {
+          expect(next).toEqual(model);
+          expect(commands).toHaveLength(0);
+        } else {
+          expect(next).toEqual({ ...model, importing: path });
+          expect(commands).toHaveLength(1);
+        }
+      }),
+    );
+  });
+
+  it("an imported thread resets the picker and surfaces OpenedThread; a failure shows the notice", () => {
+    fc.assert(
+      fc.property(modelArb, threadArb, wireErrorArb, (model, thread, error) => {
+        const [imported, , out] = update(model, PiImported({ thread }));
+        expect(imported).toEqual({
+          ...model,
+          importing: null,
+          piPicker: PiPicker.Idle(),
+          focused: false,
+        });
+        expect(out).toEqual(Option.some({ _tag: "OpenedThread", id: thread.id }));
+        const [failed] = update(model, PiImportFailed({ error }));
+        expect(failed).toEqual({ ...model, importing: null, notice: error.message });
+      }),
+    );
   });
 
   it("closing the picker returns it to Idle", () => {
-    const opened = { ...initialModel(), piPicker: PiPicker.Loading() };
-    const [model] = update(opened, PiPickerClosed());
-    expect(model.piPicker._tag).toBe("Idle");
+    fc.assert(
+      fc.property(modelArb, (model) => {
+        const [next] = update(model, PiPickerClosed());
+        expect(next).toEqual({ ...model, piPicker: PiPicker.Idle() });
+      }),
+    );
+  });
+
+  it("informRouteChanged pins the thread, resets the view, preserves the composer, and reads the trail", () => {
+    fc.assert(
+      fc.property(modelArb, fc.string({ maxLength: 24 }), (model, id) => {
+        const reset = {
+          info: null,
+          trail: Trail.Idle(),
+          live: { tools: [] },
+          focused: false,
+        };
+        const [pinned, pinnedCommands] = informRouteChanged(model, ThreadRoute({ id }));
+        expect(pinned).toEqual({ ...model, id, ...reset });
+        expect(pinnedCommands).toHaveLength(1);
+        const [unpinned, unpinnedCommands] = informRouteChanged(model, ThreadsRoute());
+        expect(unpinned).toEqual({ ...model, id: null, ...reset });
+        expect(unpinnedCommands).toHaveLength(0);
+      }),
+    );
   });
 });

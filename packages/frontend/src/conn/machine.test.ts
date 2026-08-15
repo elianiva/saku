@@ -1,29 +1,109 @@
 /**
- * The conn machine's unit tests (machine.test.ts): the wire lifecycle edges —
- * boot → online/offline, the retry loop, the reconnect, and the
+ * The conn machine's property tests (machine.test.ts): the wire lifecycle
+ * edges — boot → online/offline, the retry loop, the reconnect, and the
  * command-carrying transitions. Exercised as pure machine steps; no foldkit
  * runtime, no DOM, no wire service (the edge commands are never executed).
+ *
+ * The whole machine is specified as one property: for ANY state and ANY
+ * message, the step either transitions to a state the oracle computes
+ * (with the oracle's command count) or is Ignored — and the Ignored arm is
+ * behavior, not absence (a retry tick while online does nothing; a
+ * handshake while already online is not a transition).
  */
 
 import { describe, expect, it } from "vitest";
+import fc from "fast-check";
 import { HelloOk } from "@saku/wire";
-import type { RootMessage } from "../root/message.ts";
 
 import { connMachine, Connecting, Offline, Online, type Conn } from "./machine.ts";
 import { Connected, ConnectFailed, ConnectionClosed, RetryRequested } from "./message.ts";
 
-const hello = HelloOk.make({ pid: 1, version: "0.1.0" });
+/** The message spec: the discriminant plus the payload the oracle reads. */
+type MessageSpec =
+  | { readonly kind: "Connected"; readonly hello: { readonly pid: number; readonly version: string } }
+  | { readonly kind: "ConnectFailed"; readonly message: string }
+  | { readonly kind: "ConnectionClosed" }
+  | { readonly kind: "RetryRequested" };
 
-const online = Online({ pid: 1, version: "0.1.0" });
-const offline = (error = "nope") => Offline({ error });
+const helloArb = fc.record({ pid: fc.integer(), version: fc.string({ maxLength: 20 }) });
 
-/** Step and narrow: the test's interest is the Transitioned arm. */
-const step = (state: Conn, message: RootMessage) => {
-  const result = connMachine.step(state, message);
-  if (result._tag === "Ignored") {
-    throw new Error(`expected a transition from ${state._tag}, got Ignored`);
+const messageSpecArb: fc.Arbitrary<MessageSpec> = fc.oneof(
+  fc.record({ kind: fc.constant("Connected" as const), hello: helloArb }),
+  fc.record({ kind: fc.constant("ConnectFailed" as const), message: fc.string({ maxLength: 20 }) }),
+  fc.record({ kind: fc.constant("ConnectionClosed" as const) }),
+  fc.record({ kind: fc.constant("RetryRequested" as const) }),
+);
+
+const toMessage = (spec: MessageSpec) => {
+  switch (spec.kind) {
+    case "Connected":
+      return Connected({ hello: HelloOk.make(spec.hello) });
+    case "ConnectFailed":
+      return ConnectFailed({ message: spec.message });
+    case "ConnectionClosed":
+      return ConnectionClosed();
+    case "RetryRequested":
+      return RetryRequested();
   }
-  return result;
+};
+
+const stateArb: fc.Arbitrary<Conn> = fc.oneof(
+  fc.constant(Connecting()),
+  fc.record({ pid: fc.integer(), version: fc.string({ maxLength: 20 }) }).map(({ pid, version }) =>
+    Online({ pid, version }),
+  ),
+  fc.record({ error: fc.option(fc.string({ maxLength: 20 }), { nil: undefined }) }).map(({ error }) =>
+    Offline({ error }),
+  ),
+);
+
+/**
+ * The machine's spec, from the module contract: Connecting dials (a
+ * handshake succeeds or fails); Online falls only on a closed socket;
+ * Offline retries, reconnects, or replaces the shown error; everything else
+ * is ignored. Commands ride along on Connected (refresh the registry) and
+ * RetryRequested (dial again).
+ */
+const stepOracle = (state: Conn, spec: MessageSpec) => {
+  const onlineFrom = (hello: MessageSpec & { kind: "Connected" }) =>
+    Online({ pid: hello.hello.pid, version: hello.hello.version });
+  switch (state._tag) {
+    case "Connecting":
+      if (spec.kind === "Connected") {
+        return { _tag: "Transitioned" as const, state: onlineFrom(spec), commands: 1 };
+      }
+      if (spec.kind === "ConnectFailed") {
+        return { _tag: "Transitioned" as const, state: Offline({ error: spec.message }), commands: 0 };
+      }
+      return { _tag: "Ignored" as const };
+    case "Online":
+      if (spec.kind === "ConnectionClosed") {
+        return {
+          _tag: "Transitioned" as const,
+          state: Offline({ error: "connection closed" }),
+          commands: 0,
+        };
+      }
+      return { _tag: "Ignored" as const };
+    case "Offline":
+      if (spec.kind === "RetryRequested") {
+        return { _tag: "Transitioned" as const, state: Connecting(), commands: 1 };
+      }
+      if (spec.kind === "Connected") {
+        return { _tag: "Transitioned" as const, state: onlineFrom(spec), commands: 1 };
+      }
+      if (spec.kind === "ConnectFailed") {
+        return { _tag: "Transitioned" as const, state: Offline({ error: spec.message }), commands: 0 };
+      }
+      if (spec.kind === "ConnectionClosed") {
+        return {
+          _tag: "Transitioned" as const,
+          state: Offline({ error: "connection closed" }),
+          commands: 0,
+        };
+      }
+      return { _tag: "Ignored" as const };
+  }
 };
 
 describe("conn machine", () => {
@@ -31,46 +111,21 @@ describe("conn machine", () => {
     expect(connMachine.initial).toEqual(Connecting());
   });
 
-  it("goes online on a successful handshake and fires the registry refresh", () => {
-    const result = step(connMachine.initial, Connected({ hello }));
-    expect(result.state).toEqual(online);
-    expect(result.commands).toHaveLength(1);
-  });
-
-  it("goes offline on a failed handshake, carrying the error", () => {
-    const result = step(connMachine.initial, ConnectFailed({ message: "refused" }));
-    expect(result.state).toEqual(offline("refused"));
-    expect(result.commands).toHaveLength(0);
-  });
-
-  it("retries from offline: back to connecting and the connect command rides along", () => {
-    const result = step(offline(), RetryRequested());
-    expect(result.state).toEqual(Connecting());
-    expect(result.commands).toHaveLength(1);
-  });
-
-  it("a failed retry stays offline and replaces the shown error", () => {
-    const result = step(offline("first"), ConnectFailed({ message: "second" }));
-    expect(result.state).toEqual(offline("second"));
-  });
-
-  it("reconnects from offline on a later successful handshake", () => {
-    const result = step(offline(), Connected({ hello }));
-    expect(result.state).toEqual(online);
-    expect(result.commands).toHaveLength(1);
-  });
-
-  it("a closed socket while online goes offline", () => {
-    const result = step(online, ConnectionClosed());
-    expect(result.state).toEqual(offline("connection closed"));
-  });
-
-  it("ignores messages with no edge from the current state", () => {
-    // A retry tick while online is not a transition.
-    const ticked = connMachine.step(online, RetryRequested());
-    expect(ticked._tag).toBe("Ignored");
-    // A handshake success while already online is not a transition either.
-    const duplicated = connMachine.step(online, Connected({ hello }));
-    expect(duplicated._tag).toBe("Ignored");
+  it("transitions exactly as the spec dictates for any state and message", () => {
+    fc.assert(
+      fc.property(stateArb, messageSpecArb, (state, spec) => {
+        const result = connMachine.step(state, toMessage(spec));
+        const expected = stepOracle(state, spec);
+        if (expected._tag === "Ignored") {
+          expect(result._tag).toBe("Ignored");
+        } else {
+          if (result._tag === "Ignored") {
+            throw new Error(`expected a transition from ${state._tag}, got Ignored`);
+          }
+          expect(result.state).toEqual(expected.state);
+          expect(result.commands).toHaveLength(expected.commands);
+        }
+      }),
+    );
   });
 });

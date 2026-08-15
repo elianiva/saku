@@ -1,12 +1,22 @@
 /**
- * The live fold's unit tests (live.test.ts): the streaming fold —
+ * The live fold's property tests (live.test.ts): the streaming fold —
  * message_start/update/end, tool_execution_*, the complete-entry-clears-
  * streaming-copy invariant, entry_appended during loading, dedupe, and the
- * settled reset — exercised as pure functions. No foldkit runtime, no DOM,
- * no wire service.
+ * settled reset — exercised as pure functions over generated event streams.
+ * No foldkit runtime, no DOM, no wire service.
+ *
+ * The properties pin the fold's contracts over arbitrary inputs: message
+ * events are last-write-wins per field with empty updates preserving the
+ * stream (start/end always set), tool rows track per call id with the name
+ * pinned at start and unknown ids ignored, the displayed partials/results
+ * are lossless for payloads within the display budget, and every
+ * entry_appended either dedupes against the last entry or grows the trail
+ * with a never-lowering tailSeq. Content extraction (text vs thinking) is
+ * re-derived here from the module contract, independently of format.ts.
  */
 
 import { describe, expect, it } from "vitest";
+import fc from "fast-check";
 
 import { emptyLiveRegion, foldLive, Trail, type Live } from "./live.ts";
 import type { EntryProjection, MessageProjection, SessionEventProjection } from "./projection.ts";
@@ -14,62 +24,146 @@ import type { EntryProjection, MessageProjection, SessionEventProjection } from 
 /** The fold's initial state: trail idle, nothing streamed. */
 const initial = () => ({ trail: Trail.Idle(), live: emptyLiveRegion() });
 
-/** A ready trail with the given entries already loaded. */
-const ready = (entries: EntryProjection[] = [], tailSeq = 0) => ({
-  trail: Trail.Success({ data: { entries, tailSeq } }),
-  live: emptyLiveRegion(),
+/** The defensive id cast, re-derived: absent ids compare equal. */
+const idOf = (id: string | undefined) => (typeof id === "string" ? id : "");
+
+/** The joined text content of a message, re-derived from the module contract. */
+const textOf = (content: MessageProjection["content"]): string => {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((block) => (block.type === "text" && typeof block.text === "string" ? block.text : ""))
+      .join("")
+      .trim();
+  }
+  return "";
+};
+
+/** The joined thinking content of a message, re-derived from the module contract. */
+const thinkingOf = (content: MessageProjection["content"]): string => {
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((block) =>
+      block.type === "thinking" && typeof block.thinking === "string" ? block.thinking : "",
+    )
+    .join("")
+    .trim();
+};
+
+// ---------------------------------------------------------------------------
+// Generators
+// ---------------------------------------------------------------------------
+
+const entryArb: fc.Arbitrary<EntryProjection> = fc.record({
+  id: fc.option(fc.string({ maxLength: 12 }), { nil: undefined }),
+  seq: fc.option(fc.integer(), { nil: undefined }),
+  type: fc.option(fc.constantFrom("message", "toolResult", "user_message"), { nil: undefined }),
 });
 
-/** Fold a stream of events, keeping the final state. */
-const fold = (state: Live, ...events: SessionEventProjection[]) =>
-  events.reduce((current, event) => foldLive(current, event)[0], state);
+const trailArb: fc.Arbitrary<Live["trail"]> = fc.oneof(
+  fc.constant(Trail.Idle()),
+  fc
+    .record({ entries: fc.array(entryArb, { maxLength: 4 }), tailSeq: fc.integer() })
+    .map((data) => Trail.Success({ data })),
+  fc.constant(Trail.Failure({ error: "boom" })),
+);
 
-const textBlock = (text: string) => ({ type: "text", text });
-const thinkingBlock = (thinking: string) => ({ type: "thinking", thinking });
-
-const messageStart = (content: MessageProjection["content"]): SessionEventProjection => ({
-  _tag: "message_start",
-  message: { content },
-});
-const messageUpdate = (content: MessageProjection["content"]): SessionEventProjection => ({
-  _tag: "message_update",
-  message: { content },
-});
-const messageEnd = (content: MessageProjection["content"]): SessionEventProjection => ({
-  _tag: "message_end",
-  message: { content },
-});
-
-const toolStart = (callId: string, toolName = "bash"): SessionEventProjection => ({
-  _tag: "tool_execution_start",
-  toolCallId: callId,
-  toolName,
-});
-const toolUpdate = (callId: string, partialResult: unknown): SessionEventProjection => ({
-  _tag: "tool_execution_update",
-  toolCallId: callId,
-  partialResult,
-});
-const toolEnd = (callId: string, result: unknown, isError = false): SessionEventProjection => ({
-  _tag: "tool_execution_end",
-  toolCallId: callId,
-  isError,
-  result,
+const liveArb: fc.Arbitrary<Live["live"]> = fc.record({
+  message: fc.option(fc.string({ maxLength: 24 }), { nil: undefined }),
+  thinking: fc.option(fc.string({ maxLength: 24 }), { nil: undefined }),
+  tools: fc.array(
+    fc.record({
+      callId: fc.string({ maxLength: 12 }),
+      name: fc.string({ maxLength: 12 }),
+      state: fc.constantFrom("running", "done", "failed"),
+    }),
+    { maxLength: 3 },
+  ),
+  notice: fc.option(fc.string({ maxLength: 24 }), { nil: undefined }),
 });
 
-const entry = (id: string, type = "message", seq?: number) => ({
-  id,
-  type,
-  ...(seq === undefined ? {} : { seq }),
+const stateArb: fc.Arbitrary<Live> = fc.record({ trail: trailArb, live: liveArb });
+
+const blockArb = fc.record({
+  type: fc.option(fc.constantFrom("text", "thinking", "toolCall"), { nil: undefined }),
+  text: fc.option(fc.string({ maxLength: 24 }), { nil: undefined }),
+  thinking: fc.option(fc.string({ maxLength: 24 }), { nil: undefined }),
 });
-const entryAppended = (entry: EntryProjection): SessionEventProjection => ({
-  _tag: "entry_appended",
+
+const contentArb = fc.oneof(
+  fc.string({ maxLength: 24 }),
+  fc.array(blockArb, { maxLength: 4 }),
+);
+
+const messageEventArb = fc.oneof(
+  fc
+    .record({
+      _tag: fc.constant("message_start" as const),
+      message: fc.record({ content: fc.option(contentArb, { nil: undefined }) }),
+    }),
+  fc
+    .record({
+      _tag: fc.constant("message_update" as const),
+      message: fc.record({ content: fc.option(contentArb, { nil: undefined }) }),
+    }),
+  fc
+    .record({
+      _tag: fc.constant("message_end" as const),
+      message: fc.record({ content: fc.option(contentArb, { nil: undefined }) }),
+    }),
+);
+
+/** Any payload a tool update/end could carry, within the lossless display budget. */
+const payloadArb = fc.oneof(
+  fc.constant(undefined),
+  fc.string({ maxLength: 100 }),
+  fc.jsonValue({ maxDepth: 2 }),
+);
+
+interface ToolRun {
+  readonly callId: string;
+  readonly name: string;
+  readonly updates: readonly unknown[];
+  readonly end: { readonly result: unknown; readonly isError: boolean } | undefined;
+}
+
+const toolRunArb: fc.Arbitrary<ToolRun> = fc.record({
+  callId: fc.string({ minLength: 1, maxLength: 4 }),
+  name: fc.string({ maxLength: 16 }),
+  updates: fc.array(payloadArb, { maxLength: 3 }),
+  end: fc.option(
+    fc.record({ result: payloadArb, isError: fc.boolean() }),
+    { nil: undefined },
+  ),
+});
+
+/** The event stream a set of tool runs produces (start, updates, end). */
+const toolEvents = (runs: readonly ToolRun[]) =>
+  runs.flatMap((run) => [
+    { _tag: "tool_execution_start" as const, toolCallId: run.callId, toolName: run.name },
+    ...run.updates.map((partialResult) => ({
+      _tag: "tool_execution_update" as const,
+      toolCallId: run.callId,
+      partialResult,
+    })),
+    ...(run.end === undefined
+      ? []
+      : [
+          {
+            _tag: "tool_execution_end" as const,
+            toolCallId: run.callId,
+            result: run.end.result,
+            isError: run.end.isError,
+          },
+        ]),
+  ]);
+
+const entryAppended = (entry: EntryProjection) => ({
+  _tag: "entry_appended" as const,
   entry,
 });
-
-const settled: SessionEventProjection = { _tag: "settled" };
-const compactionStart = (reason: "manual" | "threshold" | "overflow"): SessionEventProjection => ({
-  _tag: "compaction_start",
+const compactionStart = (reason: "manual" | "threshold" | "overflow") => ({
+  _tag: "compaction_start" as const,
   reason,
 });
 const compactionEnd: SessionEventProjection = {
@@ -83,250 +177,227 @@ const unhandled: SessionEventProjection = {
 };
 
 describe("message stream", () => {
-  it("folds start/update/end into the streaming message", () => {
-    const state = fold(
-      initial(),
-      messageStart("hello"),
-      messageUpdate("hello, world"),
-      messageEnd("hello, world!"),
+  it("folds any message stream with last-write-wins, empty-preserves semantics", () => {
+    fc.assert(
+      fc.property(stateArb, fc.array(messageEventArb, { maxLength: 8 }), (state, events) => {
+        let message = state.live.message;
+        let thinking = state.live.thinking;
+        for (const event of events) {
+          const [next, scroll] = foldLive(state, event);
+          expect(scroll).toBe(true);
+          expect(next.trail).toEqual(state.trail);
+          const text = textOf(event.message.content);
+          const think = thinkingOf(event.message.content);
+          if (event._tag === "message_update") {
+            message = text === "" ? message : text;
+            thinking = think === "" ? thinking : think;
+          } else {
+            // start/end replace the message body and leave thinking alone.
+            message = text;
+          }
+          expect(next.live.message).toBe(message);
+          expect(next.live.thinking).toBe(thinking);
+          state = next;
+        }
+      }),
     );
-    expect(state.live.message).toBe("hello, world!");
-    expect(state.trail).toEqual(Trail.Idle());
-  });
-
-  it("replaces the streamed text with each update's text", () => {
-    // Streaming semantics: every update carries the current full text
-    // (start/update/end replace, never append — an empty text keeps the
-    // previous value, see below).
-    const state = fold(
-      initial(),
-      messageStart([textBlock("hello")]),
-      messageUpdate([textBlock("there")]),
-    );
-    expect(state.live.message).toBe("there");
-  });
-
-  it("folds thinking in from updates, separately from the message body", () => {
-    const state = fold(
-      initial(),
-      messageStart("hi"),
-      messageUpdate([thinkingBlock("deep thought"), textBlock(" there")]),
-    );
-    expect(state.live.thinking).toBe("deep thought");
-    expect(state.live.message).toBe("there");
-  });
-
-  it("preserves a stream field when an update carries an empty one", () => {
-    const state = fold(initial(), messageStart("hi"), messageUpdate([thinkingBlock("deep")]));
-    expect(state.live.message).toBe("hi");
-    expect(state.live.thinking).toBe("deep");
-    // An update with both fields empty keeps both values.
-    const after = fold(state, messageUpdate(""));
-    expect(after.live.message).toBe("hi");
-    expect(after.live.thinking).toBe("deep");
-  });
-
-  it("requests a scroll on every message event", () => {
-    const [start, startScroll] = foldLive(initial(), messageStart("hi"));
-    expect(start.live.message).toBe("hi");
-    expect(startScroll).toBe(true);
-    const [updated, updateScroll] = foldLive(start, messageUpdate("hi there"));
-    expect(updated.live.message).toBe("hi there");
-    expect(updateScroll).toBe(true);
-    const [, endScroll] = foldLive(updated, messageEnd("hi there!"));
-    expect(endScroll).toBe(true);
   });
 });
 
 describe("tool execution", () => {
-  it("folds start/update/end into one tool row", () => {
-    const state = fold(
-      initial(),
-      toolStart("call_1", "bash"),
-      toolUpdate("call_1", "compiling…"),
-      toolEnd("call_1", "compiled"),
+  it("tracks parallel tools per call id, last event wins, display is lossless", () => {
+    fc.assert(
+      fc.property(
+        fc.uniqueArray(toolRunArb, { maxLength: 4, selector: (run) => run.callId }),
+        (runs) => {
+          let state: Live = initial();
+          for (const event of toolEvents(runs)) {
+            const [next, scroll] = foldLive(state, event);
+            expect(scroll).toBe(false);
+            state = next;
+          }
+          // One row per run, in start order.
+          expect(state.live.tools.map((tool) => tool.callId)).toEqual(
+            runs.map((run) => run.callId),
+          );
+          for (let i = 0; i < runs.length; i++) {
+            const run = runs[i]!;
+            const row = state.live.tools[i]!;
+            // The name is pinned at start.
+            expect(row.name).toBe(run.name);
+            if (run.end === undefined) {
+              expect(row.state).toBe("running");
+              expect(row.result).toBeUndefined();
+            } else {
+              expect(row.state).toBe(run.end.isError ? "failed" : "done");
+              if (typeof run.end.result === "string") {
+                expect(row.result).toBe(run.end.result);
+              } else {
+                fc.pre(
+                  run.end.result !== undefined &&
+                    JSON.stringify(run.end.result).length <= 400,
+                );
+                expect(JSON.parse(row.result ?? "")).toEqual(run.end.result);
+              }
+            }
+            // The partial is the last update's payload, displayed losslessly;
+            // absent when no update ever landed. A landed update with an
+            // undefined payload displays as the empty string.
+            if (run.updates.length === 0) {
+              expect(row.partial).toBeUndefined();
+            } else {
+              const lastUpdate = run.updates[run.updates.length - 1]!;
+              if (lastUpdate === undefined) {
+                expect(row.partial).toBe("");
+              } else if (typeof lastUpdate === "string") {
+                expect(row.partial).toBe(lastUpdate);
+              } else {
+                fc.pre(JSON.stringify(lastUpdate).length <= 400);
+                expect(JSON.parse(row.partial ?? "")).toEqual(lastUpdate);
+              }
+            }
+          }
+        },
+      ),
     );
-    expect(state.live.tools).toEqual([
-      { callId: "call_1", name: "bash", state: "done", partial: "compiling…", result: "compiled" },
-    ]);
-  });
-
-  it("marks an error run failed with its result", () => {
-    const state = fold(initial(), toolStart("call_1"), toolEnd("call_1", "boom", true));
-    expect(state.live.tools[0]?.state).toBe("failed");
-    expect(state.live.tools[0]?.result).toBe("boom");
-  });
-
-  it("tracks parallel tools by call id", () => {
-    const state = fold(
-      initial(),
-      toolStart("call_1", "read"),
-      toolStart("call_2", "bash"),
-      toolUpdate("call_1", "partial one"),
-      toolEnd("call_2", "done two"),
-    );
-    expect(state.live.tools).toEqual([
-      { callId: "call_1", name: "read", state: "running", partial: "partial one" },
-      { callId: "call_2", name: "bash", state: "done", result: "done two" },
-    ]);
   });
 
   it("leaves the tools untouched for an unknown call id", () => {
-    const state = fold(
-      initial(),
-      toolStart("call_1"),
-      toolUpdate("call_9", "x"),
-      toolEnd("call_9", "y"),
+    fc.assert(
+      fc.property(stateArb, fc.string({ minLength: 1, maxLength: 6 }), fc.boolean(), (state, callId, isError) => {
+        const updated = foldLive(state, {
+          _tag: "tool_execution_update",
+          toolCallId: callId,
+          partialResult: "x",
+        })[0];
+        expect(updated).toEqual(state);
+        const ended = foldLive(state, {
+          _tag: "tool_execution_end",
+          toolCallId: callId,
+          isError,
+          result: "y",
+        })[0];
+        expect(ended).toEqual(state);
+      }),
     );
-    expect(state.live.tools).toEqual([{ callId: "call_1", name: "bash", state: "running" }]);
-  });
-
-  it("stringifies non-string partials and results", () => {
-    const state = fold(
-      initial(),
-      toolStart("call_1"),
-      toolUpdate("call_1", { lines: 3 }),
-      toolEnd("call_1", [1, 2]),
-    );
-    expect(state.live.tools[0]?.partial).toBe('{"lines":3}');
-    expect(state.live.tools[0]?.result).toBe("[1,2]");
-  });
-
-  it("does not request a scroll for tool activity", () => {
-    const [, startScroll] = foldLive(initial(), toolStart("call_1"));
-    const [state, updateScroll] = foldLive(initial(), toolUpdate("call_1", "x"));
-    const [, endScroll] = foldLive(state, toolEnd("call_1", "y"));
-    expect(startScroll).toBe(false);
-    expect(updateScroll).toBe(false);
-    expect(endScroll).toBe(false);
   });
 });
 
 describe("entry_appended", () => {
-  it("grows the trail and bumps tailSeq", () => {
-    const [state, scroll] = foldLive(
-      ready([entry("e1", "message", 1)], 1),
-      entryAppended(entry("e2", "message", 5)),
+  it("grows the trail, bumps tailSeq, and dedupes against the last entry", () => {
+    fc.assert(
+      fc.property(
+        fc.record({
+          entries: fc.array(entryArb, { maxLength: 4 }),
+          tailSeq: fc.integer(),
+        }),
+        liveArb,
+        entryArb,
+        (data, live, incoming) => {
+          const state: Live = { trail: Trail.Success({ data }), live };
+          const [next, scroll] = foldLive(state, entryAppended(incoming));
+          const last = data.entries[data.entries.length - 1];
+          const same = last !== undefined && idOf(last.id) === idOf(incoming.id);
+          if (same) {
+            expect(next).toEqual(state);
+            expect(scroll).toBe(false);
+          } else {
+            expect(scroll).toBe(true);
+            expect(next.trail).toEqual(
+              Trail.Success({
+                data: {
+                  entries: [...data.entries, incoming],
+                  tailSeq: Math.max(data.tailSeq, incoming.seq ?? 0),
+                },
+              }),
+            );
+            // A complete message entry clears the streaming copy; anything
+            // else keeps it.
+            if (incoming.type === "message") {
+              expect(next.live.message).toBeUndefined();
+              expect(next.live.thinking).toBeUndefined();
+              expect(next.live.tools).toEqual(state.live.tools);
+            } else {
+              expect(next.live).toEqual(state.live);
+            }
+          }
+        },
+      ),
     );
-    expect(state.trail).toEqual(
-      Trail.Success({
-        data: { entries: [entry("e1", "message", 1), entry("e2", "message", 5)], tailSeq: 5 },
+  });
+
+  it("is a no-op while the trail is not loaded", () => {
+    fc.assert(
+      fc.property(
+        fc.oneof(fc.constant(Trail.Idle()), fc.constant(Trail.Failure({ error: "boom" }))),
+        entryArb,
+        (trail, incoming) => {
+          const state: Live = { trail, live: emptyLiveRegion() };
+          const [next, scroll] = foldLive(state, entryAppended(incoming));
+          expect(next).toEqual(state);
+          expect(scroll).toBe(false);
+        },
+      ),
+    );
+  });
+
+  it("never lowers tailSeq across a stream of appends", () => {
+    fc.assert(
+      fc.property(fc.array(entryArb, { maxLength: 10 }), fc.integer(), (entries, startSeq) => {
+        let state: Live = {
+          trail: Trail.Success({ data: { entries: [], tailSeq: startSeq } }),
+          live: emptyLiveRegion(),
+        };
+        let previous = startSeq;
+        for (const entry of entries) {
+          const [next] = foldLive(state, entryAppended(entry));
+          if (next.trail._tag === "Success") {
+            expect(next.trail.data.tailSeq).toBeGreaterThanOrEqual(previous);
+            previous = next.trail.data.tailSeq;
+          }
+          state = next;
+        }
       }),
     );
-    expect(scroll).toBe(true);
-  });
-
-  it("never lowers tailSeq", () => {
-    const state = fold(
-      ready([entry("e1", "message", 10)], 10),
-      entryAppended(entry("e2", "message")),
-    );
-    expect(state.trail).toEqual(
-      Trail.Success({
-        data: { entries: [entry("e1", "message", 10), entry("e2", "message")], tailSeq: 10 },
-      }),
-    );
-  });
-
-  it("dedupes an entry whose id matches the last entry", () => {
-    const before = ready([entry("e1", "message", 1)], 1);
-    const [state, scroll] = foldLive(before, entryAppended(entry("e1", "message", 1)));
-    expect(state).toEqual(before);
-    expect(scroll).toBe(false);
-  });
-
-  it("treats two id-less entries as the same entry", () => {
-    const before = ready([entry("", "message")]);
-    const [state, scroll] = foldLive(before, entryAppended(entry("", "message")));
-    expect(state).toEqual(before);
-    expect(scroll).toBe(false);
-  });
-
-  it("is a no-op while the trail is loading", () => {
-    const before = initial();
-    const [state, scroll] = foldLive(before, entryAppended(entry("e1", "message", 1)));
-    expect(state).toEqual(before);
-    expect(scroll).toBe(false);
-  });
-
-  it("clears the streaming copy when a complete message entry lands", () => {
-    const before = fold(
-      ready(),
-      messageStart("hi there"),
-      messageUpdate([thinkingBlock("deep")]),
-      toolStart("call_1", "bash"),
-    );
-    const [state, scroll] = foldLive(before, entryAppended(entry("e1", "message", 3)));
-    expect(state.live.message).toBeUndefined();
-    expect(state.live.thinking).toBeUndefined();
-    // Tool activity and notices are not part of the message copy.
-    expect(state.live.tools).toHaveLength(1);
-    expect(state.trail).toEqual(
-      Trail.Success({ data: { entries: [entry("e1", "message", 3)], tailSeq: 3 } }),
-    );
-    expect(scroll).toBe(true);
-  });
-
-  it("keeps the streaming copy for non-message entries", () => {
-    const before = fold(ready(), messageStart("hi"));
-    const [state, scroll] = foldLive(before, entryAppended(entry("e1", "toolResult", 2)));
-    expect(state.live.message).toBe("hi");
-    expect(state.trail).toEqual(
-      Trail.Success({ data: { entries: [entry("e1", "toolResult", 2)], tailSeq: 2 } }),
-    );
-    expect(scroll).toBe(true);
-  });
-
-  it("hands the run off to the trail: stream, complete entry, next run", () => {
-    const state = fold(
-      ready(),
-      messageStart("draft"),
-      entryAppended(entry("e1", "message", 1)),
-      messageStart("second run"),
-      toolStart("call_1"),
-      settled,
-    );
-    expect(state.trail).toEqual(
-      Trail.Success({ data: { entries: [entry("e1", "message", 1)], tailSeq: 1 } }),
-    );
-    expect(state.live).toEqual({ tools: [] });
   });
 });
 
-describe("settled", () => {
-  it("clears the whole live region and keeps the trail", () => {
-    const before = fold(
-      ready([entry("e1", "message", 1)], 1),
-      messageStart("done"),
-      toolStart("call_1"),
-      compactionStart("manual"),
+describe("settled, compaction, and unknown events", () => {
+  it("settled clears the whole live region and keeps the trail", () => {
+    fc.assert(
+      fc.property(stateArb, (state) => {
+        const [next, scroll] = foldLive(state, { _tag: "settled" });
+        expect(next.live).toEqual({ tools: [] });
+        expect(next.trail).toEqual(state.trail);
+        expect(scroll).toBe(false);
+      }),
     );
-    const [state, scroll] = foldLive(before, settled);
-    expect(state.live).toEqual({ tools: [] });
-    expect(state.trail).toEqual(before.trail);
-    expect(scroll).toBe(false);
-  });
-});
-
-describe("compaction and unknown events", () => {
-  it("shows the compaction notice and clears it on completion", () => {
-    const [started] = foldLive(initial(), compactionStart("manual"));
-    expect(started.live.notice).toBe("compacting (manual)");
-    const [finished] = foldLive(started, compactionEnd);
-    expect(finished.live.notice).toBeUndefined();
   });
 
-  it("carries every compaction reason into the notice", () => {
-    expect(fold(initial(), compactionStart("threshold")).live.notice).toBe(
-      "compacting (threshold)",
+  it("shows the compaction notice per reason and clears it on completion", () => {
+    fc.assert(
+      fc.property(
+        stateArb,
+        fc.constantFrom("manual" as const, "threshold" as const, "overflow" as const),
+        (state, reason) => {
+          const [started, startScroll] = foldLive(state, compactionStart(reason));
+          expect(started.live.notice).toBe(`compacting (${reason})`);
+          expect(startScroll).toBe(false);
+          const [finished, endScroll] = foldLive(started, compactionEnd);
+          expect(finished.live.notice).toBeUndefined();
+          expect(endScroll).toBe(false);
+        },
+      ),
     );
-    expect(fold(initial(), compactionStart("overflow")).live.notice).toBe("compacting (overflow)");
   });
 
   it("degrades unknown events to a no-op", () => {
-    const before = fold(initial(), messageStart("hi"));
-    const [state, scroll] = foldLive(before, unhandled);
-    expect(state).toEqual(before);
-    expect(scroll).toBe(false);
+    fc.assert(
+      fc.property(stateArb, (state) => {
+        const [next, scroll] = foldLive(state, unhandled);
+        expect(next).toEqual(state);
+        expect(scroll).toBe(false);
+      }),
+    );
   });
 });

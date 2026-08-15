@@ -14,6 +14,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Effect, Schema } from "effect";
+import fc from "fast-check";
 
 import {
   Hello,
@@ -570,6 +571,222 @@ describe("server robustness", () => {
       error: "session command without a threadId",
     });
     socket.close();
+  });
+});
+
+/** The model-based thread lifecycle test (property-based): arbitrary op
+ *  sequences against the real server, checked against an in-memory registry
+ *  model. Commands reference threads by a symbolic name drawn from a small
+ *  pool, so the known-thread arms (rename/get/delete of a created thread)
+ *  are hit as often as the unknown-thread failures. A symbol may name
+ *  several threads (duplicate creates): the model stacks them and the
+ *  commands act on the newest — the registry truth stays exact.
+ *  One fixture serves every run; the model is seeded from the registry's
+ *  current state so runs compose.
+ */
+
+interface ThreadEntry {
+  readonly id: string;
+  readonly name: string;
+}
+
+/** The in-memory registry the commands are checked against. */
+class LifecycleModel {
+  /** Symbol → the threads created under it, newest last. */
+  readonly stacks = new Map<string, ThreadEntry[]>();
+  /** Every live thread by id — the registry truth. */
+  readonly all = new Map<string, ThreadEntry>();
+
+  current(symbol: string): ThreadEntry | undefined {
+    const stack = this.stacks.get(symbol);
+    return stack?.[stack.length - 1];
+  }
+}
+
+/** An id that can never resolve: real ids are 32-char hex, this is not. */
+const bogusId = (symbol: string) => `nope-${symbol}`;
+
+/** The symbol pool: small so later commands hit earlier creates. */
+const symbolArb = fc.constantFrom("a", "b", "c", "d", "e", "z", "y", "x");
+
+class CreateThreadCommand implements fc.AsyncCommand<LifecycleModel, WireClientShape> {
+  constructor(
+    readonly symbol: string,
+    readonly name: string,
+    readonly cwd: string | null,
+  ) {}
+
+  check = () => true;
+
+  async run(model: LifecycleModel, real: WireClientShape) {
+    const thread = await run(
+      real.createThread(this.name, this.cwd === null ? {} : { cwd: this.cwd }),
+    );
+    expect(thread).toMatchObject({
+      name: this.name,
+      cwd: this.cwd,
+      mode: "local",
+      state: "idle",
+      env: "ready",
+    });
+    const entry: ThreadEntry = { id: thread.id, name: this.name };
+    const stack = model.stacks.get(this.symbol);
+    if (stack === undefined) model.stacks.set(this.symbol, [entry]);
+    else stack.push(entry);
+    model.all.set(entry.id, entry);
+  }
+
+  toString() {
+    return `create(${JSON.stringify(this.symbol)}, ${JSON.stringify(this.name)})`;
+  }
+}
+
+class RenameThreadCommand implements fc.AsyncCommand<LifecycleModel, WireClientShape> {
+  constructor(
+    readonly symbol: string,
+    readonly name: string,
+  ) {}
+
+  check = () => true;
+
+  async run(model: LifecycleModel, real: WireClientShape) {
+    const entry = model.current(this.symbol);
+    const id = entry?.id ?? bogusId(this.symbol);
+    if (entry === undefined || this.name.trim() === "") {
+      // Unknown symbol, or the registry rejects blank renames.
+      await expect(run(real.renameThread(id, this.name))).rejects.toMatchObject({
+        code: "command_failed",
+      });
+      return;
+    }
+    const renamed = await run(real.renameThread(entry.id, this.name));
+    expect(renamed.name).toBe(this.name.trim());
+    entry.name = this.name.trim();
+  }
+
+  toString() {
+    return `rename(${JSON.stringify(this.symbol)}, ${JSON.stringify(this.name)})`;
+  }
+}
+
+class GetThreadCommand implements fc.AsyncCommand<LifecycleModel, WireClientShape> {
+  constructor(readonly symbol: string) {}
+
+  check = () => true;
+
+  async run(model: LifecycleModel, real: WireClientShape) {
+    const entry = model.current(this.symbol);
+    if (entry === undefined) {
+      await expect(run(real.getThread(bogusId(this.symbol)))).rejects.toMatchObject({
+        code: "command_failed",
+      });
+      return;
+    }
+    const got = await run(real.getThread(entry.id));
+    expect(got.id).toBe(entry.id);
+    expect(got.name).toBe(entry.name);
+  }
+
+  toString() {
+    return `get(${JSON.stringify(this.symbol)})`;
+  }
+}
+
+class DeleteThreadCommand implements fc.AsyncCommand<LifecycleModel, WireClientShape> {
+  constructor(readonly symbol: string) {}
+
+  check = () => true;
+
+  async run(model: LifecycleModel, real: WireClientShape) {
+    const entry = model.current(this.symbol);
+    if (entry === undefined) {
+      await expect(run(real.deleteThread(bogusId(this.symbol)))).rejects.toMatchObject({
+        code: "command_failed",
+      });
+      return;
+    }
+    await run(real.deleteThread(entry.id));
+    model.stacks.get(this.symbol)!.pop();
+    model.all.delete(entry.id);
+  }
+
+  toString() {
+    return `delete(${JSON.stringify(this.symbol)})`;
+  }
+}
+
+class ListThreadsCommand implements fc.AsyncCommand<LifecycleModel, WireClientShape> {
+  check = () => true;
+
+  async run(model: LifecycleModel, real: WireClientShape) {
+    const threads = await run(real.listThreads());
+    const byId = new Map(threads.map((thread) => [thread.id, thread]));
+    expect([...byId.keys()].sort()).toEqual([...model.all.keys()].sort());
+    for (const entry of model.all.values()) {
+      expect(byId.get(entry.id)?.name).toBe(entry.name);
+    }
+  }
+
+  toString() {
+    return "list()";
+  }
+}
+
+const lifecycleCommands = () =>
+  fc.commands(
+    [
+      fc
+        .record({
+          symbol: symbolArb,
+          name: fc.string({ maxLength: 12 }),
+          cwd: fc.oneof(fc.constant(null), fc.string({ maxLength: 12 })),
+        })
+        .map(({ symbol, name, cwd }) => new CreateThreadCommand(symbol, name, cwd)),
+      fc
+        .record({
+          symbol: symbolArb,
+          // Blank names are common: the registry rejects them (a real
+          // contract arm, not a corner case).
+          name: fc.oneof(fc.constant(""), fc.constant("   "), fc.string({ maxLength: 12 })),
+        })
+        .map(({ symbol, name }) => new RenameThreadCommand(symbol, name)),
+      fc
+        .record({ symbol: symbolArb })
+        .map(({ symbol }) => new GetThreadCommand(symbol)),
+      fc
+        .record({ symbol: symbolArb })
+        .map(({ symbol }) => new DeleteThreadCommand(symbol)),
+      fc.constant(new ListThreadsCommand()),
+    ],
+    { maxCommands: 15 },
+  );
+
+describe("thread lifecycle (model-based)", () => {
+  it("any op sequence keeps the registry consistent with the model", async () => {
+    // One fixture serves every run; the model is re-seeded from the
+    // registry's current state so the runs compose.
+    const hub = await Effect.runPromise(startHubFixture());
+    const client = await run(WireClient.make({ url: hub.url, token: TEST_TOKEN, role: "cli" }));
+    await run(client.connect());
+    try {
+      await fc.assert(
+        fc.asyncProperty(lifecycleCommands(), async (cmds) => {
+          await fc.asyncModelRun(async () => {
+            const model = new LifecycleModel();
+            const threads = await run(client.listThreads());
+            for (const thread of threads) {
+              const entry: ThreadEntry = { id: thread.id, name: thread.name };
+              model.stacks.set(`seed-${thread.id}`, [entry]);
+              model.all.set(entry.id, entry);
+            }
+            return { model, real: client };
+          }, cmds);
+        }),
+      );
+    } finally {
+      await run(client.disconnect());
+      await Effect.runPromise(hub.close());
+    }
   });
 });
 
