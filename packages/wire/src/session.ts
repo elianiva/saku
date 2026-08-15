@@ -215,18 +215,28 @@ type StripPartial<T> = T extends { readonly assistantMessageEvent: infer E }
     }
   : T;
 
-/** Saku's own session events — same `type`-discriminated vocabulary as pi's. */
-export type SessionEventFromSaku =
-  | { readonly type: "settled" }
-  | { readonly type: "entry_appended"; readonly entry: Entry }
-  | { readonly type: "compaction_start"; readonly reason: "manual" | "threshold" | "overflow" }
-  | {
-      readonly type: "compaction_end";
-      readonly reason: "manual" | "threshold" | "overflow";
-      readonly result: CompactResult | undefined;
-      readonly aborted: boolean;
-      readonly errorMessage?: string;
-    };
+/**
+ * Saku's own session events — the same `type`-discriminated vocabulary as
+ * pi's, declared once as a schema. The code side decodes `_tag`-tagged
+ * (for Match); `encodeKeys` keeps the wire's `type` discriminant — the
+ * same pattern the DO push channel uses (do-protocol.ts). Payloads stay
+ * opaque (ADR 0005: pi's types cross the wire unvalidated).
+ */
+export const SakuSessionEvent = S.Union([
+  S.TaggedStruct("settled", {}).pipe(S.encodeKeys({ _tag: "type" })),
+  S.TaggedStruct("entry_appended", { entry: S.Unknown }).pipe(S.encodeKeys({ _tag: "type" })),
+  S.TaggedStruct("compaction_start", {
+    reason: S.Literals(["manual", "threshold", "overflow"]),
+  }).pipe(S.encodeKeys({ _tag: "type" })),
+  S.TaggedStruct("compaction_end", {
+    reason: S.Literals(["manual", "threshold", "overflow"]),
+    result: S.Unknown,
+    aborted: S.Boolean,
+    errorMessage: S.optional(S.String),
+  }).pipe(S.encodeKeys({ _tag: "type" })),
+]);
+/** Saku's own session events — the wire shape (`type`-discriminated, derived). */
+export type SessionEventFromSaku = S.Codec.Encoded<typeof SakuSessionEvent>;
 
 // Re-exported pi types so consoles never import pi directly for the session vocabulary.
 export type { AgentEvent, CompactResult, Entry, SessionStats, ThinkingLevel };

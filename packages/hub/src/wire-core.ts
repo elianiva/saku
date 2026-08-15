@@ -123,7 +123,7 @@ export class WireCore extends Context.Service<WireCore, WireCoreShape>()("WireCo
     /** The hub's events → wire frames (the fan-out). */
     const onHubEvent = (event: HubEvent) => {
       const frame: WireEvent =
-        event.type === "thread_changed"
+        event._tag === "thread_changed"
           ? ThreadChanged.make({ thread: event.thread })
           : EventFrame.make({ threadId: event.threadId, event: event.event });
       void Effect.runFork(core.broadcast(frame));

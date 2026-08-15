@@ -30,7 +30,7 @@
  * the policy's fire path.
  */
 
-import { Context, Effect, Option, Result, Schema } from "effect";
+import { Context, Data, Effect, Option, Result, Schema } from "effect";
 import { READ_ONLY_COMMANDS, resolveThread, ThreadInfo } from "@saku/wire";
 import type {
   ResponsePayload,
@@ -51,9 +51,12 @@ import type { HubEventSink, ThreadWorkerRef, WorkerReport } from "./worker-ref.t
 export type { IdleStopController } from "./idle-stop.ts";
 
 /** Everything the hub pushes to its subscribers (the server's fan-out). */
-export type HubEvent =
-  | { readonly type: "thread_changed"; readonly thread: ThreadInfo }
-  | { readonly type: "session_event"; readonly threadId: string; readonly event: unknown };
+export type HubEvent = Data.TaggedEnum<{
+  thread_changed: { thread: ThreadInfo };
+  session_event: { threadId: string; event: unknown };
+}>;
+/** The hub event constructors — one per kind, from the same definition. */
+export const HubEvent = Data.taggedEnum<HubEvent>();
 export type HubListener = (event: HubEvent) => void;
 
 export interface HubShape {
@@ -149,7 +152,8 @@ export class Hub extends Context.Service<Hub, HubShape>()("Hub", {
       }
     });
 
-    const emitThreadChanged = (thread: ThreadInfo) => notify({ type: "thread_changed", thread });
+    const emitThreadChanged = (thread: ThreadInfo) =>
+      notify(HubEvent.thread_changed({ thread }));
 
     const infoOf = Effect.fn("infoOf")(function* (threadId: string) {
       const info = yield* registry.toInfo(threadId);
@@ -223,7 +227,7 @@ export class Hub extends Context.Service<Hub, HubShape>()("Hub", {
             yield* registry.setTailSeq(threadId, tailSeq);
             // Any event is activity: reset the idle timer.
             yield* idleStop.arm(threadId);
-            yield* notify({ type: "session_event", threadId, event });
+            yield* notify(HubEvent.session_event({ threadId, event }));
           }).pipe(Effect.catch(() => Effect.void)),
         );
       },

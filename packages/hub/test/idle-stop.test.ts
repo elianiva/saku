@@ -110,8 +110,8 @@ describe("idle-stop", () => {
     const info = await run(world.hub.getThread(thread.id));
     expect(info.env).toBe("stopped");
     const last = world.events
-      .filter((event) => event.type === "thread_changed")
-      .at(-1) as HubEvent & { type: "thread_changed" };
+      .filter((event) => event._tag === "thread_changed")
+      .at(-1) as HubEvent & { _tag: "thread_changed" };
     expect(last.thread.env).toBe("stopped");
   });
 
@@ -126,7 +126,7 @@ describe("idle-stop", () => {
     await run(world.hub.runSessionCommand(thread.id, { _tag: "prompt", text: "again" }));
     await waitFor(() => {
       const latest = world.events
-        .filter((event) => event.type === "thread_changed")
+        .filter((event) => event._tag === "thread_changed")
         .map((event) => (event as { thread: { id: string; env: string } }).thread)
         .filter((t) => t.id === thread.id)
         .at(-1);

@@ -40,6 +40,28 @@ export type SessionMutation =
   | { kind: "fact"; seq: number; fact: "name"; name: string }
   | { kind: "fact"; seq: number; fact: "label"; targetId: string; label: string | undefined };
 
+/**
+ * Drift guard: saku replays pi's jsonl mutation vocabulary (the mutations
+ * pi's storage would have written). The `kind` sets must match
+ * `LogItem`'s exactly — when pi adds or renames a mutation kind, these
+ * type errors surface here instead of the copy drifting silently.
+ */
+type _Assert<C extends true> = C;
+type _MutationKindsCovered = _Assert<
+  { readonly [K in SessionMutation["kind"]]: K } extends {
+    readonly [K in LogItem["kind"]]: K;
+  }
+    ? true
+    : false
+>;
+type _MutationKindsExact = _Assert<
+  { readonly [K in LogItem["kind"]]: K } extends {
+    readonly [K in SessionMutation["kind"]]: K;
+  }
+    ? true
+    : false
+>;
+
 const invalidMutation = (message: string) => {
   throw new SessionError("invalid_entry", `Invalid session mutation: ${message}`);
 };

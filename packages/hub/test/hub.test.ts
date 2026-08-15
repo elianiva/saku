@@ -63,7 +63,7 @@ const makeWorld = (provisioner: EnvProvisioner = scriptedProvisioner()) =>
 
 /** The thread_changed events' thread list, in order. */
 const changedIds = (events: HubEvent[]) =>
-  events.filter((event) => event.type === "thread_changed").map((event) => event.thread.id);
+  events.filter((event) => event._tag === "thread_changed").map((event) => event.thread.id);
 
 /** A scripted run: prompt settles, emits entry + settled, reports state. */
 const scriptPrompt = (world: World, text: string, tailSeq = 1) => {
@@ -171,18 +171,18 @@ describe("Hub.make — sessions and the env gate", () => {
     // reports (working → idle) and the tailSeq it carried.
     await waitFor(() => {
       const changed = world.events
-        .filter((event) => event.type === "thread_changed")
+        .filter((event) => event._tag === "thread_changed")
         .map((event) => event.thread);
       return changed.at(-1)?.state === "idle" && changed.at(-1)?.tailSeq === 4;
     });
-    const sessionEvents = world.events.filter((event) => event.type === "session_event");
+    const sessionEvents = world.events.filter((event) => event._tag === "session_event");
     expect(sessionEvents.map((event) => event.event)).toEqual([
       { type: "entry_appended", entry: { id: "e1", type: "user_message", text: "hello" } },
       { type: "settled" },
     ]);
     // The reports broadcast working and idle; tailSeq shows the run's sequence.
     const changed = world.events
-      .filter((event) => event.type === "thread_changed")
+      .filter((event) => event._tag === "thread_changed")
       .map((event) => event.thread);
     expect(changed.map((t) => t.state)).toEqual(["idle", "working", "idle"]);
     expect(changed.at(-1)?.tailSeq).toBe(4);
@@ -209,7 +209,7 @@ describe("Hub.make — sessions and the env gate", () => {
     const info = await run(world.hub.getThread(thread.id));
     expect(info.env).toBe("error");
     expect(changedIds(world.events).length).toBe(2); // created, then error
-    const last = world.events.filter((event) => event.type === "thread_changed").at(-1);
+    const last = world.events.filter((event) => event._tag === "thread_changed").at(-1);
     expect(last?.thread.env).toBe("error");
   });
 
@@ -222,17 +222,17 @@ describe("Hub.make — sessions and the env gate", () => {
     await run(world.hub.runSessionCommand(thread.id, { _tag: "prompt", text: "hi" }));
     await waitFor(() => {
       const changed = world.events
-        .filter((event) => event.type === "thread_changed")
+        .filter((event) => event._tag === "thread_changed")
         .map((event) => event.thread);
       return changed.at(-1)?.state === "idle";
     });
     // The env axis: stopped (created) → ready (gate) → ready through the run.
     const envs = world.events
-      .filter((event) => event.type === "thread_changed")
+      .filter((event) => event._tag === "thread_changed")
       .map((event) => event.thread.env);
     expect(envs).toEqual(["stopped", "ready", "ready", "ready"]);
     const states = world.events
-      .filter((event) => event.type === "thread_changed")
+      .filter((event) => event._tag === "thread_changed")
       .map((event) => event.thread.state);
     expect(states).toEqual(["idle", "idle", "working", "idle"]);
   });
@@ -271,10 +271,10 @@ describe("Hub.make — worker reports", () => {
     // Both reports broadcast (sessionId and state each change the wire view);
     // the forks are independent, so only the endpoints are ordered.
     await waitFor(
-      () => world.events.filter((event) => event.type === "thread_changed").length === 3,
+      () => world.events.filter((event) => event._tag === "thread_changed").length === 3,
     );
     const states = world.events
-      .filter((event) => event.type === "thread_changed")
+      .filter((event) => event._tag === "thread_changed")
       .map((event) => event.thread.state);
     expect(states).toHaveLength(3);
     expect(states[0]).toBe("idle");

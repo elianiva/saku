@@ -20,7 +20,7 @@
  * bootstrap falls through to the next source instead of surfacing an error.
  */
 
-import { Effect, Option, Result, Schema as S } from "effect";
+import { Data, Effect, Option, Result, Schema as S } from "effect";
 
 /** A verified wire endpoint: where to dial + the credential it enforces. */
 export interface SakuEndpoint {
@@ -29,10 +29,13 @@ export interface SakuEndpoint {
 }
 
 /** What boot resolution found. */
-export type ResolvedConfig =
-  | { readonly _tag: "daemon"; readonly endpoint: SakuEndpoint }
-  | { readonly _tag: "offline" }
-  | { readonly _tag: "fallback"; readonly endpoint: SakuEndpoint };
+export type ResolvedConfig = Data.TaggedEnum<{
+  daemon: { endpoint: SakuEndpoint };
+  offline: {};
+  fallback: { endpoint: SakuEndpoint };
+}>;
+/** The resolved-config constructors — one per kind, from the same definition. */
+export const ResolvedConfig = Data.taggedEnum<ResolvedConfig>();
 
 const BootstrapSchema = S.Struct({
   url: S.NullOr(S.String),
@@ -72,11 +75,10 @@ export const fetchBootstrap: Effect.Effect<
           // A null url is the daemon-offline marker; a half-payload is
           // treated as offline too — never as a fallback trigger.
           return decoded.url !== null && decoded.token !== null
-            ? Option.some({
-                _tag: "daemon",
-                endpoint: { url: decoded.url, token: decoded.token },
-              })
-            : Option.some({ _tag: "offline" });
+            ? Option.some(
+                ResolvedConfig.daemon({ endpoint: { url: decoded.url, token: decoded.token } }),
+              )
+            : Option.some(ResolvedConfig.offline());
         }),
   ),
 );
@@ -98,6 +100,6 @@ export const resolveConfig: Effect.Effect<ResolvedConfig, never> = Effect.gen(fu
   const bootstrap = yield* fetchBootstrap;
   if (Option.isSome(bootstrap)) return bootstrap.value;
   const saved = readSavedConfig();
-  if (saved !== null) return { _tag: "fallback", endpoint: saved };
-  return { _tag: "fallback", endpoint: defaultConfig() };
+  if (saved !== null) return ResolvedConfig.fallback({ endpoint: saved });
+  return ResolvedConfig.fallback({ endpoint: defaultConfig() });
 });

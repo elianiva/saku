@@ -22,7 +22,7 @@
  * through the subscription.
  */
 
-import { Context, Effect, Layer, PubSub, Stream } from "effect";
+import { Context, Data, Effect, Layer, PubSub, Stream } from "effect";
 import {
   HelloOk,
   SessionWireEvent,
@@ -35,11 +35,14 @@ import {
 import { defaultConfig, resolveConfig } from "./config.ts";
 
 /** One wire event as the bridge forwards it (kind + payload, pre-projection). */
-export type BridgeEvent =
-  | { readonly _tag: "event"; readonly threadId: string; readonly event: SessionWireEvent }
-  | { readonly _tag: "thread_changed"; readonly thread: ThreadInfo }
-  | { readonly _tag: "error"; readonly message: string }
-  | { readonly _tag: "close" };
+export type BridgeEvent = Data.TaggedEnum<{
+  event: { threadId: string; event: SessionWireEvent };
+  thread_changed: { thread: ThreadInfo };
+  error: { message: string };
+  close: {};
+}>;
+/** The bridge event constructors — one per kind, from the same definition. */
+export const BridgeEvent = Data.taggedEnum<BridgeEvent>();
 
 export interface WireShape {
   /** The current client; always a settled, connectable value. */
@@ -76,23 +79,22 @@ export const WireLive = Layer.effect(
         const offs = [
           client.on("event", (payload) => {
             void Effect.runFork(
-              PubSub.publish(pubsub, {
-                _tag: "event",
-                threadId: payload.threadId,
-                event: payload.event,
-              }),
+              PubSub.publish(
+                pubsub,
+                BridgeEvent.event({ threadId: payload.threadId, event: payload.event }),
+              ),
             );
           }),
           client.on("thread_changed", (thread) => {
-            void Effect.runFork(PubSub.publish(pubsub, { _tag: "thread_changed", thread }));
+            void Effect.runFork(PubSub.publish(pubsub, BridgeEvent.thread_changed({ thread })));
           }),
           client.on("error", (payload) => {
             void Effect.runFork(
-              PubSub.publish(pubsub, { _tag: "error", message: payload.message }),
+              PubSub.publish(pubsub, BridgeEvent.error({ message: payload.message })),
             );
           }),
           client.on("close", () => {
-            void Effect.runFork(PubSub.publish(pubsub, { _tag: "close" }));
+            void Effect.runFork(PubSub.publish(pubsub, BridgeEvent.close()));
           }),
         ];
         detach = () => offs.forEach((off) => off());

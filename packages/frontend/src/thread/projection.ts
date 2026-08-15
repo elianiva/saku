@@ -12,6 +12,7 @@
  */
 
 import { Effect, Option, Result, Schema as S } from "effect";
+import { SakuSessionEvent } from "@saku/wire";
 
 const ContentBlock = S.Struct({
   type: S.optional(S.String),
@@ -49,7 +50,7 @@ export const EntryProjection = S.Struct({
 });
 export type EntryProjection = S.Schema.Type<typeof EntryProjection>;
 
-/** The wire's event discriminant (`type` on the JSON, `_tag` after decode). */
+/** pi's event discriminant on the wire (`type` on the JSON, `_tag` after decode). */
 export const EventTag = S.Struct({ type: S.String });
 
 /** Session events as the console folds them (Match reads `_tag`). */
@@ -80,16 +81,23 @@ export type SessionEventProjection = S.Schema.Type<typeof SessionEventProjection
 
 const DECODE_TAG = S.decodeUnknownOption(EventTag);
 const DECODE_EVENT = S.decodeUnknownOption(SessionEventProjection);
+const DECODE_SAKU = S.decodeUnknownOption(SakuSessionEvent);
 
 const unhandled = (event: unknown): SessionEventProjection => ({ _tag: "unhandled", event });
 
 /**
- * Decode a raw wire event (pi's `type` discriminant) into the projection
- * (`_tag` discriminant, for Match). Tag-driven: a known tag whose payload
- * decodes becomes its typed variant; anything else — unknown tags,
- * malformed payloads, non-records — becomes `unhandled`. Never throws.
+ * Decode a raw wire event into the projection (`_tag` discriminant, for
+ * Match). Saku's own events validate against their wire schema — the
+ * wire's `type` decodes straight to the code's `_tag`. pi's events stay
+ * opaque (ADR 0005): their `type` is read off and retagged. Anything else
+ * — unknown tags, malformed payloads, non-records — becomes `unhandled`.
+ * Never throws.
  */
 export const decodeSessionEvent = (event: unknown) => {
+  const saku = DECODE_SAKU(event);
+  if (Option.isSome(saku)) {
+    return Option.getOrElse(DECODE_EVENT(saku.value), () => unhandled(event));
+  }
   const tagged = DECODE_TAG(event);
   if (Option.isNone(tagged) || typeof event !== "object" || event === null) {
     return unhandled(event);

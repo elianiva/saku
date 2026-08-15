@@ -13,23 +13,26 @@
  */
 
 import { execSync } from "node:child_process";
-import { Result } from "effect";
+import { Data, Result } from "effect";
 
 const ENV_VAR_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 const ENV_VAR_NAME_PREFIX_RE = /^[A-Za-z_][A-Za-z0-9_]*/u;
 
-type TemplatePart =
-  | { readonly type: "literal"; readonly value: string }
-  | { readonly type: "env"; readonly name: string };
+/** One template part: a literal chunk or an env-var reference. */
+type TemplatePart = Data.TaggedEnum<{
+  literal: { value: string };
+  env: { name: string };
+}>;
+const TemplatePart = Data.taggedEnum<TemplatePart>();
 
 const appendLiteral = (parts: TemplatePart[], value: string) => {
   if (value.length === 0) return;
   const previous = parts[parts.length - 1];
-  if (previous !== undefined && previous.type === "literal") {
-    parts[parts.length - 1] = { type: "literal", value: previous.value + value };
+  if (previous !== undefined && previous._tag === "literal") {
+    parts[parts.length - 1] = TemplatePart.literal({ value: previous.value + value });
     return;
   }
-  parts.push({ type: "literal", value });
+  parts.push(TemplatePart.literal({ value }));
 };
 
 /** Split a value into literal/env parts, honoring `$$`/`$!` escapes. */
@@ -56,13 +59,13 @@ const parseTemplate = (config: string) => {
         index = dollarIndex + 1;
         continue;
       }
-      parts.push({ type: "env", name: config.slice(dollarIndex + 2, endIndex) });
+      parts.push(TemplatePart.env({ name: config.slice(dollarIndex + 2, endIndex) }));
       index = endIndex + 1;
       continue;
     }
     const match = config.slice(dollarIndex + 1).match(ENV_VAR_NAME_PREFIX_RE);
     if (match !== null) {
-      parts.push({ type: "env", name: match[0] });
+      parts.push(TemplatePart.env({ name: match[0] }));
       index = dollarIndex + 1 + match[0].length;
       continue;
     }
@@ -78,7 +81,7 @@ const resolveTemplate = (
 ) => {
   let resolved = "";
   for (const part of parts) {
-    if (part.type === "literal") {
+    if (part._tag === "literal") {
       resolved += part.value;
     } else {
       const value = env[part.name];
@@ -114,7 +117,7 @@ export const getConfigValueEnvVarNames = (config: string) => {
   if (isCommandConfigValue(config)) return [];
   const names: string[] = [];
   for (const part of parseTemplate(config)) {
-    if (part.type === "env" && !names.includes(part.name)) names.push(part.name);
+    if (part._tag === "env" && !names.includes(part.name)) names.push(part.name);
   }
   return names;
 };
