@@ -64,6 +64,9 @@ const resetViewFields = {
   pickerQuery: (_: string) => "",
   pickerActive: (_: number) => 0,
   modelBusy: (_: boolean) => false,
+  // The floating usage panel is thread-owned too — a fresh selection
+  // starts closed.
+  usageOpen: (_: boolean) => false,
   // Expanded thinking/tools are thread-owned too — a fresh selection
   // starts collapsed (ADR-consistent with the welcome's focus state).
   thinkingOpen: (_: readonly string[]) => [],
@@ -134,6 +137,9 @@ export const update = (model: Model, message: ThreadMessage) =>
                 modelPicker: (_) => ModelPicker.Loading(),
                 pickerQuery: (_) => "",
                 pickerActive: (_) => 0,
+                // The picker and the usage panel float over the same card
+                // edge — only one at a time.
+                usageOpen: (_) => false,
               }),
               [ListModelsCmd({ id: model.id })],
               Option.none(),
@@ -200,6 +206,18 @@ export const update = (model: Model, message: ThreadMessage) =>
       ],
       ModelPickerClosed: () => [
         evo(model, { modelPicker: (_) => ModelPicker.Idle() }),
+        none,
+        Option.none(),
+      ],
+      // The context badge toggles the floating usage panel; the close
+      // button and Escape (view.ts) close it.
+      UsagePanelRequested: () => [
+        evo(model, { usageOpen: (_) => !model.usageOpen }),
+        none,
+        Option.none(),
+      ],
+      UsagePanelClosed: () => [
+        evo(model, { usageOpen: (_) => false }),
         none,
         Option.none(),
       ],

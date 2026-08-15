@@ -20,6 +20,7 @@ import {
   modelLabel,
   unadoptedPiSessions,
   usageContextTokens,
+  usageStatus,
 } from "./presentation.ts";
 
 const modelArb: fc.Arbitrary<WireModelInfo> = fc.record({
@@ -43,6 +44,8 @@ const messageArb = fc.record({
   stopReason: fc.option(fc.constantFrom("end_turn", "aborted", "error", "tool_use"), {
     nil: undefined,
   }),
+  provider: fc.option(fc.string({ maxLength: 12 }), { nil: undefined }),
+  model: fc.option(fc.string({ maxLength: 24 }), { nil: undefined }),
 });
 
 const entryArb: fc.Arbitrary<EntryProjection> = fc.oneof(
@@ -60,6 +63,13 @@ const entryArb: fc.Arbitrary<EntryProjection> = fc.oneof(
   fc.record({
     seq: fc.option(fc.integer({ min: 0 }), { nil: undefined }),
     type: fc.constant("model_change"),
+    provider: fc.option(fc.string({ maxLength: 12 }), { nil: undefined }),
+    modelId: fc.option(fc.string({ maxLength: 24 }), { nil: undefined }),
+  }),
+  fc.record({
+    seq: fc.option(fc.integer({ min: 0 }), { nil: undefined }),
+    type: fc.constant("thinking_level_change"),
+    thinkingLevel: fc.option(fc.string({ maxLength: 12 }), { nil: undefined }),
   }),
 );
 
@@ -157,6 +167,117 @@ describe("contextTone", () => {
     expect(contextTone(CONTEXT_CRITICAL_PERCENT - 1)).toBe("text-gold");
     expect(contextTone(CONTEXT_CRITICAL_PERCENT)).toBe("text-love");
     expect(contextTone(100)).toBe("text-love");
+  });
+});
+
+describe("usageStatus", () => {
+  const windowModel: WireModelInfo = {
+    provider: "thread-provider",
+    id: "thread-model",
+    contextWindow: 1000,
+    reasoning: false,
+  };
+  const usage = { input: 100, output: 50, cacheRead: 200, cacheWrite: 10, totalTokens: 310 };
+
+  it("is unknown exactly when contextUsage is (the same trail rule)", () => {
+    fc.assert(
+      fc.property(modelArb, fc.array(entryArb, { maxLength: 6 }), (model, entries) => {
+        const status = usageStatus(entries, model);
+        const usage = contextUsage(entries, model);
+        expect(status === null).toBe(usage === null);
+        if (status !== null && usage !== null) {
+          expect(status.context).toEqual(usage);
+        }
+      }),
+    );
+  });
+
+  it("breaks the last response's usage into in/out/cached with a hit rate", () => {
+    const status = usageStatus(
+      [
+        { seq: 0, type: "model_change", provider: "p", modelId: "old" },
+        { seq: 1, type: "thinking_level_change", thinkingLevel: "low" },
+        {
+          seq: 2,
+          type: "message",
+          message: {
+            role: "assistant",
+            usage,
+            provider: "anthropic",
+            model: "new-model",
+            stopReason: "end_turn",
+          },
+        },
+      ],
+      windowModel,
+    );
+    expect(status).toEqual({
+      context: { tokens: 310, window: 1000, percent: 31 },
+      input: 100,
+      output: 50,
+      cacheRead: 200,
+      cacheHitRate: 200 / 300,
+      model: { provider: "anthropic", id: "new-model" },
+      thinkingLevel: "low",
+    });
+  });
+
+  it("falls back to the last model_change for the model, then the thread's", () => {
+    const fromChange = usageStatus(
+      [
+        { seq: 0, type: "model_change", provider: "anthropic", modelId: "old-model" },
+        { seq: 1, type: "message", message: { role: "assistant", usage } },
+      ],
+      windowModel,
+    );
+    expect(fromChange?.model).toEqual({ provider: "anthropic", id: "old-model" });
+    const fromThread = usageStatus(
+      [{ seq: 0, type: "message", message: { role: "assistant", usage } }],
+      windowModel,
+    );
+    expect(fromThread?.model).toEqual({ provider: "thread-provider", id: "thread-model" });
+  });
+
+  it("uses the thinking level in effect at the message, not a later change", () => {
+    const status = usageStatus(
+      [
+        { seq: 0, type: "thinking_level_change", thinkingLevel: "low" },
+        { seq: 1, type: "message", message: { role: "assistant", usage } },
+        { seq: 2, type: "thinking_level_change", thinkingLevel: "high" },
+      ],
+      windowModel,
+    );
+    expect(status?.thinkingLevel).toBe("low");
+  });
+
+  it("has no hit rate when the response had no input tokens at all", () => {
+    const status = usageStatus(
+      [
+        {
+          seq: 0,
+          type: "message",
+          message: {
+            role: "assistant",
+            usage: { input: 0, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 5 },
+          },
+        },
+      ],
+      windowModel,
+    );
+    expect(status?.cacheHitRate).toBeNull();
+    expect(status?.output).toBe(5);
+  });
+
+  it("falls back to the latest thinking level when no change preceded the message", () => {
+    expect(
+      usageStatus(
+        [
+          { seq: 0, type: "message", message: { role: "assistant", usage } },
+          { seq: 1, type: "thinking_level_change", thinkingLevel: "max" },
+        ],
+        windowModel,
+      )?.thinkingLevel,
+    ).toBe("max");
   });
 });
 

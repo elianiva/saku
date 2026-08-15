@@ -52,6 +52,8 @@ import {
   ThreadCreated,
   TrailFailed,
   TrailLoaded,
+  UsagePanelClosed,
+  UsagePanelRequested,
 } from "./message.ts";
 
 const threadArb: fc.Arbitrary<ThreadInfo> = fc.record({
@@ -127,6 +129,7 @@ const modelArb: fc.Arbitrary<Model> = fc.record({
   toolsOpen: fc.array(fc.string({ maxLength: 12 }), { maxLength: 4 }),
   model: fc.oneof(fc.constant(null), wireModelArb),
   modelPicker: modelPickerArb,
+  usageOpen: fc.boolean(),
   pickerQuery: fc.string({ maxLength: 12 }),
   pickerActive: fc.integer({ min: -1, max: 3 }),
   modelBusy: fc.boolean(),
@@ -247,6 +250,9 @@ describe("thread update", () => {
                 modelPicker: ModelPicker.Loading(),
                 pickerQuery: "",
                 pickerActive: 0,
+                // The picker and the usage panel float over the same card
+                // edge — opening one closes the other.
+                usageOpen: false,
               }
             : model,
         );
@@ -348,6 +354,40 @@ describe("thread update", () => {
     );
   });
 
+  it("the usage badge toggles the floating usage panel; the close message closes it", () => {
+    fc.assert(
+      fc.property(modelArb, (model) => {
+        const [opened] = update(model, UsagePanelRequested());
+        expect(opened).toEqual({ ...model, usageOpen: !model.usageOpen });
+        const [closed] = update(opened, UsagePanelClosed());
+        expect(closed).toEqual({ ...model, usageOpen: false });
+      }),
+    );
+  });
+
+  it("opening the model picker closes the usage panel (both float over the card)", () => {
+    fc.assert(
+      fc.property(modelArb, (model) => {
+        const [next, commands] = update(
+          { ...model, usageOpen: true },
+          ModelPickerRequested(),
+        );
+        // The picker still opens exactly as before (guards unchanged).
+        const opens =
+          model.id !== null && model.info?.state !== "working" && model.modelPicker._tag === "Idle";
+        if (!opens) {
+          // The guard returns the model it was handed, untouched.
+          expect(next).toEqual({ ...model, usageOpen: true });
+          expect(commands).toHaveLength(0);
+        } else {
+          expect(next.usageOpen).toBe(false);
+          expect(next.modelPicker._tag).toBe("Loading");
+          expect(commands).toHaveLength(1);
+        }
+      }),
+    );
+  });
+
   it("a thinking toggle expands once per id and collapses by id", () => {
     fc.assert(
       fc.property(modelArb, fc.string({ maxLength: 12 }), (model, messageId) => {
@@ -423,6 +463,7 @@ describe("thread update", () => {
           pickerQuery: "",
           pickerActive: 0,
           modelBusy: false,
+          usageOpen: false,
           thinkingOpen: [],
           toolsOpen: [],
         };

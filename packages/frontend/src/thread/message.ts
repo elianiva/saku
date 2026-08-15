@@ -72,6 +72,11 @@ export const ModelSetFailed = Message.m("ModelSetFailed", { message: S.String })
 /** The picker's close button. */
 export const ModelPickerClosed = Message.m("ModelPickerClosed");
 
+/** The context badge was clicked: toggle the floating usage panel. */
+export const UsagePanelRequested = Message.m("UsagePanelRequested");
+/** The usage panel's close button / Escape. */
+export const UsagePanelClosed = Message.m("UsagePanelClosed");
+
 /** The quick-start command landed: a thread was born from the draft. */
 export const ThreadCreated = Message.m("ThreadCreated", { thread: ThreadInfo });
 export const CreateFailed = Message.m("CreateFailed", { message: S.String });
@@ -113,6 +118,8 @@ export const ThreadMessage = S.Union([
   ModelSet,
   ModelSetFailed,
   ModelPickerClosed,
+  UsagePanelRequested,
+  UsagePanelClosed,
   ThreadCreated,
   CreateFailed,
   AbortRequested,

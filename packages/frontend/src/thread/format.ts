@@ -7,7 +7,9 @@
  *
  * pi-ai's message shapes (what the projections read):
  * - user: `{ role: "user", content: string | (text|image)[] }`
- * - assistant: `{ role: "assistant", content: (text|thinking|toolCall)[] }`
+ * - assistant: `{ role: "assistant", content: (text|thinking|toolCall)[],
+ *   usage, provider, model, stopReason }` (the usage/context and the
+ *   usage panel's model row read `usage`/`provider`/`model`)
  * - toolResult: `{ role: "toolResult", toolCallId, toolName, content, isError }`
  */
 

@@ -23,12 +23,12 @@ import type { ThreadEnvState, ThreadState, WireModelInfo } from "@saku/wire";
 import { icon, type IconName } from "../icon.ts";
 import {
   contextTone,
-  contextUsage,
   envPresentation,
   filterModels,
   headerState,
   modelLabel,
   statePresentation,
+  usageStatus,
 } from "../presentation.ts";
 import {
   asString,
@@ -60,6 +60,8 @@ import {
   SendRequested,
   ThinkingToggled,
   ToolToggled,
+  UsagePanelClosed,
+  UsagePanelRequested,
   type ThreadMessage,
 } from "./message.ts";
 import type { Model } from "./model.ts";
@@ -653,20 +655,117 @@ const stateBadge = (state: ThreadState, h: HtmlBuilder<ThreadMessage>) => {
 
 /** The context-usage badge: the trail's last assistant usage against the
  *  model's window, colored at the 60/90 thresholds (humanlayer's rule);
- *  hidden while unknown (no usage yet, no window, or post-compaction). */
+ *  hidden while unknown (no usage yet, no window, or post-compaction). The
+ *  badge toggles the floating usage panel — the last response's full
+ *  breakdown (tokens in/out, cached read, hit rate, model, thinking
+ *  level). */
 const contextBadge = (model: Model, h: HtmlBuilder<ThreadMessage>) => {
   if (!AsyncData.isSuccess(model.trail)) return null;
-  const usage = contextUsage(model.trail.data.entries, model.model);
-  if (usage === null) return null;
-  const { tokens, window, percent } = usage;
-  return h.span(
+  const status = usageStatus(model.trail.data.entries, model.model);
+  if (status === null) return null;
+  const { tokens, window, percent } = status.context;
+  const open = model.usageOpen;
+  return h.button(
     [
-      h.Class(`shrink-0 border border-line px-1.5 py-1 text-[11px] ${contextTone(percent)}`),
+      h.Class(
+        `flex shrink-0 items-center gap-1 border px-1.5 py-1 text-[11px] ${contextTone(percent)} ${open ? "border-subtle bg-overlay/40" : "border-line hover:border-subtle"}`,
+      ),
+      h.OnClick(UsagePanelRequested()),
+      h.AriaLabel("usage details"),
+      h.Attribute("aria-expanded", open ? "true" : "false"),
       h.Title(
-        `context — ${tokens.toLocaleString()} of ${window.toLocaleString()} tokens (${percent}%)`,
+        `context — ${tokens.toLocaleString()} of ${window.toLocaleString()} tokens (${percent}%) — click for the full usage breakdown`,
       ),
     ],
     [`ctx ${tokens.toLocaleString()}/${window.toLocaleString()} · ${percent}%`],
+  );
+};
+
+/** One label/value row of the usage panel: the uppercase dim label on the
+ *  left, the monospaced value right-aligned. */
+const usageRow = (
+  h: HtmlBuilder<ThreadMessage>,
+  label: string,
+  value: string,
+  tone = "text-text",
+) =>
+  h.div(
+    [h.Class("flex items-baseline justify-between gap-4")],
+    [
+      h.span([h.Class("shrink-0 text-[10px] uppercase tracking-[0.18em] text-muted")], [label]),
+      h.span([h.Class(`truncate text-[12px] font-mono ${tone}`)], [value]),
+    ],
+  );
+
+/** The floating usage panel: the last assistant response's full breakdown —
+ *  context, tokens in/out, cached read, cache hit rate, the model that
+ *  produced it, and the thinking level in effect then (all from pi's
+ *  trail, derived in presentation.ts). Anchored to the composer card's
+ *  right edge and floating above it, like the model picker; the close
+ *  button is autofocused on open, and Escape closes and returns focus to
+ *  the badge. */
+const usagePanel = (model: Model, h: HtmlBuilder<ThreadMessage>) => {
+  if (!AsyncData.isSuccess(model.trail)) return null;
+  const status = usageStatus(model.trail.data.entries, model.model);
+  if (status === null) return null;
+  const { tokens, window, percent } = status.context;
+  return h.div(
+    [
+      h.Class("absolute bottom-full right-0 z-10 mb-2 w-72 border border-line bg-base shadow-lg"),
+      h.OnKeyDownFocus((key) =>
+        key === "Escape"
+          ? Option.some({
+              focusSelector: '[aria-label="usage details"]',
+              message: UsagePanelClosed(),
+            })
+          : Option.none(),
+      ),
+    ],
+    [
+      h.div(
+        [h.Class("flex items-center justify-between border-b border-line px-3 py-1.5")],
+        [
+          h.span(
+            [h.Class("text-[10px] uppercase tracking-[0.18em] text-subtle")],
+            ["usage — last response"],
+          ),
+          h.button(
+            [
+              h.Class("shrink-0 px-1 text-subtle hover:text-love"),
+              h.OnClick(UsagePanelClosed()),
+              h.AriaLabel("close usage panel"),
+              h.Autofocus(true),
+            ],
+            [icon(h, "x")],
+          ),
+        ],
+      ),
+      h.div(
+        [h.Class("flex flex-col gap-1.5 px-3 py-2")],
+        [
+          usageRow(
+            h,
+            "ctx",
+            `${tokens.toLocaleString()}/${window.toLocaleString()} · ${percent}%`,
+            contextTone(percent),
+          ),
+          usageRow(h, "in", status.input.toLocaleString()),
+          usageRow(h, "out", status.output.toLocaleString()),
+          usageRow(h, "cached", status.cacheRead.toLocaleString()),
+          usageRow(
+            h,
+            "hit rate",
+            status.cacheHitRate === null
+              ? "—"
+              : `${Math.round(status.cacheHitRate * 100)}%`,
+          ),
+          ...(status.model === null
+            ? []
+            : [usageRow(h, "model", modelLabel(status.model))]),
+          usageRow(h, "thinking", status.thinkingLevel ?? "—"),
+        ],
+      ),
+    ],
   );
 };
 
@@ -689,12 +788,12 @@ const modelBadge = (model: Model, h: HtmlBuilder<ThreadMessage>) => {
   );
 };
 
-/** The open model picker: a searchable combobox over the thread's
- *  switchable models (the WAI-ARIA pattern — the input is the combobox
- *  control, the list its listbox, the highlighted option tracked in the
- *  model and announced via aria-activedescendant). Typing filters, the
- *  arrows move the highlight, Enter picks it, and Escape closes, returning
- *  focus to the model badge. */
+/** The open model picker: a searchable combobox floating over the trail
+ *  above the composer card (the WAI-ARIA pattern — the input is the
+ *  combobox control, the list its listbox, the highlighted option tracked
+ *  in the model and announced via aria-activedescendant). Typing filters,
+ *  the arrows move the highlight, Enter picks it, and Escape closes,
+ *  returning focus to the model badge. */
 const modelPickerPanel = (model: Model, h: HtmlBuilder<ThreadMessage>) => {
   const models = AsyncData.isSuccess(model.modelPicker) ? model.modelPicker.data : [];
   const filtered = filterModels(models, model.pickerQuery);
@@ -702,7 +801,7 @@ const modelPickerPanel = (model: Model, h: HtmlBuilder<ThreadMessage>) => {
   const activeModel = filtered[active];
   const busy = model.modelBusy;
   return h.div(
-    [h.Class("border border-line bg-base mt-2")],
+    [h.Class("absolute bottom-full left-0 right-0 z-10 mb-2 border border-line bg-base shadow-lg")],
     [
       h.div(
         [h.Class("flex items-center gap-2 border-b border-line px-3 py-1.5")],
@@ -833,9 +932,10 @@ const modelPickerRow = (
  * prompt surface with its send action and real thread controls in one footer.
  * The textarea keeps the focus-aware placeholder and Enter/Shift+Enter
  * behavior; the failure notice stays under the action that caused it. On a
- * pinned thread the model picker opens below the card. The welcome's box
- * autofocuses on mount — every arrival at the root route lands the cursor in
- * the composer (the thread box never autofocuses).
+ * pinned thread the model picker and the usage panel float above the card
+ * (absolute, overlaying the trail — the card is the positioning context).
+ * The welcome's box autofocuses on mount — every arrival at the root route
+ * lands the cursor in the composer (the thread box never autofocuses).
  */
 const composerBox = (model: Model, h: HtmlBuilder<ThreadMessage>, kind: "thread" | "welcome") => {
   const working = model.info?.state === "working";
@@ -849,7 +949,7 @@ const composerBox = (model: Model, h: HtmlBuilder<ThreadMessage>, kind: "thread"
           : "prompt the thread · enter to send · shift+enter for a newline"
         : "enter to start typing…";
   return h.div(
-    [h.Class("flex flex-col")],
+    [h.Class("relative flex flex-col")],
     [
       h.div(
         [
@@ -895,10 +995,15 @@ const composerBox = (model: Model, h: HtmlBuilder<ThreadMessage>, kind: "thread"
           composerToolbar(model, h, kind, busy),
         ],
       ),
+      // The floating panels hang off the card's top edge, overlaying the
+      // trail above the composer (the card is the positioning context).
       ...(kind === "thread" && model.modelPicker._tag !== "Idle"
         ? [modelPickerPanel(model, h)]
         : []),
-      model.notice === null ? null : h.div([h.Class("mt-2 text-[12px] text-love")], [model.notice]),
+      ...(kind === "thread" && model.usageOpen ? [usagePanel(model, h)] : []),
+      model.notice === null
+        ? null
+        : h.div([h.Class("mt-2 text-[12px] text-love")], [model.notice]),
     ],
   );
 };

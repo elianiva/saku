@@ -42,6 +42,9 @@ export const Model = S.Struct({
   model: S.NullOr(WireModelInfo),
   /** The composer's model picker: Idle = closed. */
   modelPicker: ModelPicker.schema,
+  /** The floating usage panel (the context badge's breakdown); false =
+   *  closed. */
+  usageOpen: S.Boolean,
   /** The picker's search filter ("" = all models). */
   pickerQuery: S.String,
   /** The highlighted option's index into the filtered list; -1 when empty. */
@@ -68,6 +71,7 @@ export const initialModel = () => ({
   toolsOpen: [],
   model: null,
   modelPicker: ModelPicker.Idle(),
+  usageOpen: false,
   pickerQuery: "",
   pickerActive: 0,
   modelBusy: false,
