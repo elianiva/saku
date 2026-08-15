@@ -1,10 +1,16 @@
 /**
- * The thread rail's view (rail/view.ts): the registry projection. A header,
- * a transient notice, and the live list — one row per thread with state,
- * mode, and env glyphs, a delete ✕, and click-to-select. Row content comes
- * entirely from `thread_changed` broadcasts; the rail never computes it.
- * (The quick-start composer lived here once; it moved to the pane's welcome
- * with the gesture — the rail is the list and nothing else.)
+ * The thread rail's view (rail/view.ts): the registry projection plus pi's
+ * sessions on this machine (CONTEXT.md: Pi sessions). A header, a transient
+ * notice, and the live list — one row per thread with state, mode, and env
+ * glyphs, a delete ✕, and click-to-select — and below it the pi-session
+ * section: the sessions not yet adopted as threads, one row per session,
+ * click-to-adopt-and-open (no import framing — opening a session is just
+ * opening a session). The section exists only when there is something to
+ * show: a failed or empty list renders nothing (a remote hub has no ~/.pi).
+ * Row content comes entirely from `thread_changed` broadcasts and command
+ * landings; the rail never computes it. (The quick-start composer lived
+ * here once; it moved to the pane's welcome with the gesture — the rail is
+ * the list and nothing else.)
  *
  * Branded via `defineView` so it embeds under the root through
  * `h.submodel`, with `h` typed to the rail's own Message union (the lutra
@@ -13,10 +19,16 @@
 
 import { AsyncData, Submodel } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";
-import type { ThreadInfo } from "@saku/wire";
+import type { PiSessionInfo, ThreadInfo } from "@saku/wire";
 
-import { envPresentation, modeChar, statePresentation } from "../presentation.ts";
-import { ClickedThread, DeleteRequested, RefreshRequested, type RailMessage } from "./message.ts";
+import { envPresentation, modeChar, statePresentation, unadoptedPiSessions } from "../presentation.ts";
+import {
+  ClickedThread,
+  DeleteRequested,
+  PiSessionClicked,
+  RefreshRequested,
+  type RailMessage,
+} from "./message.ts";
 import type { Model } from "./model.ts";
 
 export const view = Submodel.defineView<Model, RailMessage>((model, h) =>
@@ -68,7 +80,10 @@ const railList = (model: Model, h: HtmlBuilder<RailMessage>) =>
     onSuccess: (threads) =>
       h.div(
         [h.Class("flex-1 overflow-y-auto min-h-0")],
-        threads.map((thread) => threadRow(thread, model.selectedId, h)),
+        [
+          ...threads.map((thread) => threadRow(thread, model.selectedId, h)),
+          piSection(model, threads, h),
+        ],
       ),
   });
 
@@ -126,3 +141,59 @@ const modeGlyph = (thread: ThreadInfo, h: HtmlBuilder<RailMessage>) =>
     ],
     [modeChar(thread.mode)],
   );
+
+/** The pi-session section below the threads: the sessions this machine has
+ *  that aren't threads yet. Hidden unless there is something to show — a
+ *  failed list (remote hub) or an empty one renders nothing. */
+const piSection = (
+  model: Model,
+  threads: readonly ThreadInfo[],
+  h: HtmlBuilder<RailMessage>,
+) => {
+  if (model.piSessions._tag !== "Success") return null;
+  const sessions = unadoptedPiSessions(threads, model.piSessions.data);
+  if (sessions.length === 0) return null;
+  return h.div(
+    [h.Class("border-t border-line mt-1")],
+    [
+      h.div(
+        [
+          h.Class(
+            "px-3 pt-2 pb-1 text-[10px] uppercase tracking-[0.18em] text-subtle",
+          ),
+        ],
+        [`pi sessions · ${sessions.length}`],
+      ),
+      ...sessions.map((session) => piSessionRow(session, model.adopting, h)),
+    ],
+  );
+};
+
+/** One pi session: click to adopt and open — the import is not an event the
+ *  user performs, it is what opening a session means (CONTEXT.md: Pi
+ *  sessions). */
+const piSessionRow = (
+  session: PiSessionInfo,
+  adopting: string | null,
+  h: HtmlBuilder<RailMessage>,
+) => {
+  const busy = adopting === session.path;
+  const title =
+    session.name ??
+    (session.firstMessage === "(no messages)" ? session.id : session.firstMessage);
+  return h.button(
+    [
+      h.Class(
+        `w-full flex items-center gap-2 px-3 py-1.5 text-left text-[12px] ${busy ? "text-muted" : "hover:bg-overlay/60"}`,
+      ),
+      h.OnClick(PiSessionClicked({ path: session.path })),
+      h.Disabled(busy),
+      h.Title(session.path),
+    ],
+    [
+      h.span([h.Class("text-subtle shrink-0")], ["π"]),
+      h.span([h.Class("flex-1 truncate min-w-0")], [busy ? "opening…" : title]),
+      h.span([h.Class("text-muted shrink-0")], [`${session.messageCount} msgs`]),
+    ],
+  );
+};

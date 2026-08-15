@@ -32,9 +32,7 @@ import { OpenedThread } from "../root/message.ts";
 import { Wire } from "../wire.ts";
 import {
   AbortCmd,
-  ImportPiSessionCmd,
   ListModelsCmd,
-  ListPiSessionsCmd,
   LoadStateCmd,
   LoadTrailCmd,
   PromptCmd,
@@ -44,7 +42,7 @@ import {
 } from "./command.ts";
 import { emptyLiveRegion, foldLive, Trail } from "./live.ts";
 import type { ThreadMessage, ThreadOutMessage } from "./message.ts";
-import { Model, ModelPicker, PiPicker } from "./model.ts";
+import { Model, ModelPicker } from "./model.ts";
 
 export type Commands = ReadonlyArray<Command.Command<ThreadMessage, never, Wire>>;
 export type UpdateReturn = readonly [Model, Commands, Option.Option<ThreadOutMessage>];
@@ -194,48 +192,6 @@ export const update = (model: Model, message: ThreadMessage) =>
       // success), and show the notice under the composer.
       CreateFailed: ({ message }) => [
         evo(model, { starting: (_) => false, notice: (_) => message }),
-        none,
-        Option.none(),
-      ],
-
-      // Opening is guarded: only on the welcome, and only when closed.
-      PiSessionsRequested: () =>
-        model.id !== null || model.piPicker._tag !== "Idle"
-          ? [model, none, Option.none()]
-          : [evo(model, { piPicker: (_) => PiPicker.Loading() }), [ListPiSessionsCmd()], Option.none()],
-      PiSessionsListed: ({ sessions }) => [
-        evo(model, { piPicker: (_) => PiPicker.Success({ data: sessions }) }),
-        none,
-        Option.none(),
-      ],
-      PiSessionsListFailed: ({ error }) => [
-        evo(model, { piPicker: (_) => PiPicker.Failure({ error }) }),
-        none,
-        Option.none(),
-      ],
-      // A row was clicked: import is guarded per path (no double imports).
-      PiImportRequested: ({ path }) =>
-        model.importing !== null
-          ? [model, none, Option.none()]
-          : [evo(model, { importing: (_) => path }), [ImportPiSessionCmd({ path })], Option.none()],
-      // The import landed: a thread was born from the pi session — surface
-      // the fact (the root pushes its URL, like a quick start) and reset.
-      PiImported: ({ thread }) => [
-        evo(model, {
-          importing: (_) => null,
-          piPicker: (_) => PiPicker.Idle(),
-          focused: (_) => false,
-        }),
-        none,
-        Option.some(OpenedThread({ id: thread.id })),
-      ],
-      PiImportFailed: ({ error }) => [
-        evo(model, { importing: (_) => null, notice: (_) => error.message }),
-        none,
-        Option.none(),
-      ],
-      PiPickerClosed: () => [
-        evo(model, { piPicker: (_) => PiPicker.Idle() }),
         none,
         Option.none(),
       ],

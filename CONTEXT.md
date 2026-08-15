@@ -86,7 +86,7 @@ Hub-owned index of threads (id → name, cwd, mode, env). Consoles list and atta
 _Avoid_: db, table, catalog
 
 **Pi sessions**:
-The pi session files on the user's machine (`~/.pi/agent/sessions/` — v3, the format pi's shell writes today, and v4, pi-agent-core's jsonl format), listed and imported through the local daemon. Import is **adoption**: the file is read once through pi's own semantics and replayed into the thread's own trail; the pi file is never written, and the thread record's `source` provenance pins where it came from (re-import is idempotent). Only the local daemon serves these commands — the hub has no `~/.pi` (the mirror of skills being hub-only).
+The pi session files on the user's machine (`~/.pi/agent/sessions/` — v3, the format pi's shell writes today, and v4, pi-agent-core's jsonl format), listed and adopted through the local daemon. The console's rail lists them naturally under the threads (only the unadopted ones — a session is a thread once opened) and a click opens one: adoption is what opening a session means, never an import gesture. Import is **adoption**: the file is read once through pi's own semantics and replayed into the thread's own trail; the pi file is never written, and the thread record's `source` provenance pins where it came from (re-import is idempotent). Only the local daemon serves these commands — the hub has no `~/.pi` (the mirror of skills being hub-only).
 _Avoid_: migration, bridge, sync, export
 
 **Wire**:

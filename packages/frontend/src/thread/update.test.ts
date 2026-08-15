@@ -1,27 +1,29 @@
 /**
  * The thread update's property tests (update.test.ts): the session-event
  * fold wiring, the trail landing, the composer's gating, the welcome's
- * quick-start flow, the pi picker, and the route-derived
- * `informRouteChanged`. Exercised as pure updates; the commands are
- * asserted, never executed.
+ * quick-start flow, and the route-derived `informRouteChanged`. Exercised as
+ * pure updates; the commands are asserted, never executed.
  *
  * The gating contracts are properties over arbitrary models: send prompts
  * or quick-starts exactly when the draft is non-blank (trimmed), the
- * starting guard absorbs Enter while a create is in flight, the registry
- * broadcast updates the header only for the pinned thread, and the picker
- * and import guards hold from any state. `informRouteChanged` is specified
- * field-by-field: pin/unpin, view reset, composer preserved, and the
- * load-trail command riding along exactly on a Thread route.
+ * starting guard absorbs Enter while a create is in flight, and the
+ * registry broadcast updates the header only for the pinned thread.
+ * `informRouteChanged` is specified field-by-field: pin/unpin, view reset,
+ * composer preserved, and the load-trail command riding along exactly on a
+ * Thread route.
+ *
+ * (The pi-session flow moved to the rail with the section —
+ * rail/update.test.ts covers it.)
  */
 
 import { describe, expect, it } from "vitest";
 import { Option } from "effect";
-import { WireError, type PiSessionInfo, type ThreadInfo, type WireModelInfo } from "@saku/wire";
+import { WireError, type ThreadInfo, type WireModelInfo } from "@saku/wire";
 import fc from "fast-check";
 
 import { ThreadsRoute, ThreadRoute } from "../route.ts";
 import { informRouteChanged, update } from "./update.ts";
-import { ModelPicker, PiPicker, type Model } from "./model.ts";
+import { ModelPicker, type Model } from "./model.ts";
 import { Trail, type Live } from "./live.ts";
 import {
   ComposerBlurred,
@@ -34,13 +36,6 @@ import {
   ModelSetFailed,
   ModelsListed,
   ModelsListFailed,
-  PiImportFailed,
-  PiImportRequested,
-  PiImported,
-  PiPickerClosed,
-  PiSessionsListed,
-  PiSessionsListFailed,
-  PiSessionsRequested,
   PromptAcked,
   SendFailed,
   SendRequested,
@@ -61,17 +56,6 @@ const threadArb: fc.Arbitrary<ThreadInfo> = fc.record({
   env: fc.constantFrom("stopped", "provisioning", "ready", "error"),
   sessionId: fc.oneof(fc.constant(null), fc.string({ maxLength: 24 })),
   tailSeq: fc.integer({ min: 0 }),
-});
-
-const piSessionArb: fc.Arbitrary<PiSessionInfo> = fc.record({
-  id: fc.string({ maxLength: 24 }),
-  cwd: fc.string({ maxLength: 24 }),
-  name: fc.string({ maxLength: 24 }),
-  createdAt: fc.integer(),
-  modifiedAt: fc.integer(),
-  messageCount: fc.integer({ min: 0 }),
-  firstMessage: fc.string({ maxLength: 24 }),
-  path: fc.string({ maxLength: 24 }),
 });
 
 const wireErrorArb = fc.string({ maxLength: 24 }).map(
@@ -109,15 +93,6 @@ const liveArb: fc.Arbitrary<Live["live"]> = fc.record({
   notice: fc.option(fc.string({ maxLength: 24 }), { nil: undefined }),
 });
 
-const piPickerArb: fc.Arbitrary<Model["piPicker"]> = fc.oneof(
-  fc.constant(PiPicker.Idle()),
-  fc.constant(PiPicker.Loading()),
-  fc.record({ data: fc.array(piSessionArb, { maxLength: 3 }) }).map(({ data }) =>
-    PiPicker.Success({ data }),
-  ),
-  wireErrorArb.map((error) => PiPicker.Failure({ error })),
-);
-
 const wireModelArb: fc.Arbitrary<WireModelInfo> = fc.record({
   provider: fc.string({ maxLength: 12 }),
   id: fc.string({ maxLength: 24 }),
@@ -147,8 +122,6 @@ const modelArb: fc.Arbitrary<Model> = fc.record({
   starting: fc.boolean(),
   focused: fc.boolean(),
   notice: fc.oneof(fc.constant(null), fc.string({ maxLength: 24 })),
-  piPicker: piPickerArb,
-  importing: fc.oneof(fc.constant(null), fc.string({ maxLength: 24 })),
 });
 
 describe("thread update", () => {
@@ -237,74 +210,6 @@ describe("thread update", () => {
         expect(update(model, ComposerBlurred())[0]).toEqual({ ...model, focused: false });
         expect(update(model, PromptAcked())[0]).toEqual({ ...model, composer: "" });
         expect(update(model, SendFailed({ message }))[0]).toEqual({ ...model, notice: message });
-      }),
-    );
-  });
-
-  it("the pi picker opens only on the welcome when closed", () => {
-    fc.assert(
-      fc.property(modelArb, (model) => {
-        const [next, commands] = update(model, PiSessionsRequested());
-        const opens = model.id === null && model.piPicker._tag === "Idle";
-        expect(next).toEqual(opens ? { ...model, piPicker: PiPicker.Loading() } : model);
-        expect(commands).toHaveLength(opens ? 1 : 0);
-      }),
-    );
-  });
-
-  it("the pi list lands as Success and a failed list lands as Failure", () => {
-    fc.assert(
-      fc.property(
-        modelArb,
-        fc.array(piSessionArb, { maxLength: 3 }),
-        wireErrorArb,
-        (model, sessions, error) => {
-          const [listed] = update(model, PiSessionsListed({ sessions }));
-          expect(listed.piPicker).toEqual(PiPicker.Success({ data: sessions }));
-          const [failed] = update(model, PiSessionsListFailed({ error }));
-          expect(failed.piPicker).toEqual(PiPicker.Failure({ error }));
-        },
-      ),
-    );
-  });
-
-  it("an import is guarded per path: one in flight, then no-ops", () => {
-    fc.assert(
-      fc.property(modelArb, fc.string({ maxLength: 24 }), (model, path) => {
-        const [next, commands] = update(model, PiImportRequested({ path }));
-        if (model.importing !== null) {
-          expect(next).toEqual(model);
-          expect(commands).toHaveLength(0);
-        } else {
-          expect(next).toEqual({ ...model, importing: path });
-          expect(commands).toHaveLength(1);
-        }
-      }),
-    );
-  });
-
-  it("an imported thread resets the picker and surfaces OpenedThread; a failure shows the notice", () => {
-    fc.assert(
-      fc.property(modelArb, threadArb, wireErrorArb, (model, thread, error) => {
-        const [imported, , out] = update(model, PiImported({ thread }));
-        expect(imported).toEqual({
-          ...model,
-          importing: null,
-          piPicker: PiPicker.Idle(),
-          focused: false,
-        });
-        expect(out).toEqual(Option.some({ _tag: "OpenedThread", id: thread.id }));
-        const [failed] = update(model, PiImportFailed({ error }));
-        expect(failed).toEqual({ ...model, importing: null, notice: error.message });
-      }),
-    );
-  });
-
-  it("closing the picker returns it to Idle", () => {
-    fc.assert(
-      fc.property(modelArb, (model) => {
-        const [next] = update(model, PiPickerClosed());
-        expect(next).toEqual({ ...model, piPicker: PiPicker.Idle() });
       }),
     );
   });

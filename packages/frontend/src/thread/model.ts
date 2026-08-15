@@ -15,12 +15,9 @@
 
 import { Schema as S } from "effect";
 import { AsyncData } from "foldkit";
-import { PiSessionInfo, ThreadInfo, WireError, WireModelInfo } from "@saku/wire";
+import { ThreadInfo, WireError, WireModelInfo } from "@saku/wire";
 
 import { emptyLiveRegion, LiveRegion, Trail } from "./live.ts";
-
-/** The pi session list `listPiSessions()` returns, held as AsyncData. */
-export const PiPicker = AsyncData.Schema(S.Array(PiSessionInfo), WireError);
 
 /** The switchable models `getAvailableModels()` returns, held as AsyncData. */
 export const ModelPicker = AsyncData.Schema(S.Array(WireModelInfo), WireError);
@@ -37,7 +34,7 @@ export const Model = S.Struct({
   /** The pinned thread's current model (`get_state`, read-only); null on the
    *  welcome and before the state read lands. */
   model: S.NullOr(WireModelInfo),
-  /** The composer's model picker: Idle = closed (the piPicker pattern). */
+  /** The composer's model picker: Idle = closed. */
   modelPicker: ModelPicker.schema,
   /** A model switch is in flight (guards double picks). */
   modelBusy: S.Boolean,
@@ -49,10 +46,6 @@ export const Model = S.Struct({
   focused: S.Boolean,
   /** A transient failure notice (create/send failures); null when clean. */
   notice: S.NullOr(S.String),
-  /** The welcome's "from pi…" picker: Idle = closed (live.ts). */
-  piPicker: PiPicker.schema,
-  /** A pi import is in flight (guards double imports); null when clean. */
-  importing: S.NullOr(S.String),
 });
 export type Model = S.Schema.Type<typeof Model>;
 
@@ -68,6 +61,4 @@ export const initialModel = () => ({
   starting: false,
   focused: false,
   notice: null,
-  piPicker: PiPicker.Idle(),
-  importing: null,
 });

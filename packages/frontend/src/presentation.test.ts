@@ -1,12 +1,13 @@
 /**
  * Thread presentation tests (presentation.test.ts): the composer status
  * bar's pure derivations — the model badge label, the context-token decode
- * (pi's usage payloads), the trail's context usage, and the 60/90 tone
- * rule. Exercised as properties, the house style.
+ * (pi's usage payloads), the trail's context usage, the 60/90 tone rule —
+ * and the rail's pi-session filter (which sessions are not yet threads).
+ * Exercised as properties, the house style.
  */
 
 import { describe, expect, it } from "vitest";
-import type { WireModelInfo } from "@saku/wire";
+import type { PiSessionInfo, ThreadInfo, WireModelInfo } from "@saku/wire";
 import fc from "fast-check";
 
 import type { EntryProjection } from "./thread/projection.ts";
@@ -16,6 +17,7 @@ import {
   contextTone,
   contextUsage,
   modelLabel,
+  unadoptedPiSessions,
   usageContextTokens,
 } from "./presentation.ts";
 
@@ -143,5 +145,85 @@ describe("contextTone", () => {
     expect(contextTone(CONTEXT_CRITICAL_PERCENT - 1)).toBe("text-gold");
     expect(contextTone(CONTEXT_CRITICAL_PERCENT)).toBe("text-love");
     expect(contextTone(100)).toBe("text-love");
+  });
+});
+
+const piSessionArb: fc.Arbitrary<PiSessionInfo> = fc.record({
+  id: fc.string({ maxLength: 24 }),
+  cwd: fc.string({ maxLength: 24 }),
+  name: fc.string({ maxLength: 24 }),
+  createdAt: fc.integer(),
+  modifiedAt: fc.integer(),
+  messageCount: fc.integer({ min: 0 }),
+  firstMessage: fc.string({ maxLength: 24 }),
+  path: fc.string({ maxLength: 24 }),
+});
+
+const threadArb: fc.Arbitrary<ThreadInfo> = fc.record({
+  id: fc.string({ maxLength: 24 }),
+  name: fc.string({ maxLength: 24 }),
+  cwd: fc.oneof(fc.constant(null), fc.string({ maxLength: 24 })),
+  mode: fc.constantFrom("local", "sandbox", "any"),
+  state: fc.constantFrom("idle", "working", "interrupted"),
+  env: fc.constantFrom("stopped", "provisioning", "ready", "error"),
+  sessionId: fc.oneof(fc.constant(null), fc.string({ maxLength: 24 })),
+  tailSeq: fc.integer({ min: 0 }),
+});
+
+describe("unadoptedPiSessions", () => {
+  it("keeps every session when no thread is adopted from pi", () => {
+    fc.assert(
+      fc.property(fc.array(threadArb, { maxLength: 4 }), fc.array(piSessionArb, { maxLength: 4 }), (threads, sessions) => {
+        const kept = unadoptedPiSessions(threads, sessions);
+        // A session path can only be claimed by a thread whose source is pi.
+        expect(kept).toHaveLength(sessions.length);
+        expect(new Set(kept.map((session) => session.path))).toEqual(
+          new Set(sessions.map((session) => session.path)),
+        );
+      }),
+    );
+  });
+
+  it("drops exactly the sessions some adopted thread pins, keeping order", () => {
+    fc.assert(
+      fc.property(
+        fc.array(piSessionArb, { maxLength: 4 }),
+        fc.string({ maxLength: 24 }),
+        (sessions, threadId) => {
+          const threads: ThreadInfo[] = sessions.map((session, index) => ({
+            id: `${threadId}${index}`,
+            name: `adopted ${index}`,
+            cwd: session.cwd,
+            mode: "local" as const,
+            state: "idle" as const,
+            env: "stopped" as const,
+            sessionId: session.id,
+            tailSeq: 0,
+            source: { kind: "pi", sessionId: session.id, path: session.path },
+          }));
+          const kept = unadoptedPiSessions(threads, sessions);
+          expect(kept).toEqual([]);
+        },
+      ),
+    );
+  });
+
+  it("a session adopted twice stays dropped once (the filter is a set membership)", () => {
+    fc.assert(
+      fc.property(piSessionArb, fc.string({ maxLength: 24 }), (session, threadId) => {
+        const duplicate: ThreadInfo = {
+          id: threadId,
+          name: "dup",
+          cwd: null,
+          mode: "local",
+          state: "idle",
+          env: "stopped",
+          sessionId: null,
+          tailSeq: 0,
+          source: { kind: "pi", sessionId: session.id, path: session.path },
+        };
+        expect(unadoptedPiSessions([duplicate, duplicate], [session])).toEqual([]);
+      }),
+    );
   });
 });

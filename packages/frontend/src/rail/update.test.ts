@@ -1,6 +1,7 @@
 /**
  * The rail update's property tests (update.test.ts): the grid transitions
- * (list/refresh/broadcast upsert), the delete flow, and the OutMessages the
+ * (list/refresh/broadcast upsert), the delete flow, the pi-session section
+ * (list landing, guarded adoption, adopt-open), and the OutMessages the
  * rail surfaces to the root. (The quick-start flow moved to the pane with
  * the gesture — thread/update.test.ts covers it.) Exercised as pure
  * updates; the commands are asserted, never executed.
@@ -14,17 +15,22 @@
 
 import { describe, expect, it } from "vitest";
 import { Option } from "effect";
-import { WireError, type ThreadInfo } from "@saku/wire";
+import { WireError, type PiSessionInfo, type ThreadInfo } from "@saku/wire";
 import fc from "fast-check";
 
 import { ThreadsRoute, ThreadRoute } from "../route.ts";
 import { update, informRouteChanged } from "./update.ts";
-import { initialModel } from "./model.ts";
+import { initialModel, piSessions } from "./model.ts";
 import {
   ClickedThread,
   DeleteFailed,
   DeleteRequested,
   ListFailed,
+  PiSessionAdoptFailed,
+  PiSessionAdopted,
+  PiSessionClicked,
+  PiSessionsListed,
+  PiSessionsListFailed,
   RefreshRequested,
   ThreadChanged,
   ThreadDeleted,
@@ -44,6 +50,17 @@ const threadArb: fc.Arbitrary<ThreadInfo> = fc.record({
 });
 
 const listArb = fc.array(threadArb, { maxLength: 8 });
+
+const piSessionArb: fc.Arbitrary<PiSessionInfo> = fc.record({
+  id: fc.string({ maxLength: 24 }),
+  cwd: fc.string({ maxLength: 24 }),
+  name: fc.string({ maxLength: 24 }),
+  createdAt: fc.integer(),
+  modifiedAt: fc.integer(),
+  messageCount: fc.integer({ min: 0 }),
+  firstMessage: fc.string({ maxLength: 24 }),
+  path: fc.string({ maxLength: 24 }),
+});
 
 const wireErrorArb = fc.string({ maxLength: 24 }).map(
   (message) => new WireError({ code: "command_failed", message }),
@@ -80,12 +97,12 @@ describe("rail update", () => {
     );
   });
 
-  it("refresh re-lists from any state", () => {
+  it("refresh re-lists the registry and the pi sessions from any state", () => {
     fc.assert(
       fc.property(fc.oneof(fc.constant(initialModel()), listArb.map((threads) => listed(threads))), (model) => {
         const [next, commands] = update(model, RefreshRequested());
         expect(next).toEqual(model);
-        expect(commands).toHaveLength(1);
+        expect(commands).toHaveLength(2);
       }),
     );
   });
@@ -151,6 +168,67 @@ describe("rail update", () => {
       fc.property(wireErrorArb, (error) => {
         const [model] = update(initialModel(), DeleteFailed({ error }));
         expect(model.notice).toBe(error.message);
+      }),
+    );
+  });
+
+  it("the pi list lands as Success (clearing the notice) and a failed list lands as Failure", () => {
+    fc.assert(
+      fc.property(
+        fc.array(piSessionArb, { maxLength: 3 }),
+        fc.oneof(fc.constant(null), fc.string({ maxLength: 24 })),
+        wireErrorArb,
+        (sessions, staleNotice, error) => {
+          const [listed] = update(
+            { ...initialModel(), notice: staleNotice },
+            PiSessionsListed({ sessions }),
+          );
+          expect(listed.piSessions).toEqual(piSessions.Success({ data: sessions }));
+          expect(listed.notice).toBeNull();
+          const [failed] = update(initialModel(), PiSessionsListFailed({ error }));
+          expect(failed.piSessions).toEqual(piSessions.Failure({ error }));
+        },
+      ),
+    );
+  });
+
+  it("a pi session click is guarded: one adoption in flight, then no-ops", () => {
+    fc.assert(
+      fc.property(
+        fc.oneof(fc.constant(null), fc.string({ maxLength: 24 })),
+        fc.string({ maxLength: 24 }),
+        (adopting, path) => {
+          const [next, commands] = update(
+            { ...initialModel(), adopting },
+            PiSessionClicked({ path }),
+          );
+          if (adopting !== null) {
+            expect(next).toEqual({ ...initialModel(), adopting });
+            expect(commands).toHaveLength(0);
+          } else {
+            expect(next).toEqual({ ...initialModel(), adopting: path });
+            expect(commands).toHaveLength(1);
+          }
+        },
+      ),
+    );
+  });
+
+  it("an adopted session joins the registry list and surfaces OpenedThread; a failure shows the notice and re-lists", () => {
+    fc.assert(
+      fc.property(listArb, threadArb, wireErrorArb, (threads, thread, error) => {
+        const [adopted, , out] = update(listed(threads), PiSessionAdopted({ thread }));
+        const expected = threads.some((existing) => existing.id === thread.id)
+          ? threads.map((existing) => (existing.id === thread.id ? thread : existing))
+          : [...threads, thread];
+        expect(adopted.list).toEqual({ _tag: "Success", data: expected });
+        expect(adopted.adopting).toBeNull();
+        expect(out).toEqual(Option.some({ _tag: "OpenedThread", id: thread.id }));
+        const [failed, failedCommands] = update(initialModel(), PiSessionAdoptFailed({ error }));
+        expect(failed.adopting).toBeNull();
+        expect(failed.notice).toBe(error.message);
+        // The failure re-lists both sides so a stale list reconciles.
+        expect(failedCommands).toHaveLength(2);
       }),
     );
   });

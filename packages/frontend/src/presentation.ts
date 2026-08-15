@@ -1,15 +1,16 @@
 /**
  * Thread presentation (presentation.ts): the one derivation of how a thread
  * is shown. The state/env glyph classification (char, tone, title), the mode
- * glyph char, and the header's `state · env` line all live here — the rail
- * and pane views render from these, so adding a state or env value touches
- * exactly one file. Rendered output is unchanged; only the derivation is
- * shared.
+ * glyph char, the header's `state · env` line, and the rail's pi-session
+ * filter all live here — the rail and pane views render from these, so
+ * adding a state or env value touches exactly one file. Rendered output is
+ * unchanged; only the derivation is shared.
  */
 
-import type { ThreadEnvState, ThreadMode, ThreadState, WireModelInfo } from "@saku/wire";
+import type { PiSessionInfo, ThreadEnvState, ThreadInfo, ThreadMode, ThreadState, WireModelInfo } from "@saku/wire";
 
 import type { EntryProjection } from "./thread/projection.ts";
+
 
 /** The rail's mode glyph: the hands-policy initial (CONTEXT.md: Mode). */
 export const modeChar = (mode: ThreadMode) =>
@@ -109,6 +110,22 @@ export const contextUsage = (
     window,
     percent: Math.round((tokens / window) * 100),
   };
+};
+
+/** The pi sessions the rail lists: those not yet adopted as threads. A
+ *  session is adopted when some thread's provenance pins its path
+ *  (CONTEXT.md: Pi sessions — adoption, not a bridge); the thread record's
+ *  `source` is the key, so a thread created from scratch never matches. */
+export const unadoptedPiSessions = (
+  threads: readonly ThreadInfo[],
+  sessions: readonly PiSessionInfo[],
+) => {
+  const adopted = new Set<string>();
+  for (const thread of threads) {
+    const source = thread.source;
+    if (source !== undefined && source.kind === "pi") adopted.add(source.path);
+  }
+  return sessions.filter((session) => !adopted.has(session.path));
 };
 
 /** The header's `state · env` line: text and tone. */

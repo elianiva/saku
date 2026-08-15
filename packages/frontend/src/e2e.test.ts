@@ -4,7 +4,10 @@
  * welcome: connect → type a prompt → Enter → quick start opens the thread →
  * the run's entries stream into the trail. This is the empty-state contract
  * exercised for real: the composer lives on the welcome, the gesture is one
- * Enter, and the pane becomes the thread.
+ * Enter, and the pane becomes the thread. A second pass drives the pi
+ * section in the rail: a session file planted in the daemon's pi dir
+ * appears as a row, and a click adopts and opens it — the import is not an
+ * import gesture, it is what opening a session means.
  *
  * The test needs an isolated daemon running with only the fake model
  * (a real gateway would make the run take minutes and burn tokens):
@@ -14,10 +17,12 @@
  *     SAKU_FAKE_MODEL=1 pnpm saku daemon start
  *
  * and then run vitest with `SAKU_E2E_HOME=/tmp/saku-e2e-home`. The suite
- * skips when that variable is unset (CI has no daemon at all).
+ * skips when that variable is unset (CI has no daemon at all). The pi
+ * session file is planted in the daemon's `PI_CODING_AGENT_DIR` (default
+ * `/tmp/saku-e2e-pi`, matching the setup above).
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { Effect } from "effect";
@@ -41,9 +46,34 @@ const waitFor = async (predicate: () => boolean, what: string, timeoutMs = 20000
 };
 
 let createdThreadId: string | null = null;
+let adoptedThreadId: string | null = null;
+
+/** The planted pi session's file path and the id its rows are keyed by. */
+const piFile = () => {
+  const root = process.env.PI_CODING_AGENT_DIR ?? "/tmp/saku-e2e-pi";
+  return { dir: join(root, "sessions", "e2e"), file: join(root, "sessions", "e2e", "session.jsonl") };
+};
+
+/** A minimal v3 session (the daemon parses v3 natively): a named session
+ *  with one user message. Recreated per run with a fresh id — a crashed
+ *  previous run may have left an adopted thread behind, and a fresh id
+ *  keeps this run's click an adoption, never an already-imported. */
+const plantPiSession = () => {
+  const { dir, file } = piFile();
+  rmSync(dir, { recursive: true, force: true });
+  mkdirSync(dir, { recursive: true });
+  const id = `e2epi${Date.now()}`;
+  const content = [
+    `{"type":"session","version":3,"id":"${id}","timestamp":"2026-01-31T22:00:00.000Z","cwd":"/tmp"}`,
+    `{"type":"message","id":"u1","parentId":null,"timestamp":"2026-01-31T22:00:01.000Z","message":{"role":"user","content":"hello from a pi session"}}`,
+    `{"type":"session_info","id":"s1","parentId":"u1","timestamp":"2026-01-31T22:00:02.000Z","name":"e2e pi session"}`,
+  ].join("\n") + "\n";
+  writeFileSync(file, content);
+};
 
 beforeAll(async () => {
   if (!available) return;
+  plantPiSession();
   document.body.innerHTML = '<div id="root"></div>';
   // The dev bootstrap: point the app at the isolated test daemon.
   globalThis.fetch = (async (input: RequestInfo | URL) => {
@@ -59,16 +89,19 @@ beforeAll(async () => {
 
 afterAll(async () => {
   // Leave the test daemon's registry as it was: delete the quick-started
-  // thread. (No-op when the suite was skipped.)
-  if (available && createdThreadId !== null) {
-    await Effect.runPromise(
-      Effect.gen(function* () {
-        const client = yield* WireClient.make({ url: daemonUrl, token, role: "cli" });
-        yield* client.connect();
-        yield* client.deleteThread(createdThreadId as string);
-        yield* client.disconnect();
-      }),
-    ).catch(() => {});
+  // and the adopted threads. (No-op when the suite was skipped.)
+  if (available) {
+    const ids = [createdThreadId, adoptedThreadId].filter((id): id is string => id !== null);
+    if (ids.length > 0) {
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const client = yield* WireClient.make({ url: daemonUrl, token, role: "cli" });
+          yield* client.connect();
+          for (const id of ids) yield* client.deleteThread(id);
+          yield* client.disconnect();
+        }),
+      ).catch(() => {});
+    }
   }
 });
 
@@ -153,6 +186,44 @@ describe.skipIf(!available)("welcome end-to-end", () => {
       await waitFor(
         () => !document.body.innerText.includes("models — the thread's next model"),
         "the model picker closed",
+      );
+    },
+  );
+
+  it(
+    "lists pi sessions in the rail and opens one with a click (adoption is not an import gesture)",
+    { timeout: 60000 },
+    async () => {
+      // The pi section sits under the threads: the planted session's row.
+      await waitFor(
+        () => document.body.innerText.includes("pi sessions · 1"),
+        "the pi sessions section",
+      );
+      expect(document.body.innerText).toContain("e2e pi session");
+      expect(document.body.innerText).toContain("1 msgs");
+
+      // A click opens the session — adoption happens under the hood, the
+      // user just opens it (no "import" framing anywhere).
+      const row = [...document.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("e2e pi session"),
+      )!;
+      row.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await waitFor(
+        () => location.pathname.startsWith("/thread/"),
+        "navigation to the adopted thread",
+      );
+      adoptedThreadId = location.pathname.split("/").pop()!;
+
+      // The adopted trail renders the session's messages.
+      await waitFor(
+        () => document.body.innerText.includes("hello from a pi session"),
+        "the adopted session's trail",
+      );
+
+      // The adopted session is a thread now — it left the pi section.
+      await waitFor(
+        () => !document.body.innerText.includes("pi sessions · 1"),
+        "the adopted session dropped from the pi section",
       );
     },
   );
