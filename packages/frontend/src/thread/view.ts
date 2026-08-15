@@ -18,9 +18,15 @@
 import { AsyncData, Submodel } from "foldkit";
 import { Match, Option, Stream } from "effect";
 import type { Html, HtmlBuilder } from "foldkit/html";
-import type { PiSessionInfo, ThreadEnvState, ThreadState } from "@saku/wire";
+import type { PiSessionInfo, ThreadEnvState, ThreadState, WireModelInfo } from "@saku/wire";
 
-import { headerState } from "../presentation.ts";
+import {
+  contextTone,
+  contextUsage,
+  headerState,
+  modelLabel,
+  statePresentation,
+} from "../presentation.ts";
 import {
   asString,
   messageError,
@@ -37,6 +43,9 @@ import {
   ComposerBlurred,
   ComposerChanged,
   ComposerFocused,
+  ModelPicked,
+  ModelPickerClosed,
+  ModelPickerRequested,
   PiImportRequested,
   PiPickerClosed,
   PiSessionsRequested,
@@ -330,14 +339,147 @@ const composerArea = (model: Model, h: HtmlBuilder<ThreadMessage>) =>
   );
 
 /**
+ * The composer's status row (the humanlayer pattern — status sits next to
+ * the action that caused it): the thread's state glyph on the left; the
+ * model badge (opens the picker) and the context-usage badge on the right.
+ * Only a pinned thread has model/context/state to show — the welcome's
+ * quick-start box stays bare.
+ */
+const composerStatus = (model: Model, h: HtmlBuilder<ThreadMessage>) =>
+  h.div(
+    [h.Class("flex items-center gap-2 mt-2")],
+    [
+      ...(model.info === null ? [] : [stateBadge(model.info.state, h)]),
+      h.span([h.Class("flex-1")], []),
+      modelBadge(model, h),
+      contextBadge(model, h),
+    ],
+  );
+
+/** The state glyph + word, from the shared derivation (presentation.ts). */
+const stateBadge = (state: ThreadState, h: HtmlBuilder<ThreadMessage>) => {
+  const p = statePresentation(state);
+  return h.span([h.Class(`text-[11px] ${p.tone}`), h.Title(p.title)], [`${p.glyph} ${state}`]);
+};
+
+/** The context-usage badge: the trail's last assistant usage against the
+ *  model's window, colored at the 60/90 thresholds (humanlayer's rule);
+ *  hidden while unknown (no usage yet, no window, or post-compaction). */
+const contextBadge = (model: Model, h: HtmlBuilder<ThreadMessage>) => {
+  if (!AsyncData.isSuccess(model.trail)) return null;
+  const usage = contextUsage(model.trail.data.entries, model.model);
+  if (usage === null) return null;
+  const { tokens, window, percent } = usage;
+  return h.span(
+    [
+      h.Class(`text-[11px] ${contextTone(percent)}`),
+      h.Title(
+        `context — ${tokens.toLocaleString()} of ${window.toLocaleString()} tokens (${percent}%)`,
+      ),
+    ],
+    [`ctx ${tokens.toLocaleString()}/${window.toLocaleString()} · ${percent}%`],
+  );
+};
+
+/** The model badge: the current model, clickable to open the picker; dead
+ *  while working (model changes are unavailable mid-run, humanlayer's rule). */
+const modelBadge = (model: Model, h: HtmlBuilder<ThreadMessage>) => {
+  const working = model.info?.state === "working";
+  const label = model.model === null ? "—" : modelLabel(model.model);
+  return h.button(
+    [
+      h.Class(
+        `flex items-center gap-1 border border-line px-1.5 py-px text-[11px] ${working ? "text-muted cursor-not-allowed" : "text-subtle hover:border-subtle hover:text-text"}`,
+      ),
+      h.OnClick(ModelPickerRequested()),
+      h.Disabled(working),
+      h.Title(
+        working ? "model changes unavailable while working" : "change the thread's model",
+      ),
+      h.AriaLabel("change model"),
+    ],
+    [label, h.span([h.Class("text-muted")], ["✎"])],
+  );
+};
+
+/** The open model picker: the thread's switchable models, catalog order. */
+const modelPickerPanel = (model: Model, h: HtmlBuilder<ThreadMessage>) =>
+  h.div(
+    [h.Class("border border-line bg-base mt-2")],
+    [
+      h.div(
+        [h.Class("flex items-center gap-2 px-3 py-1.5 border-b border-line text-[10px] uppercase tracking-[0.18em] text-subtle")],
+        [
+          h.span([h.Class("flex-1")], ["models — the thread's next model"]),
+          h.button(
+            [h.Class("px-1 hover:text-love"), h.OnClick(ModelPickerClosed()), h.AriaLabel("close model picker")],
+            ["✕"],
+          ),
+        ],
+      ),
+      AsyncData.match(model.modelPicker, {
+        onIdle: () => modelPickerStatus(h, ""),
+        onLoading: () => modelPickerStatus(h, "reading models…"),
+        onRefreshing: () => modelPickerStatus(h, "reading models…"),
+        onStale: () => modelPickerStatus(h, "reading models…"),
+        onFailure: (error) => modelPickerStatus(h, error.message),
+        onSuccess: (models) =>
+          models.length === 0
+            ? modelPickerStatus(h, "no models available")
+            : h.div(
+                [h.Class("max-h-56 overflow-y-auto")],
+                models.map((candidate) => modelPickerRow(candidate, model.model, model.modelBusy, h)),
+              ),
+      }),
+    ],
+  );
+
+const modelPickerStatus = (h: HtmlBuilder<ThreadMessage>, text: string) =>
+  h.div([h.Class("px-3 py-2 text-[12px] text-muted")], [text]);
+
+const modelPickerRow = (
+  candidate: WireModelInfo,
+  current: WireModelInfo | null,
+  busy: boolean,
+  h: HtmlBuilder<ThreadMessage>,
+) => {
+  const isCurrent =
+    current !== null && current.provider === candidate.provider && current.id === candidate.id;
+  return h.button(
+    [
+      h.Class(
+        `w-full flex items-center gap-2 px-3 py-1.5 border-b border-line last:border-b-0 text-left text-[12px] ${busy ? "text-muted" : "hover:bg-overlay/60"}`,
+      ),
+      h.OnClick(ModelPicked({ provider: candidate.provider, modelId: candidate.id })),
+      h.Disabled(busy),
+      h.Title(
+        `${candidate.provider}/${candidate.id} · ${candidate.contextWindow.toLocaleString()} ctx${candidate.reasoning ? " · reasoning" : ""}`,
+      ),
+    ],
+    [
+      h.span(
+        [h.Class(`${isCurrent ? "text-pine" : "text-muted"} shrink-0`)],
+        [isCurrent ? "▸" : "·"],
+      ),
+      h.span([h.Class("flex-1 truncate min-w-0")], [modelLabel(candidate)]),
+      h.span([h.Class("text-muted shrink-0")], [`${candidate.contextWindow.toLocaleString()} ctx`]),
+      ...(candidate.reasoning
+        ? [h.span([h.Class("text-muted shrink-0")], ["reasoning"])]
+        : []),
+    ],
+  );
+};
+
+/**
  * The composer box, shared by the thread pane and the welcome: the textarea
  * (focus-aware placeholder, enter to send) plus the action button, with the
  * failure notice underneath (the humanlayer pattern — status sits next to
- * the action that caused it, not in a banner above the trail). On the
- * welcome the box is the quick-start gesture; on a thread it prompts the
- * pinned thread. The welcome's box autofocuses on mount — every arrival at
- * the root route lands the cursor in the composer (the thread box never
- * autofocuses).
+ * the action that caused it, not in a banner above the trail). On a pinned
+ * thread the box carries the status row (state glyph, model badge, context
+ * badge) and the model picker under it (view.ts). On the welcome the box is
+ * the quick-start gesture; on a thread it prompts the pinned thread. The
+ * welcome's box autofocuses on mount — every arrival at the root route
+ * lands the cursor in the composer (the thread box never autofocuses).
  */
 const composerBox = (
   model: Model,
@@ -403,6 +545,10 @@ const composerBox = (
               ),
         ],
       ),
+      ...(kind === "thread" ? [composerStatus(model, h)] : []),
+      ...(kind === "thread" && model.modelPicker._tag !== "Idle"
+        ? [modelPickerPanel(model, h)]
+        : []),
       model.notice === null ? null : h.div([h.Class("mt-2 text-[12px] text-love")], [model.notice]),
     ],
   );

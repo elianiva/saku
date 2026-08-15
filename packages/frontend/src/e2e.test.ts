@@ -117,6 +117,43 @@ describe.skipIf(!available)("welcome end-to-end", () => {
       expect(document.body.innerText).toContain("send ❯");
       expect((document.querySelector("textarea") as HTMLTextAreaElement).value).toBe("");
       expect(document.body.innerText).not.toContain("Welcome back!");
+
+      // The composer's status row (the humanlayer pattern): the model badge
+      // from the state read and the context badge from the fake run's usage.
+      await waitFor(
+        () => document.body.innerText.includes("saku-fake/test"),
+        "the model badge from the state read",
+      );
+      expect(document.body.innerText).toContain("ctx 15/128,000 · 0%");
+
+      // The model badge opens the picker once the run has settled; the
+      // fake model is current, and the panel closes again.
+      await waitFor(
+        () => {
+          const badge = [...document.querySelectorAll("button")].find((b) =>
+            b.textContent?.includes("✎"),
+          );
+          return badge !== undefined && !(badge as HTMLButtonElement).disabled;
+        },
+        "the model badge enabled after the run",
+      );
+      const badge = [...document.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("✎"),
+      )!;
+      badge.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await waitFor(
+        () => document.body.innerText.includes("models — the thread's next model"),
+        "the model picker panel",
+      );
+      expect(document.body.innerText).toContain("▸");
+      const close = [...document.querySelectorAll("button")].find(
+        (b) => b.getAttribute("aria-label") === "close model picker",
+      )!;
+      close.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await waitFor(
+        () => !document.body.innerText.includes("models — the thread's next model"),
+        "the model picker closed",
+      );
     },
   );
 });

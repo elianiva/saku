@@ -14,7 +14,7 @@
 
 import { Schema as S } from "effect";
 import { Message } from "foldkit";
-import { PiSessionInfo, ThreadInfo, WireError } from "@saku/wire";
+import { PiSessionInfo, ThreadInfo, WireError, WireModelInfo } from "@saku/wire";
 
 import type { OpenedThread } from "../root/message.ts";
 import { EntryProjection, SessionEventProjection } from "./projection.ts";
@@ -41,6 +41,26 @@ export const SendFailed = Message.m("SendFailed", { message: S.String });
  *  humanlayer pattern: unfocused shows the affordance, focused the task). */
 export const ComposerFocused = Message.m("ComposerFocused");
 export const ComposerBlurred = Message.m("ComposerBlurred");
+
+/** The pinned thread's state read landed — the model badge's model. */
+export const StateLoaded = Message.m("StateLoaded", { model: S.NullOr(WireModelInfo) });
+export const StateFailed = Message.m("StateFailed");
+
+/** The composer's model badge was clicked: open the picker. */
+export const ModelPickerRequested = Message.m("ModelPickerRequested");
+/** The daemon's answer: the models this thread can switch to. */
+export const ModelsListed = Message.m("ModelsListed", { models: S.Array(WireModelInfo) });
+export const ModelsListFailed = Message.m("ModelsListFailed", { error: WireError });
+/** A picker row was clicked: switch the thread's model. */
+export const ModelPicked = Message.m("ModelPicked", {
+  provider: S.String,
+  modelId: S.String,
+});
+/** The switch landed (null: the model did not resolve). */
+export const ModelSet = Message.m("ModelSet", { model: S.NullOr(WireModelInfo) });
+export const ModelSetFailed = Message.m("ModelSetFailed", { message: S.String });
+/** The picker's close button. */
+export const ModelPickerClosed = Message.m("ModelPickerClosed");
 
 /** The quick-start command landed: a thread was born from the draft. */
 export const ThreadCreated = Message.m("ThreadCreated", { thread: ThreadInfo });
@@ -78,6 +98,15 @@ export const ThreadMessage = S.Union([
   SendFailed,
   ComposerFocused,
   ComposerBlurred,
+  StateLoaded,
+  StateFailed,
+  ModelPickerRequested,
+  ModelsListed,
+  ModelsListFailed,
+  ModelPicked,
+  ModelSet,
+  ModelSetFailed,
+  ModelPickerClosed,
   ThreadCreated,
   CreateFailed,
   PiSessionsRequested,

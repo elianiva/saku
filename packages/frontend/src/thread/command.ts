@@ -14,6 +14,10 @@ import { Wire } from "../wire.ts";
 import {
   AbortDone,
   CreateFailed,
+  ModelSet,
+  ModelSetFailed,
+  ModelsListed,
+  ModelsListFailed,
   PiImportFailed,
   PiImported,
   PiSessionsListed,
@@ -21,14 +25,15 @@ import {
   PromptAcked,
   ScrollDone,
   SendFailed,
+  StateFailed,
+  StateLoaded,
   ThreadCreated,
   TrailFailed,
   TrailLoaded,
 } from "./message.ts";
 import { decodeEntry, type EntryProjection } from "./projection.ts";
 
-/** Load a thread's entry trail (reads never start a session, ADR 0004). */
-export const LoadTrailCmd = Command.define("LoadTrail", {
+/** Load a thread's entry trail (reads never start a session, ADR 0004). */export const LoadTrailCmd = Command.define("LoadTrail", {
   args: { id: S.String },
   messages: [TrailLoaded, TrailFailed],
   execute: ({ id }) =>
@@ -43,6 +48,51 @@ export const LoadTrailCmd = Command.define("LoadTrail", {
         return TrailLoaded({ entries, tailSeq: result.tailSeq });
       }),
       (error) => TrailFailed({ error: error.message }),
+    ),
+});
+
+/** Read the pinned thread's state — the model badge's model (ADR 0004). */
+export const LoadStateCmd = Command.define("LoadState", {
+  args: { id: S.String },
+  messages: [StateLoaded, StateFailed],
+  execute: ({ id }) =>
+    catchWireError(
+      Effect.gen(function* () {
+        const { client } = yield* Wire;
+        const state = yield* client.getState(id);
+        return StateLoaded({ model: state.model });
+      }),
+      () => StateFailed(),
+    ),
+});
+
+/** List the models the thread can switch to (a read — catalog-served, ADR 0004). */
+export const ListModelsCmd = Command.define("ListModels", {
+  args: { id: S.String },
+  messages: [ModelsListed, ModelsListFailed],
+  execute: ({ id }) =>
+    catchWireError(
+      Effect.gen(function* () {
+        const { client } = yield* Wire;
+        const models = yield* client.getAvailableModels(id);
+        return ModelsListed({ models });
+      }),
+      (error) => ModelsListFailed({ error }),
+    ),
+});
+
+/** Switch the thread's model; the response carries the resolved model. */
+export const SetModelCmd = Command.define("SetModel", {
+  args: { id: S.String, provider: S.String, modelId: S.String },
+  messages: [ModelSet, ModelSetFailed],
+  execute: ({ id, provider, modelId }) =>
+    catchWireError(
+      Effect.gen(function* () {
+        const { client } = yield* Wire;
+        const model = yield* client.setModel(id, provider, modelId);
+        return ModelSet({ model });
+      }),
+      (error) => ModelSetFailed({ message: error.message }),
     ),
 });
 

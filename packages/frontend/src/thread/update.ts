@@ -33,15 +33,18 @@ import { Wire } from "../wire.ts";
 import {
   AbortCmd,
   ImportPiSessionCmd,
+  ListModelsCmd,
   ListPiSessionsCmd,
+  LoadStateCmd,
   LoadTrailCmd,
   PromptCmd,
   QuickStartCmd,
   ScrollTrailCmd,
+  SetModelCmd,
 } from "./command.ts";
 import { emptyLiveRegion, foldLive, Trail } from "./live.ts";
 import type { ThreadMessage, ThreadOutMessage } from "./message.ts";
-import { Model, PiPicker } from "./model.ts";
+import { Model, ModelPicker, PiPicker } from "./model.ts";
 
 export type Commands = ReadonlyArray<Command.Command<ThreadMessage, never, Wire>>;
 export type UpdateReturn = readonly [Model, Commands, Option.Option<ThreadOutMessage>];
@@ -56,6 +59,10 @@ const resetViewFields = {
   // The composer element is fresh on the other surface; its focus state
   // must not leak across routes (the welcome re-focuses via OnMount).
   focused: (_: boolean) => false,
+  // Model badge state is thread-owned; the welcome has no model to show.
+  model: (_: Model["model"]) => null,
+  modelPicker: (_: Model["modelPicker"]) => ModelPicker.Idle(),
+  modelBusy: (_: boolean) => false,
 };
 
 export const update = (model: Model, message: ThreadMessage) =>
@@ -93,6 +100,72 @@ export const update = (model: Model, message: ThreadMessage) =>
       ComposerChanged: ({ text }) => [evo(model, { composer: (_) => text }), none, Option.none()],
       ComposerFocused: () => [evo(model, { focused: (_) => true }), none, Option.none()],
       ComposerBlurred: () => [evo(model, { focused: (_) => false }), none, Option.none()],
+
+      // The badge's model read: land it, or stay with the current value
+      // (a failed read keeps the badge's last-known model; null until then).
+      StateLoaded: ({ model: next }) => [evo(model, { model: (_) => next }), none, Option.none()],
+      StateFailed: () => [model, none, Option.none()],
+
+      // Opening is guarded: only on a pinned, non-working thread, and only
+      // when closed (the badge is disabled while working — model changes
+      // are unavailable mid-run, humanlayer's rule).
+      ModelPickerRequested: () =>
+        model.id === null || model.info?.state === "working" || model.modelPicker._tag !== "Idle"
+          ? [model, none, Option.none()]
+          : [
+              evo(model, { modelPicker: (_) => ModelPicker.Loading() }),
+              [ListModelsCmd({ id: model.id })],
+              Option.none(),
+            ],
+      ModelsListed: ({ models }) => [
+        evo(model, { modelPicker: (_) => ModelPicker.Success({ data: models }) }),
+        none,
+        Option.none(),
+      ],
+      ModelsListFailed: ({ error }) => [
+        evo(model, { modelPicker: (_) => ModelPicker.Failure({ error }) }),
+        none,
+        Option.none(),
+      ],
+      // A row was clicked: the switch is guarded per pick (no double
+      // switches; the row shows the in-flight state).
+      ModelPicked: ({ provider, modelId }) =>
+        model.id === null || model.modelBusy
+          ? [model, none, Option.none()]
+          : [
+              evo(model, { modelBusy: (_) => true }),
+              [SetModelCmd({ id: model.id, provider, modelId })],
+              Option.none(),
+            ],
+      // The switch landed: adopt the resolved model and close the picker.
+      // A null resolution (the model did not resolve) keeps the picker open
+      // and says why.
+      ModelSet: ({ model: next }) =>
+        next === null
+          ? [
+              evo(model, { modelBusy: (_) => false, notice: (_) => "model unavailable" }),
+              none,
+              Option.none(),
+            ]
+          : [
+              evo(model, {
+                model: (_) => next,
+                modelBusy: (_) => false,
+                modelPicker: (_) => ModelPicker.Idle(),
+              }),
+              none,
+              Option.none(),
+            ],
+      ModelSetFailed: ({ message }) => [
+        evo(model, { modelBusy: (_) => false, notice: (_) => message }),
+        none,
+        Option.none(),
+      ],
+      ModelPickerClosed: () => [
+        evo(model, { modelPicker: (_) => ModelPicker.Idle() }),
+        none,
+        Option.none(),
+      ],
       // The one send path: Enter and the send/start button both land here.
       // No thread pinned → the welcome's quick start (CONTEXT.md: Quick
       // start); pinned → prompt the thread. The starting guard ignores
@@ -186,7 +259,7 @@ export const informRouteChanged = (model: Model, route: AppRoute): RouteChangedR
           info: (_) => null,
           ...resetViewFields,
         }),
-        [LoadTrailCmd({ id: route.id })],
+        [LoadTrailCmd({ id: route.id }), LoadStateCmd({ id: route.id })],
       ]
     : [
         evo(model, {

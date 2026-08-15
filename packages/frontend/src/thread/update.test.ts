@@ -16,17 +16,24 @@
 
 import { describe, expect, it } from "vitest";
 import { Option } from "effect";
-import { WireError, type PiSessionInfo, type ThreadInfo } from "@saku/wire";
+import { WireError, type PiSessionInfo, type ThreadInfo, type WireModelInfo } from "@saku/wire";
 import fc from "fast-check";
 
 import { ThreadsRoute, ThreadRoute } from "../route.ts";
 import { informRouteChanged, update } from "./update.ts";
-import { PiPicker, type Model } from "./model.ts";
+import { ModelPicker, PiPicker, type Model } from "./model.ts";
 import { Trail, type Live } from "./live.ts";
 import {
   ComposerBlurred,
   ComposerFocused,
   CreateFailed,
+  ModelPicked,
+  ModelPickerClosed,
+  ModelPickerRequested,
+  ModelSet,
+  ModelSetFailed,
+  ModelsListed,
+  ModelsListFailed,
   PiImportFailed,
   PiImportRequested,
   PiImported,
@@ -37,6 +44,8 @@ import {
   PromptAcked,
   SendFailed,
   SendRequested,
+  StateFailed,
+  StateLoaded,
   ThreadChanged,
   ThreadCreated,
   TrailFailed,
@@ -109,12 +118,31 @@ const piPickerArb: fc.Arbitrary<Model["piPicker"]> = fc.oneof(
   wireErrorArb.map((error) => PiPicker.Failure({ error })),
 );
 
+const wireModelArb: fc.Arbitrary<WireModelInfo> = fc.record({
+  provider: fc.string({ maxLength: 12 }),
+  id: fc.string({ maxLength: 24 }),
+  contextWindow: fc.integer({ min: 0 }),
+  reasoning: fc.boolean(),
+});
+
+const modelPickerArb: fc.Arbitrary<Model["modelPicker"]> = fc.oneof(
+  fc.constant(ModelPicker.Idle()),
+  fc.constant(ModelPicker.Loading()),
+  fc.record({ data: fc.array(wireModelArb, { maxLength: 3 }) }).map(({ data }) =>
+    ModelPicker.Success({ data }),
+  ),
+  wireErrorArb.map((error) => ModelPicker.Failure({ error })),
+);
+
 /** Any pane model the update loop could hold. */
 const modelArb: fc.Arbitrary<Model> = fc.record({
   id: fc.oneof(fc.constant(null), fc.string({ maxLength: 24 })),
   info: fc.oneof(fc.constant(null), threadArb),
   trail: trailArb,
   live: liveArb,
+  model: fc.oneof(fc.constant(null), wireModelArb),
+  modelPicker: modelPickerArb,
+  modelBusy: fc.boolean(),
   composer: fc.string({ maxLength: 24 }),
   starting: fc.boolean(),
   focused: fc.boolean(),
@@ -281,7 +309,97 @@ describe("thread update", () => {
     );
   });
 
-  it("informRouteChanged pins the thread, resets the view, preserves the composer, and reads the trail", () => {
+  it("the state read lands the model; a failed read keeps the current value", () => {
+    fc.assert(
+      fc.property(modelArb, wireModelArb, (model, next) => {
+        const [loaded] = update(model, StateLoaded({ model: next }));
+        expect(loaded).toEqual({ ...model, model: next });
+        const [failed] = update(model, StateFailed());
+        expect(failed).toEqual(model);
+      }),
+    );
+  });
+
+  it("the model picker opens only on a pinned, non-working thread when closed", () => {
+    fc.assert(
+      fc.property(modelArb, (model) => {
+        const [next, commands] = update(model, ModelPickerRequested());
+        const opens =
+          model.id !== null &&
+          model.info?.state !== "working" &&
+          model.modelPicker._tag === "Idle";
+        expect(next).toEqual(opens ? { ...model, modelPicker: ModelPicker.Loading() } : model);
+        expect(commands).toHaveLength(opens ? 1 : 0);
+      }),
+    );
+  });
+
+  it("the model list lands as Success and a failed list lands as Failure", () => {
+    fc.assert(
+      fc.property(
+        modelArb,
+        fc.array(wireModelArb, { maxLength: 3 }),
+        wireErrorArb,
+        (model, models, error) => {
+          const [listed] = update(model, ModelsListed({ models }));
+          expect(listed.modelPicker).toEqual(ModelPicker.Success({ data: models }));
+          const [failed] = update(model, ModelsListFailed({ error }));
+          expect(failed.modelPicker).toEqual(ModelPicker.Failure({ error }));
+        },
+      ),
+    );
+  });
+
+  it("a model pick is guarded: one in flight, then no-ops", () => {
+    fc.assert(
+      fc.property(modelArb, wireModelArb, (model, candidate) => {
+        const [next, commands] = update(
+          model,
+          ModelPicked({ provider: candidate.provider, modelId: candidate.id }),
+        );
+        if (model.id === null || model.modelBusy) {
+          expect(next).toEqual(model);
+          expect(commands).toHaveLength(0);
+        } else {
+          expect(next).toEqual({ ...model, modelBusy: true });
+          expect(commands).toHaveLength(1);
+        }
+      }),
+    );
+  });
+
+  it("a set model lands the model and closes the picker; an unresolvable one shows the notice", () => {
+    fc.assert(
+      fc.property(modelArb, wireModelArb, (model, next) => {
+        const [set] = update(model, ModelSet({ model: next }));
+        expect(set).toEqual({
+          ...model,
+          model: next,
+          modelBusy: false,
+          modelPicker: ModelPicker.Idle(),
+        });
+        const [unresolved] = update(model, ModelSet({ model: null }));
+        expect(unresolved).toEqual({
+          ...model,
+          modelBusy: false,
+          notice: "model unavailable",
+        });
+        const [failed] = update(model, ModelSetFailed({ message: "boom" }));
+        expect(failed).toEqual({ ...model, modelBusy: false, notice: "boom" });
+      }),
+    );
+  });
+
+  it("closing the model picker returns it to Idle", () => {
+    fc.assert(
+      fc.property(modelArb, (model) => {
+        const [next] = update(model, ModelPickerClosed());
+        expect(next).toEqual({ ...model, modelPicker: ModelPicker.Idle() });
+      }),
+    );
+  });
+
+  it("informRouteChanged pins the thread, resets the view, preserves the composer, and reads the trail and state", () => {
     fc.assert(
       fc.property(modelArb, fc.string({ maxLength: 24 }), (model, id) => {
         const reset = {
@@ -289,10 +407,13 @@ describe("thread update", () => {
           trail: Trail.Idle(),
           live: { tools: [] },
           focused: false,
+          model: null,
+          modelPicker: ModelPicker.Idle(),
+          modelBusy: false,
         };
         const [pinned, pinnedCommands] = informRouteChanged(model, ThreadRoute({ id }));
         expect(pinned).toEqual({ ...model, id, ...reset });
-        expect(pinnedCommands).toHaveLength(1);
+        expect(pinnedCommands).toHaveLength(2);
         const [unpinned, unpinnedCommands] = informRouteChanged(model, ThreadsRoute());
         expect(unpinned).toEqual({ ...model, id: null, ...reset });
         expect(unpinnedCommands).toHaveLength(0);

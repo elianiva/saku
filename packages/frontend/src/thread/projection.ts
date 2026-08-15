@@ -30,6 +30,9 @@ export const MessageProjection = S.Struct({
   isError: S.optional(S.Boolean),
   stopReason: S.optional(S.String),
   errorMessage: S.optional(S.String),
+  /** pi's per-request usage (the context badge's source); decoded in
+   *  presentation.ts, never re-schema'd (ADR 0005). */
+  usage: S.optional(S.Unknown),
 });
 export type MessageProjection = S.Schema.Type<typeof MessageProjection>;
 

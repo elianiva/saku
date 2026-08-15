@@ -7,7 +7,9 @@
  * shared.
  */
 
-import type { ThreadEnvState, ThreadMode, ThreadState } from "@saku/wire";
+import type { ThreadEnvState, ThreadMode, ThreadState, WireModelInfo } from "@saku/wire";
+
+import type { EntryProjection } from "./thread/projection.ts";
 
 /** The rail's mode glyph: the hands-policy initial (CONTEXT.md: Mode). */
 export const modeChar = (mode: ThreadMode) =>
@@ -42,6 +44,72 @@ export const envPresentation = (env: ThreadEnvState) =>
       : env === "stopped"
         ? { glyph: "▽", tone: "text-muted", title: "env stopped — resumes on prompt" }
         : { glyph: "✕", tone: "text-love", title: "env error — next prompt retries" };
+
+/** The composer's model badge: the id when it already carries the provider
+ *  prefix, else `provider/id` (humanlayer's strip-the-prefix rule). */
+export const modelLabel = (model: { readonly provider: string; readonly id: string }) =>
+  model.id.includes("/") ? model.id : `${model.provider}/${model.id}`;
+
+/** The context badge's thresholds, humanlayer's 60/90 rule. */
+export const CONTEXT_WARNING_PERCENT = 60;
+export const CONTEXT_CRITICAL_PERCENT = 90;
+
+/** Tone for a context-usage percent: foam below the warning, gold below the
+ *  critical threshold, love past it. */
+export const contextTone = (percent: number) =>
+  percent >= CONTEXT_CRITICAL_PERCENT
+    ? "text-love"
+    : percent >= CONTEXT_WARNING_PERCENT
+      ? "text-gold"
+      : "text-foam";
+
+/** pi's per-request context size from a usage payload: the native
+ *  `totalTokens`, else the component sum (pi's own shell rule, decoded in
+ *  the console — ADR 0005). Null when the payload carries neither. */
+export const usageContextTokens = (usage: unknown) => {
+  if (typeof usage !== "object" || usage === null) return null;
+  const record = usage as Record<string, unknown>;
+  if (typeof record.totalTokens === "number") return record.totalTokens;
+  const input = typeof record.input === "number" ? record.input : 0;
+  const cacheRead = typeof record.cacheRead === "number" ? record.cacheRead : 0;
+  const cacheWrite = typeof record.cacheWrite === "number" ? record.cacheWrite : 0;
+  const tokens = input + cacheRead + cacheWrite;
+  return tokens > 0 ? tokens : null;
+};
+
+/** The composer's context badge: the trail's last assistant usage against
+ *  the model's window, or null when unknown (no model window, no usage yet,
+ *  or a compaction since the last usage — pi's own shell rule: context is
+ *  unknown until the next assistant response). A pure read of the trail;
+ *  the console never computes thread state elsewhere (ADR 0004). */
+export const contextUsage = (
+  entries: readonly EntryProjection[],
+  model: WireModelInfo | null,
+) => {
+  const window = model?.contextWindow ?? 0;
+  if (window <= 0) return null;
+  let tokens: number | null = null;
+  let usageSeq = -1;
+  let compactionSeq = -1;
+  for (const entry of entries) {
+    const seq = entry.seq ?? -1;
+    if (entry.type === "compaction") compactionSeq = seq;
+    if (entry.type !== "message") continue;
+    const message = entry.message;
+    if (message === undefined || message.role !== "assistant") continue;
+    if (message.stopReason === "aborted" || message.stopReason === "error") continue;
+    const next = usageContextTokens(message.usage);
+    if (next === null) continue;
+    tokens = next;
+    usageSeq = seq;
+  }
+  if (tokens === null || compactionSeq > usageSeq) return null;
+  return {
+    tokens,
+    window,
+    percent: Math.round((tokens / window) * 100),
+  };
+};
 
 /** The header's `state · env` line: text and tone. */
 export const headerState = (
