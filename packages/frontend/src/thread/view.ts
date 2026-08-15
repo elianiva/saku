@@ -36,8 +36,13 @@ import {
   messageToolCalls,
   messageToolResult,
   summaryLine,
+  trailToolIndex,
+  type ToolCallRow,
+  type ToolResultRow,
+  type TrailToolIndex,
 } from "./format.ts";
 import { markdownBody } from "./markdown.ts";
+import { toolArgsView, type ToolArgLine, type ToolArgsView } from "./tools.ts";
 import type { LiveTool } from "./live.ts";
 import {
   AbortRequested,
@@ -48,6 +53,8 @@ import {
   ModelPickerClosed,
   ModelPickerRequested,
   SendRequested,
+  ThinkingToggled,
+  ToolToggled,
   type ThreadMessage,
 } from "./message.ts";
 import type { Model } from "./model.ts";
@@ -98,9 +105,11 @@ const abortButton = (h: HtmlBuilder<ThreadMessage>) =>
   h.button(
     [
       h.Class(
-        "border border-love text-love px-2 py-0.5 text-[11px] uppercase tracking-[0.18em] hover:bg-love/10 shrink-0",
+        "flex h-8 shrink-0 items-center border border-love px-2 text-[11px] uppercase tracking-[0.18em] text-love hover:bg-love/10",
       ),
       h.OnClick(AbortRequested()),
+      h.AriaLabel("abort thread"),
+      h.Title("abort the running thread"),
     ],
     ["■ abort"],
   );
@@ -112,9 +121,10 @@ const trailArea = (model: Model, h: HtmlBuilder<ThreadMessage>) =>
     onRefreshing: () => trailStatus(h, "loading trail…"),
     onStale: () => trailStatus(h, "loading trail…"),
     onFailure: (error) => trailStatus(h, `trail unavailable — ${error}`),
-    onSuccess: ({ entries }) =>
-      h.div(
-        [h.Class("relative flex-1 min-h-0 flex flex-col bg-base")],
+    onSuccess: ({ entries }) => {
+      const index = trailToolIndex(entries);
+      return h.div(
+        [h.Class("relative flex-1 min-h-0 flex flex-col bg-base max-w-3xl mx-auto")],
         [
           h.div(
             [
@@ -124,14 +134,18 @@ const trailArea = (model: Model, h: HtmlBuilder<ThreadMessage>) =>
             ],
             [
               h.div(
-                [h.Class("min-h-full")],
-                [...entries.map((entry) => renderEntry(entry, h)), liveRegion(model, h)],
+                [h.Class("min-h-full flex flex-col gap-2")],
+                [
+                  ...entries.map((entry) => renderEntry(entry, h, model, index)),
+                  liveRegion(model, h),
+                ],
               ),
             ],
           ),
           scrollToLatestButton(h),
         ],
-      ),
+      );
+    },
   });
 
 const trailStatus = (h: HtmlBuilder<ThreadMessage>, text: string) =>
@@ -140,9 +154,16 @@ const trailStatus = (h: HtmlBuilder<ThreadMessage>, text: string) =>
     [text],
   );
 
-const renderEntry = (entry: EntryProjection, h: HtmlBuilder<ThreadMessage>) =>
+const renderEntry = (
+  entry: EntryProjection,
+  h: HtmlBuilder<ThreadMessage>,
+  model: Model,
+  index: TrailToolIndex,
+) =>
   Match.value(entry.type).pipe(
-    Match.when("message", () => renderMessageEntry(entry.message ?? {}, h)),
+    Match.when("message", () =>
+      renderMessageEntry(entry.message ?? {}, h, entry.id ?? "", model, index),
+    ),
     Match.when("compaction", () => metaRow(h, `▚ compacted — ${summaryLine(entry.summary)}`)),
     Match.when("branch_summary", () => metaRow(h, `⑂ branch — ${summaryLine(entry.summary)}`)),
     Match.when("model_change", () =>
@@ -161,17 +182,26 @@ const renderEntry = (entry: EntryProjection, h: HtmlBuilder<ThreadMessage>) =>
   );
 
 const metaRow = (h: HtmlBuilder<ThreadMessage>, text: string) =>
-  h.div([h.Class("px-4 py-1 border-b border-line text-[11px] text-subtle italic")], [text]);
+  h.div([h.Class("px-4 py-1 text-[11px] text-subtle italic")], [text]);
 
-const renderMessageEntry = (message: MessageProjection, h: HtmlBuilder<ThreadMessage>) => {
+const renderMessageEntry = (
+  message: MessageProjection,
+  h: HtmlBuilder<ThreadMessage>,
+  entryId: string,
+  model: Model,
+  index: TrailToolIndex,
+) => {
   const role = messageRole(message);
   if (role === "user") {
     return h.div(
-      [h.Class("px-4 py-3 border-b border-line"), h.Attribute("data-role", "user")],
       [
-        roleLabel(h, "you", "text-pine"),
+        h.Class("bg-surface border-l-2 border-pine/60 px-4 py-3"),
+        h.Attribute("data-role", "user"),
+      ],
+      [
+        roleLabel(h, "you", "text-pine font-bold"),
         h.pre(
-          [h.Class("whitespace-pre-wrap text-[13px] leading-relaxed mt-1")],
+          [h.Class("whitespace-pre-wrap text-[13px] leading-relaxed mt-1 text-text")],
           [messageText(message)],
         ),
       ],
@@ -180,35 +210,57 @@ const renderMessageEntry = (message: MessageProjection, h: HtmlBuilder<ThreadMes
   if (role === "toolResult") {
     const result = messageToolResult(message);
     if (result === null) return null;
-    return h.div(
-      [h.Class("px-4 py-2 border-b border-line bg-surface")],
+    // A paired result renders inside its call's row (the view merges the
+    // tool's args and output into one block); only a result whose call
+    // never landed in this trail (compacted away) keeps its own row.
+    if (index.paired.has(result.callId)) return null;
+    const header = [
+      h.span(
+        [
+          h.Class(
+            `text-[10px] uppercase tracking-[0.18em] ${result.isError ? "text-love" : "text-subtle"}`,
+          ),
+        ],
+        [result.isError ? "tool ✗" : "tool"],
+      ),
+      h.span([h.Class("text-[11px] text-muted font-bold")], [result.name]),
+    ];
+    // Nothing to reveal: a bare header row, not a collapsible.
+    if (result.text === "") {
+      return h.div(
+        [h.Class("px-4 py-2 border-b border-line bg-surface")],
+        [h.div([h.Class("flex items-center gap-2")], header)],
+      );
+    }
+    return h.details(
       [
-        h.div(
-          [h.Class("flex items-center gap-2")],
+        h.Class("group px-4 py-2 border-b border-line bg-surface"),
+        h.Open(model.toolsOpen.includes(entryId)),
+        h.OnToggle((expanded) => ToolToggled({ id: entryId, expanded })),
+      ],
+      [
+        h.summary(
+          [
+            h.Class(
+              "flex items-center gap-2 cursor-pointer select-none marker:hidden [&::-webkit-details-marker]:hidden",
+            ),
+          ],
           [
             h.span(
               [
                 h.Class(
-                  `text-[10px] uppercase tracking-[0.18em] ${result.isError ? "text-love" : "text-subtle"}`,
+                  "text-[10px] uppercase tracking-[0.18em] text-muted inline-block transition-transform duration-150 group-open:rotate-90",
                 ),
               ],
-              [result.isError ? "tool ✗" : "tool"],
+              ["▸"],
             ),
-            h.span([h.Class("text-[11px] text-muted font-bold")], [result.name]),
+            ...header,
           ],
         ),
-        ...(result.text === ""
-          ? []
-          : [
-              h.pre(
-                [
-                  h.Class(
-                    "whitespace-pre-wrap text-[12px] text-subtle mt-1 max-h-64 overflow-y-auto",
-                  ),
-                ],
-                [result.text],
-              ),
-            ]),
+        h.pre(
+          [h.Class("whitespace-pre-wrap text-[12px] text-subtle mt-1 max-h-64 overflow-y-auto")],
+          [result.text],
+        ),
       ],
     );
   }
@@ -218,9 +270,8 @@ const renderMessageEntry = (message: MessageProjection, h: HtmlBuilder<ThreadMes
     const text = messageText(message);
     const error = messageError(message);
     return h.div(
-      [h.Class("px-4 py-3 border-b border-line")],
+      [h.Class("")],
       [
-        roleLabel(h, "saku", "text-iris"),
         ...(error === ""
           ? []
           : [
@@ -232,29 +283,24 @@ const renderMessageEntry = (message: MessageProjection, h: HtmlBuilder<ThreadMes
         ...(thinking === ""
           ? []
           : [
-              h.div(
-                [h.Class("mt-1 text-[12px] text-muted border-l-2 border-muted/40 pl-2")],
-                [markdownBody(h, thinking)],
-              ),
+              thinkingBlock(h, markdownBody(h, thinking), {
+                open: model.thinkingOpen.includes(entryId),
+                onToggle: (expanded) => ThinkingToggled({ messageId: entryId, expanded }),
+              }),
             ]),
         ...(text === "" ? [] : [markdownBody(h, text)]),
         ...(calls.length === 0
           ? []
           : [
               h.div(
-                [h.Class("mt-2 flex flex-col gap-1")],
+                [h.Class("flex flex-col gap-2")],
                 calls.map((call) =>
-                  h.div(
-                    [
-                      h.Class(
-                        "flex items-baseline gap-2 border border-line bg-surface px-2 py-1 text-[12px]",
-                      ),
-                    ],
-                    [
-                      h.span([h.Class("text-pine shrink-0")], ["▸"]),
-                      h.span([h.Class("font-bold shrink-0")], [call.name]),
-                      h.span([h.Class("text-muted truncate")], [call.args]),
-                    ],
+                  toolCallRow(
+                    call,
+                    index.results.get(call.id),
+                    model.toolsOpen.includes(call.id),
+                    h,
+                    (expanded) => ToolToggled({ id: call.id, expanded }),
                   ),
                 ),
               ),
@@ -267,8 +313,147 @@ const renderMessageEntry = (message: MessageProjection, h: HtmlBuilder<ThreadMes
   return metaRow(h, `· ${role || "message"}${text === "" ? "" : ` — ${summaryLine(text)}`}`);
 };
 
+/**
+ * One merged tool row: the call's arguments AND its output in a single
+ * collapsible block (the trail used to split them across the assistant
+ * message and a separate toolResult entry). The collapsed summary shows
+ * the tool name, its per-tool rendered args, and a ✓/✗ completion glyph;
+ * expanding reveals the args and the output under it.
+ */
+const toolCallRow = (
+  call: ToolCallRow,
+  result: ToolResultRow | undefined,
+  open: boolean,
+  h: HtmlBuilder<ThreadMessage>,
+  onToggle: (expanded: boolean) => ThreadMessage,
+) =>
+  h.details(
+    [
+      h.Class("group bg-surface px-2 py-1 text-[12px] font-mono"),
+      h.Open(open),
+      h.OnToggle(onToggle),
+    ],
+    [
+      h.summary(
+        [
+          h.Class(
+            "flex items-baseline gap-2 cursor-pointer select-none marker:hidden [&::-webkit-details-marker]:hidden",
+          ),
+        ],
+        [
+          h.span(
+            [
+              h.Class(
+                "text-pine shrink-0 inline-block transition-transform duration-150 group-open:rotate-90",
+              ),
+            ],
+            ["▸"],
+          ),
+          h.span([h.Class("font-bold shrink-0")], [call.name]),
+          h.span([h.Class("text-muted truncate")], [call.args.preview]),
+          ...(result === undefined
+            ? []
+            : [
+                h.span(
+                  [h.Class(`${result.isError ? "text-love" : "text-foam"} shrink-0 text-[11px]`)],
+                  [result.isError ? "✗" : "✓"],
+                ),
+              ]),
+        ],
+      ),
+      ...toolArgsLines(call.args, h),
+      // The output section: only when the call has a result with content.
+      ...(result === undefined || result.text === ""
+        ? []
+        : [
+            h.div([h.Class("mt-1 border-t border-line/70 pt-1")], [
+              h.div(
+                [
+                  h.Class(
+                    `text-[10px] uppercase tracking-[0.18em] ${result.isError ? "text-love" : "text-subtle"}`,
+                  ),
+                ],
+                [result.isError ? "error" : "output"],
+              ),
+              h.pre(
+                [
+                  h.Class(
+                    "whitespace-pre-wrap text-[12px] text-subtle mt-0.5 max-h-64 overflow-y-auto",
+                  ),
+                ],
+                [result.text],
+              ),
+            ]),
+          ]),
+    ],
+  );
+
+/** The per-tool argument rendering: labels for short fields, code blocks
+ *  for paths/content/commands, and −/+ lines for edit diffs. */
+const toolArgsLines = (args: ToolArgsView, h: HtmlBuilder<ThreadMessage>) =>
+  args.lines.map((line: ToolArgLine) =>
+    line.kind === "label"
+      ? h.div([h.Class("mt-1 text-[10px] uppercase tracking-[0.18em] text-subtle")], [line.text])
+      : line.kind === "code"
+        ? h.pre(
+            [h.Class("mt-0.5 whitespace-pre-wrap text-[12px] text-subtle max-h-40 overflow-y-auto")],
+            [line.text],
+          )
+        : h.div(
+            [
+              h.Class(
+                `mt-0.5 whitespace-pre-wrap text-[12px] font-mono ${line.kind === "removed" ? "text-love/80" : "text-foam/80"}`,
+              ),
+            ],
+            [`${line.kind === "removed" ? "−" : "+"} ${line.text}`],
+          ),
+  );
+
 const roleLabel = (h: HtmlBuilder<ThreadMessage>, label: string, tone: string) =>
   h.div([h.Class(`text-[10px] uppercase tracking-[0.18em] ${tone}`)], [label]);
+
+/**
+ * The thinking block: a `<details>` collapsible with a "thinking" summary
+ * row. Collapsed by default — the expanded set lives in the model
+ * (`thinkingOpen`), so a user's expand/collapse survives re-renders and
+ * the live region's open state never leaks into completed messages. The
+ * live region renders it with `open: true` (streaming is always shown)
+ * and no toggle; trail entries are controlled by `ThinkingToggled`.
+ */
+const thinkingBlock = (
+  h: HtmlBuilder<ThreadMessage>,
+  body: Html,
+  opts: { open: boolean; onToggle?: (open: boolean) => ThreadMessage },
+) =>
+  h.details(
+    [
+      h.Class("group bg-surface px-2 py-1"),
+      h.Open(opts.open),
+      ...(opts.onToggle === undefined ? [] : [h.OnToggle(opts.onToggle)]),
+    ],
+    [
+      h.summary(
+        [
+          h.Class(
+            "flex items-baseline gap-2 cursor-pointer select-none text-[12px] font-mono marker:hidden [&::-webkit-details-marker]:hidden",
+          ),
+        ],
+        [
+          h.span(
+            [
+              h.Class(
+                "text-iris shrink-0 inline-block transition-transform duration-150 group-open:rotate-90",
+              ),
+            ],
+            ["▸"],
+          ),
+          h.span([h.Class("font-bold text-iris shrink-0")], ["thinking"]),
+          h.span([h.Class("text-muted truncate")], ["internal reasoning"]),
+        ],
+      ),
+      h.div([h.Class("mt-1 border-t border-line/70 pt-1 text-[12px] text-subtle")], [body]),
+    ],
+  );
 
 const liveRegion = (model: Model, h: HtmlBuilder<ThreadMessage>) => {
   const { live } = model;
@@ -291,8 +476,8 @@ const liveRegion = (model: Model, h: HtmlBuilder<ThreadMessage>) => {
       ...(live.thinking !== undefined && live.thinking !== ""
         ? [
             h.div(
-              [h.Class("px-4 pt-2 text-[12px] text-muted border-l-2 border-muted/40 ml-4")],
-              [markdownBody(h, live.thinking)],
+              [h.Class("px-4 pt-2 ml-4")],
+              [thinkingBlock(h, markdownBody(h, live.thinking), { open: true })],
             ),
           ]
         : []),
@@ -300,7 +485,7 @@ const liveRegion = (model: Model, h: HtmlBuilder<ThreadMessage>) => {
         ? [
             h.div(
               [h.Class("px-4 pb-3 flex flex-col gap-1")],
-              live.tools.map((tool) => liveToolRow(tool, h)),
+              live.tools.map((tool) => liveToolRow(tool, model.toolsOpen, h)),
             ),
           ]
         : []),
@@ -308,23 +493,44 @@ const liveRegion = (model: Model, h: HtmlBuilder<ThreadMessage>) => {
   );
 };
 
-const liveToolRow = (tool: LiveTool, h: HtmlBuilder<ThreadMessage>) => {
+const liveToolRow = (tool: LiveTool, open: readonly string[], h: HtmlBuilder<ThreadMessage>) => {
   const glyph = tool.state === "running" ? "◌" : tool.state === "done" ? "✓" : "✗";
   const tone =
     tool.state === "running" ? "text-gold" : tool.state === "done" ? "text-foam" : "text-love";
   const output =
     tool.state === "running" ? (tool.partial ?? "") : (tool.result ?? tool.partial ?? "");
-  return h.div(
-    [h.Class("flex flex-col gap-0.5 border border-line bg-base px-2 py-1")],
+  const args = toolArgsView(tool.name, tool.args);
+  return h.details(
     [
-      h.div(
-        [h.Class("flex items-baseline gap-2 text-[12px]")],
+      h.Class("group flex flex-col gap-0.5 border border-line bg-base px-2 py-1"),
+      h.Open(open.includes(tool.callId)),
+      h.OnToggle((expanded) => ToolToggled({ id: tool.callId, expanded })),
+    ],
+    [
+      h.summary(
         [
+          h.Class(
+            "flex items-baseline gap-2 text-[12px] cursor-pointer select-none marker:hidden [&::-webkit-details-marker]:hidden",
+          ),
+        ],
+        [
+          h.span(
+            [
+              h.Class(
+                "text-muted shrink-0 inline-block transition-transform duration-150 group-open:rotate-90",
+              ),
+            ],
+            ["▸"],
+          ),
           h.span([h.Class(`${tone} shrink-0`), h.Title(tool.callId)], [glyph]),
           h.span([h.Class("font-bold")], [tool.name]),
+          ...(args.preview === ""
+            ? []
+            : [h.span([h.Class("text-muted truncate")], [args.preview])]),
           h.span([h.Class("text-muted text-[11px]")], [tool.state]),
         ],
       ),
+      ...toolArgsLines(args, h),
       ...(output === ""
         ? []
         : [
@@ -337,31 +543,66 @@ const liveToolRow = (tool: LiveTool, h: HtmlBuilder<ThreadMessage>) => {
   );
 };
 
-/** The docked composer area under a pinned thread's trail. The box is
- *  capped at the welcome's column width and centered — the textarea never
- *  spans the whole pane (the welcome's quick-start box, view.ts). */
+/** The docked composer area under a pinned thread's trail. The prompt card
+ *  gets enough width to feel like a work surface while staying aligned with
+ *  the trail above it. */
 const composerArea = (model: Model, h: HtmlBuilder<ThreadMessage>) =>
   h.div(
-    [h.Class("shrink-0 border-t border-line bg-surface p-3")],
-    [h.div([h.Class("w-full max-w-xl mx-auto")], [composerBox(model, h, "thread")])],
+    [h.Class("shrink-0 border-t border-line bg-surface p-4")],
+    [h.div([h.Class("w-full max-w-4xl mx-auto")], [composerBox(model, h, "thread")])],
   );
 
-/**
- * The composer's status row (the humanlayer pattern — status sits next to
- * the action that caused it): the thread's state glyph on the left; the
- * model badge (opens the picker) and the context-usage badge on the right.
- * Only a pinned thread has model/context/state to show — the welcome's
- * quick-start box stays bare.
- */
-const composerStatus = (model: Model, h: HtmlBuilder<ThreadMessage>) =>
-  h.div(
-    [h.Class("flex items-center gap-2 mt-2")],
+/** The composer's integrated footer: state and keyboard guidance on the left,
+ *  then the real thread controls and the send/abort action on the right. The
+ *  welcome uses the same layout without thread-only model metadata. */
+const composerToolbar = (
+  model: Model,
+  h: HtmlBuilder<ThreadMessage>,
+  kind: "thread" | "welcome",
+  busy: boolean,
+) => {
+  const working = kind === "thread" && model.info !== null && model.info.state === "working";
+  return h.div(
+    [h.Class("flex flex-wrap items-center gap-1.5 border-t border-line bg-overlay/20 px-2 py-2")],
     [
-      ...(model.info === null ? [] : [stateBadge(model.info.state, h)]),
-      h.span([h.Class("flex-1")], []),
-      modelBadge(model, h),
-      contextBadge(model, h),
+      ...(kind === "thread" && model.info !== null
+        ? [stateBadge(model.info.state, h)]
+        : [
+            h.span(
+              [h.Class("text-[10px] uppercase tracking-[0.16em] text-subtle")],
+              ["quick start"],
+            ),
+          ]),
+      h.span(
+        [h.Class("hidden sm:inline text-[10px] text-muted")],
+        [
+          kind === "welcome"
+            ? "enter to start · shift+enter for newline"
+            : "enter to send · shift+enter for newline",
+        ],
+      ),
+      h.span([h.Class("flex-1 min-w-2")], []),
+      ...(kind === "thread" ? [modelBadge(model, h), contextBadge(model, h)] : []),
+      working ? abortButton(h) : sendButton(h, kind, busy),
     ],
+  );
+};
+
+/** The compact submit action lives in the toolbar so the prompt remains one
+ *  continuous surface. Its accessible label keeps the arrow-only treatment
+ *  understandable to screen readers. */
+const sendButton = (h: HtmlBuilder<ThreadMessage>, kind: "thread" | "welcome", busy: boolean) =>
+  h.button(
+    [
+      h.Class(
+        `flex h-8 w-9 shrink-0 items-center justify-center border border-pine text-[16px] text-pine transition-colors ${busy ? "cursor-not-allowed opacity-40" : "hover:bg-pine/10"}`,
+      ),
+      h.OnClick(SendRequested()),
+      h.Disabled(busy),
+      h.AriaLabel(kind === "welcome" ? "start thread" : "send prompt"),
+      h.Title(kind === "welcome" ? "start thread" : "send prompt"),
+    ],
+    [h.span([h.Class("sr-only")], [kind === "welcome" ? "start ❯" : "send ❯"]), "↑"],
   );
 
 /** The state glyph + word, from the shared derivation (presentation.ts). */
@@ -380,7 +621,7 @@ const contextBadge = (model: Model, h: HtmlBuilder<ThreadMessage>) => {
   const { tokens, window, percent } = usage;
   return h.span(
     [
-      h.Class(`text-[11px] ${contextTone(percent)}`),
+      h.Class(`shrink-0 border border-line px-1.5 py-1 text-[11px] ${contextTone(percent)}`),
       h.Title(
         `context — ${tokens.toLocaleString()} of ${window.toLocaleString()} tokens (${percent}%)`,
       ),
@@ -397,14 +638,14 @@ const modelBadge = (model: Model, h: HtmlBuilder<ThreadMessage>) => {
   return h.button(
     [
       h.Class(
-        `flex items-center gap-1 border border-line px-1.5 py-px text-[11px] ${working ? "text-muted cursor-not-allowed" : "text-subtle hover:border-subtle hover:text-text"}`,
+        `flex max-w-full items-center gap-1 border border-line px-1.5 py-1 text-[11px] ${working ? "cursor-not-allowed text-muted" : "text-subtle hover:border-subtle hover:text-text"}`,
       ),
       h.OnClick(ModelPickerRequested()),
       h.Disabled(working),
       h.Title(working ? "model changes unavailable while working" : "change the thread's model"),
       h.AriaLabel("change model"),
     ],
-    [label, h.span([h.Class("text-muted")], ["✎"])],
+    [h.span([h.Class("truncate")], [label]), h.span([h.Class("text-muted")], ["✎"])],
   );
 };
 
@@ -485,15 +726,13 @@ const modelPickerRow = (
 };
 
 /**
- * The composer box, shared by the thread pane and the welcome: the textarea
- * (focus-aware placeholder, enter to send) plus the action button, with the
- * failure notice underneath (the humanlayer pattern — status sits next to
- * the action that caused it, not in a banner above the trail). On a pinned
- * thread the box carries the status row (state glyph, model badge, context
- * badge) and the model picker under it (view.ts). On the welcome the box is
- * the quick-start gesture; on a thread it prompts the pinned thread. The
- * welcome's box autofocuses on mount — every arrival at the root route
- * lands the cursor in the composer (the thread box never autofocuses).
+ * The composer box, shared by the thread pane and the welcome: a generous
+ * prompt surface with its send action and real thread controls in one footer.
+ * The textarea keeps the focus-aware placeholder and Enter/Shift+Enter
+ * behavior; the failure notice stays under the action that caused it. On a
+ * pinned thread the model picker opens below the card. The welcome's box
+ * autofocuses on mount — every arrival at the root route lands the cursor in
+ * the composer (the thread box never autofocuses).
  */
 const composerBox = (model: Model, h: HtmlBuilder<ThreadMessage>, kind: "thread" | "welcome") => {
   const working = model.info?.state === "working";
@@ -510,52 +749,49 @@ const composerBox = (model: Model, h: HtmlBuilder<ThreadMessage>, kind: "thread"
     [h.Class("flex flex-col")],
     [
       h.div(
-        [h.Class("flex items-stretch gap-2")],
         [
-          h.textarea([
-            h.Class(
-              "flex-1 resize-none bg-base border border-line px-3 py-2 text-[13px] outline-none focus:border-subtle placeholder:text-muted",
-            ),
-            h.Rows(3),
-            h.Placeholder(placeholder),
-            h.Spellcheck(false),
-            h.Disabled(busy),
-            h.Value(model.composer),
-            h.OnInput((raw) => ComposerChanged({ text: raw })),
-            h.OnKeyDownPreventDefault((key, modifiers) =>
-              key === "Enter" && !modifiers.shiftKey && !busy
-                ? Option.some(SendRequested())
-                : Option.none(),
-            ),
-            h.OnFocus(ComposerFocused()),
-            h.OnBlur(ComposerBlurred()),
-            ...(kind === "welcome"
-              ? [
-                  h.OnMount({
-                    name: "AutofocusComposer",
-                    f: (element) => {
-                      (element as HTMLTextAreaElement).focus();
-                      return Stream.empty;
-                    },
-                  }),
-                ]
-              : []),
-          ]),
-          kind === "thread" && working
-            ? abortButton(h)
-            : h.button(
-                [
-                  h.Class(
-                    "shrink-0 border border-pine text-pine px-4 text-[13px] hover:bg-pine/10",
-                  ),
-                  h.OnClick(SendRequested()),
-                  h.Disabled(busy),
-                ],
-                [kind === "welcome" ? "start ❯" : "send ❯"],
-              ),
+          h.Class(
+            "flex flex-col overflow-hidden border border-line bg-surface shadow-sm transition-colors focus-within:border-subtle",
+          ),
+        ],
+        [
+          h.div(
+            [h.Class("px-4 pb-2 pt-3")],
+            [
+              h.textarea([
+                h.Class(
+                  "block min-h-36 w-full resize-y border-0 bg-transparent p-0 font-mono text-[13px] leading-relaxed text-text outline-none placeholder:text-muted focus:ring-0",
+                ),
+                h.Rows(5),
+                h.Placeholder(placeholder),
+                h.Spellcheck(false),
+                h.Disabled(busy),
+                h.Value(model.composer),
+                h.OnInput((raw) => ComposerChanged({ text: raw })),
+                h.OnKeyDownPreventDefault((key, modifiers) =>
+                  key === "Enter" && !modifiers.shiftKey && !busy
+                    ? Option.some(SendRequested())
+                    : Option.none(),
+                ),
+                h.OnFocus(ComposerFocused()),
+                h.OnBlur(ComposerBlurred()),
+                ...(kind === "welcome"
+                  ? [
+                      h.OnMount({
+                        name: "AutofocusComposer",
+                        f: (element) => {
+                          (element as HTMLTextAreaElement).focus();
+                          return Stream.empty;
+                        },
+                      }),
+                    ]
+                  : []),
+              ]),
+            ],
+          ),
+          composerToolbar(model, h, kind, busy),
         ],
       ),
-      ...(kind === "thread" ? [composerStatus(model, h)] : []),
       ...(kind === "thread" && model.modelPicker._tag !== "Idle"
         ? [modelPickerPanel(model, h)]
         : []),
@@ -586,10 +822,10 @@ const scrollToLatestButton = (h: HtmlBuilder<ThreadMessage>) =>
  *  else. */
 const welcome = (model: Model, h: HtmlBuilder<ThreadMessage>) =>
   h.div(
-    [h.Class("flex-1 min-h-0 flex flex-col items-center justify-center gap-2 px-6")],
+    [h.Class("flex-1 min-h-0 flex flex-col items-center justify-center gap-3 px-6")],
     [
       h.div([h.Class("text-[26px] font-bold uppercase tracking-[0.35em] text-text")], ["saku"]),
       h.div([h.Class("text-[13px] text-subtle")], ["Welcome back! What should we work on today?"]),
-      h.div([h.Class("w-full max-w-xl mt-2")], [composerBox(model, h, "welcome")]),
+      h.div([h.Class("w-full max-w-4xl mt-2")], [composerBox(model, h, "welcome")]),
     ],
   );

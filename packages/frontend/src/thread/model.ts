@@ -31,6 +31,12 @@ export const Model = S.Struct({
   trail: Trail.schema,
   /** The run in flight (live.ts). */
   live: LiveRegion,
+  /** Trail entry ids whose thinking block is expanded (default: collapsed;
+   *  the live region streams open regardless, view.ts). */
+  thinkingOpen: S.Array(S.String),
+  /** Trail entry/tool-call ids whose tool rows are expanded (default:
+   *  collapsed, view.ts). */
+  toolsOpen: S.Array(S.String),
   /** The pinned thread's current model (`get_state`, read-only); null on the
    *  welcome and before the state read lands. */
   model: S.NullOr(WireModelInfo),
@@ -54,6 +60,8 @@ export const initialModel = () => ({
   info: null,
   trail: Trail.Idle(),
   live: emptyLiveRegion(),
+  thinkingOpen: [],
+  toolsOpen: [],
   model: null,
   modelPicker: ModelPicker.Idle(),
   modelBusy: false,

@@ -17,6 +17,7 @@ import { connMachine } from "../conn/machine.ts";
 import * as Rail from "../rail/update.ts";
 import * as RailMsg from "../rail/message.ts";
 import { AppRoute } from "../route.ts";
+import { LoadStateCmd, LoadTrailCmd } from "../thread/command.ts";
 import * as Thread from "../thread/update.ts";
 import * as ThreadMsg from "../thread/message.ts";
 import { Wire } from "../wire.ts";
@@ -97,12 +98,34 @@ export const update = (model: Model, message: RootMessage) =>
       Navigated: () => [model, none],
       NavigatedTo: () => [model, none],
 
-      // A successful connect also clears the wire-error banner.
+      // A successful connect also clears the wire-error banner. The pane's
+      // reads are re-issued on the transition: at boot they race the
+      // handshake (a pinned thread's trail read can land on a
+      // not-yet-connected client and fail without a retry), and after a
+      // reconnect the trail is stale (events streamed while offline were
+      // missed). The state read doubles as the header's info — a thread
+      // opened mid-run must show its state and the stop control.
       Connected: (m) => {
         const result = connMachine.step(model.conn, m);
+        // The pane's reads ride the transition to Online: at boot they race
+        // the handshake (a pinned thread's trail read can land on a
+        // not-yet-connected client and fail without a retry), and after a
+        // reconnect the trail is stale (events streamed while offline were
+        // missed). The state read doubles as the header's info — a thread
+        // opened mid-run must show its state and the stop control.
+        const reload =
+          result._tag === "Transitioned" && model.route._tag === "Thread"
+            ? Command.mapMessages(
+                [
+                  LoadTrailCmd({ id: model.route.id }),
+                  LoadStateCmd({ id: model.route.id }),
+                ] as ReadonlyArray<Command.Command<ThreadMsg.ThreadMessage, never, Wire>>,
+                (message) => GotThreadMessage({ message }),
+              )
+            : none;
         return [
           evo(model, { conn: (_) => result.state, banner: (_) => null }),
-          result._tag === "Transitioned" ? result.commands : none,
+          [...(result._tag === "Transitioned" ? result.commands : none), ...reload],
         ];
       },
       ConnectFailed: (m) => stepConn(model, m),

@@ -26,6 +26,8 @@ import { informRouteChanged, update } from "./update.ts";
 import { ModelPicker, type Model } from "./model.ts";
 import { Trail, type Live } from "./live.ts";
 import {
+  AbortDone,
+  AbortRequested,
   ComposerBlurred,
   ComposerFocused,
   CreateFailed,
@@ -41,6 +43,8 @@ import {
   SendRequested,
   StateFailed,
   StateLoaded,
+  ThinkingToggled,
+  ToolToggled,
   ThreadChanged,
   ThreadCreated,
   TrailFailed,
@@ -115,6 +119,8 @@ const modelArb: fc.Arbitrary<Model> = fc.record({
   info: fc.oneof(fc.constant(null), threadArb),
   trail: trailArb,
   live: liveArb,
+  thinkingOpen: fc.array(fc.string({ maxLength: 12 }), { maxLength: 4 }),
+  toolsOpen: fc.array(fc.string({ maxLength: 12 }), { maxLength: 4 }),
   model: fc.oneof(fc.constant(null), wireModelArb),
   modelPicker: modelPickerArb,
   modelBusy: fc.boolean(),
@@ -213,11 +219,11 @@ describe("thread update", () => {
     );
   });
 
-  it("the state read lands the model; a failed read keeps the current value", () => {
+  it("the state read lands the model and the header's info; a failed read keeps both", () => {
     fc.assert(
-      fc.property(modelArb, wireModelArb, (model, next) => {
-        const [loaded] = update(model, StateLoaded({ model: next }));
-        expect(loaded).toEqual({ ...model, model: next });
+      fc.property(modelArb, wireModelArb, threadArb, (model, next, info) => {
+        const [loaded] = update(model, StateLoaded({ model: next, info }));
+        expect(loaded).toEqual({ ...model, model: next, info });
         const [failed] = update(model, StateFailed());
         expect(failed).toEqual(model);
       }),
@@ -303,6 +309,68 @@ describe("thread update", () => {
     );
   });
 
+  it("a thinking toggle expands once per id and collapses by id", () => {
+    fc.assert(
+      fc.property(modelArb, fc.string({ maxLength: 12 }), (model, messageId) => {
+        const [expanded] = update(model, ThinkingToggled({ messageId, expanded: true }));
+        expect(expanded.thinkingOpen).toEqual(
+          model.thinkingOpen.includes(messageId)
+            ? model.thinkingOpen
+            : [...model.thinkingOpen, messageId],
+        );
+        const [again] = update(expanded, ThinkingToggled({ messageId, expanded: true }));
+        expect(again.thinkingOpen).toEqual(expanded.thinkingOpen);
+        const [collapsed] = update(expanded, ThinkingToggled({ messageId, expanded: false }));
+        expect(collapsed.thinkingOpen).toEqual(
+          expanded.thinkingOpen.filter((id) => id !== messageId),
+        );
+      }),
+    );
+  });
+
+  it("a tool toggle expands once per id and collapses by id", () => {
+    fc.assert(
+      fc.property(modelArb, fc.string({ maxLength: 12 }), (model, id) => {
+        const [expanded] = update(model, ToolToggled({ id, expanded: true }));
+        expect(expanded.toolsOpen).toEqual(
+          model.toolsOpen.includes(id) ? model.toolsOpen : [...model.toolsOpen, id],
+        );
+        const [again] = update(expanded, ToolToggled({ id, expanded: true }));
+        expect(again.toolsOpen).toEqual(expanded.toolsOpen);
+        const [collapsed] = update(expanded, ToolToggled({ id, expanded: false }));
+        expect(collapsed.toolsOpen).toEqual(expanded.toolsOpen.filter((x) => x !== id));
+      }),
+    );
+  });
+
+  it("AbortRequested is a no-op when no thread is pinned, and fires AbortCmd with the pinned id otherwise", () => {
+    fc.assert(
+      fc.property(modelArb, (model) => {
+        const [next, commands, out] = update(model, AbortRequested());
+        expect(next).toEqual(model);
+        expect(out).toEqual(Option.none());
+        if (model.id === null) {
+          expect(commands).toHaveLength(0);
+        } else {
+          expect(commands).toHaveLength(1);
+          expect(commands[0]?.name).toBe("Abort");
+          expect(commands[0]?.args).toEqual({ id: model.id });
+        }
+      }),
+    );
+  });
+
+  it("AbortDone is a pure no-op (state, commands, and out are unchanged)", () => {
+    fc.assert(
+      fc.property(modelArb, (model) => {
+        const [next, commands, out] = update(model, AbortDone());
+        expect(next).toEqual(model);
+        expect(commands).toHaveLength(0);
+        expect(out).toEqual(Option.none());
+      }),
+    );
+  });
+
   it("informRouteChanged pins the thread, resets the view, preserves the composer, and reads the trail and state", () => {
     fc.assert(
       fc.property(modelArb, fc.string({ maxLength: 24 }), (model, id) => {
@@ -314,6 +382,8 @@ describe("thread update", () => {
           model: null,
           modelPicker: ModelPicker.Idle(),
           modelBusy: false,
+          thinkingOpen: [],
+          toolsOpen: [],
         };
         const [pinned, pinnedCommands] = informRouteChanged(model, ThreadRoute({ id }));
         expect(pinned).toEqual({ ...model, id, ...reset });

@@ -151,8 +151,8 @@ describe.skipIf(!available)("welcome end-to-end", () => {
       expect((document.querySelector("textarea") as HTMLTextAreaElement).value).toBe("");
       expect(document.body.innerText).not.toContain("Welcome back!");
 
-      // The composer's status row (the humanlayer pattern): the model badge
-      // from the state read and the context badge from the fake run's usage.
+      // The composer's footer carries the model badge from the state read
+      // and the context badge from the fake run's usage.
       await waitFor(
         () => document.body.innerText.includes("saku-fake/test"),
         "the model badge from the state read",

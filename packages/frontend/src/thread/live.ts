@@ -41,6 +41,8 @@ export const LiveTool = S.Struct({
   callId: S.String,
   name: S.String,
   state: S.Literals(["running", "done", "failed"]),
+  /** The tool's arguments (pi sends them on start and each update). */
+  args: S.optional(S.Unknown),
   /** Streamed partial output while running. */
   partial: S.optional(S.String),
   /** The final result (or error output). */
@@ -128,16 +130,19 @@ export const foldLive = (state: Live, event: SessionEventProjection): Live =>
           },
         };
       },
-      tool_execution_start: ({ toolCallId, toolName }) => {
-        const tool: LiveTool = { callId: toolCallId, name: toolName, state: "running" };
+      tool_execution_start: ({ toolCallId, toolName, args }) => {
+        const tool: LiveTool = { callId: toolCallId, name: toolName, state: "running", args };
         return { ...state, live: { ...state.live, tools: [...state.live.tools, tool] } };
       },
-      tool_execution_update: ({ toolCallId, partialResult }) => ({
+      tool_execution_update: ({ toolCallId, partialResult, args }) => ({
         ...state,
         live: {
           ...state.live,
           tools: foldLiveTool(state.live.tools, toolCallId, {
             partial: stringifyLive(partialResult),
+            // A streamed update may omit the args (they are optional); an
+            // absent value keeps the start's args, a present one refreshes.
+            ...(args === undefined ? {} : { args }),
           }),
         },
       }),

@@ -61,7 +61,16 @@ const resetViewFields = {
   model: (_: Model["model"]) => null,
   modelPicker: (_: Model["modelPicker"]) => ModelPicker.Idle(),
   modelBusy: (_: boolean) => false,
+  // Expanded thinking/tools are thread-owned too — a fresh selection
+  // starts collapsed (ADR-consistent with the welcome's focus state).
+  thinkingOpen: (_: readonly string[]) => [],
+  toolsOpen: (_: readonly string[]) => [],
 };
+
+/** The expanded-id set fold shared by the thinking/tool toggles: add on
+ *  expand (once), drop on collapse. */
+const foldToggled = (ids: readonly string[], id: string, expanded: boolean) =>
+  expanded ? (ids.includes(id) ? ids : [...ids, id]) : ids.filter((x) => x !== id);
 
 export const update = (model: Model, message: ThreadMessage) =>
   M.value(message).pipe(
@@ -100,9 +109,14 @@ export const update = (model: Model, message: ThreadMessage) =>
       ComposerFocused: () => [evo(model, { focused: (_) => true }), none, Option.none()],
       ComposerBlurred: () => [evo(model, { focused: (_) => false }), none, Option.none()],
 
-      // The badge's model read: land it, or stay with the current value
-      // (a failed read keeps the badge's last-known model; null until then).
-      StateLoaded: ({ model: next }) => [evo(model, { model: (_) => next }), none, Option.none()],
+      // The badge's model read (and the header's info) landed: adopt the
+      // model, and adopt the info so a thread opened mid-run shows its
+      // state and the stop control immediately.
+      StateLoaded: ({ model: next, info }) => [
+        evo(model, { model: (_) => next, info: (_) => info }),
+        none,
+        Option.none(),
+      ],
       StateFailed: () => [model, none, Option.none()],
 
       // Opening is guarded: only on a pinned, non-working thread, and only
@@ -202,6 +216,21 @@ export const update = (model: Model, message: ThreadMessage) =>
           ? [model, none, Option.none()]
           : [model, [AbortCmd({ id: model.id })], Option.none()],
       AbortDone: () => [model, none, Option.none()],
+      // A trail thinking block was expanded/collapsed (the `<details>`
+      // toggle event; `expanded` is the new state from OnToggle). The
+      // live region never lands here — it is open while streaming.
+      ThinkingToggled: ({ messageId, expanded }) => [
+        evo(model, { thinkingOpen: (ids) => foldToggled(ids, messageId, expanded) }),
+        none,
+        Option.none(),
+      ],
+      // A tool row (trail call chip, tool result, or live tool) was
+      // expanded/collapsed — same fold, keyed by the call or entry id.
+      ToolToggled: ({ id, expanded }) => [
+        evo(model, { toolsOpen: (ids) => foldToggled(ids, id, expanded) }),
+        none,
+        Option.none(),
+      ],
     }),
   );
 

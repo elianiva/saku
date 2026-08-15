@@ -46,7 +46,10 @@ import { decodeEntry, type EntryProjection } from "./projection.ts";
     ),
 });
 
-/** Read the pinned thread's state — the model badge's model (ADR 0004). */
+/** Read the pinned thread's state and registry info — the model badge's
+ *  model and the header's state/env line (ADR 0004). The info lands here
+ *  because a thread opened mid-run must show its state and the stop
+ *  control immediately, not only after the next broadcast. */
 export const LoadStateCmd = Command.define("LoadState", {
   args: { id: S.String },
   messages: [StateLoaded, StateFailed],
@@ -54,8 +57,8 @@ export const LoadStateCmd = Command.define("LoadState", {
     catchWireError(
       Effect.gen(function* () {
         const { client } = yield* Wire;
-        const state = yield* client.getState(id);
-        return StateLoaded({ model: state.model });
+        const [state, info] = yield* Effect.all([client.getState(id), client.getThread(id)]);
+        return StateLoaded({ model: state.model, info });
       }),
       () => StateFailed(),
     ),

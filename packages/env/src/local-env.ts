@@ -374,7 +374,16 @@ export class LocalEnv implements ExecutionEnv {
     const shell = process.platform === "win32" ? "cmd.exe" : "/bin/sh";
     const shellArgs = process.platform === "win32" ? ["/d", "/s", "/c", command] : ["-c", command];
 
-    const child = spawn(shell, shellArgs, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(shell, shellArgs, {
+      cwd,
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+      // A new process group on POSIX: abort/timeout must kill the whole
+      // tree, not just the shell — `sh -c "sleep 2 && …"` leaves the
+      // grandchild holding the stdio pipes, so a shell-only kill hangs the
+      // exec until the grandchild exits on its own.
+      detached: process.platform !== "win32",
+    });
     return new Promise<
       PiResult<{ stdout: string; stderr: string; exitCode: number }, ExecutionError>
     >((resolveResult) => {
@@ -382,15 +391,31 @@ export class LocalEnv implements ExecutionEnv {
       let stderr = "";
       let timedOut = false;
       const timeoutMs = options?.timeout === undefined ? undefined : options.timeout * 1000;
+      const killTree = () => {
+        if (process.platform === "win32") {
+          // Windows has no process groups; taskkill /T is the tree kill.
+          if (child.pid !== undefined) {
+            spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+          }
+          return;
+        }
+        if (child.pid === undefined) return;
+        try {
+          process.kill(-child.pid, "SIGTERM");
+        } catch {
+          // The group is already gone (the child exited); nothing to kill.
+          child.kill("SIGTERM");
+        }
+      };
       const timer =
         timeoutMs === undefined
           ? undefined
           : setTimeout(() => {
               timedOut = true;
-              child.kill("SIGTERM");
+              killTree();
             }, timeoutMs);
       const onAbort = () => {
-        child.kill("SIGTERM");
+        killTree();
       };
       options?.abortSignal?.addEventListener("abort", onAbort, { once: true });
 

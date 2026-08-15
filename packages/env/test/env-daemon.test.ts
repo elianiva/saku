@@ -150,6 +150,25 @@ describe("env daemon", () => {
     expect(exec.error.code).toBe("aborted");
   });
 
+  it("kills the whole process tree on abort — a compound command's grandchild holds the pipes", async () => {
+    // `sh -c "sleep 30 && …"` forks: killing the shell alone leaves the
+    // grandchild `sleep` holding the stdio pipes, so the exec would hang
+    // until the grandchild exits on its own. The abort must kill the
+    // process group (local-env.ts) — the exec settles promptly, not after
+    // the full sleep.
+    const aborter = new AbortController();
+    const started = Date.now();
+    const promise = env.exec("sleep 30 && echo unreachable", { abortSignal: aborter.signal });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    aborter.abort();
+    const exec = await promise;
+    const elapsed = Date.now() - started;
+    expect(exec.ok).toBe(false);
+    if (exec.ok) return;
+    expect(exec.error.code).toBe("aborted");
+    expect(elapsed).toBeLessThan(5000);
+  });
+
   it("maps file failures back into pi's FileError classes", async () => {
     const missing = await env.readTextFile("nope.txt");
     expect(missing.ok).toBe(false);

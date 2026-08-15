@@ -59,8 +59,19 @@ export const SessionEventProjection = S.Union([
   S.TaggedStruct("message_start", { message: MessageProjection }),
   S.TaggedStruct("message_end", { message: MessageProjection }),
   S.TaggedStruct("message_update", { message: MessageProjection }),
-  S.TaggedStruct("tool_execution_start", { toolCallId: S.String, toolName: S.String }),
-  S.TaggedStruct("tool_execution_update", { toolCallId: S.String, partialResult: S.Unknown }),
+  S.TaggedStruct("tool_execution_start", {
+    toolCallId: S.String,
+    toolName: S.String,
+    /** The validated arguments pi starts the tool with. */
+    args: S.optional(S.Unknown),
+  }),
+  S.TaggedStruct("tool_execution_update", {
+    toolCallId: S.String,
+    toolName: S.optional(S.String),
+    /** The accumulating arguments as the tool's args stream in. */
+    args: S.optional(S.Unknown),
+    partialResult: S.Unknown,
+  }),
   S.TaggedStruct("tool_execution_end", {
     toolCallId: S.String,
     isError: S.Boolean,

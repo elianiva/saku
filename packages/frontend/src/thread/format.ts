@@ -11,9 +11,9 @@
  * - toolResult: `{ role: "toolResult", toolCallId, toolName, content, isError }`
  */
 
-import { Result } from "effect";
+import { jsonLine, toolArgsView, type ToolArgsView } from "./tools.ts";
 
-import type { MessageProjection } from "./projection.ts";
+import type { EntryProjection, MessageProjection } from "./projection.ts";
 
 export const asString = (value: unknown) => (typeof value === "string" ? value : "");
 
@@ -49,7 +49,9 @@ export const messageThinking = (message: MessageProjection) => {
 export interface ToolCallRow {
   readonly id: string;
   readonly name: string;
-  readonly args: string;
+  /** Per-tool rendering of the call's arguments (tools.ts): the preview
+   *  is the collapsed summary, the lines the expanded body. */
+  readonly args: ToolArgsView;
 }
 
 /** The tool calls an assistant message asks for. */
@@ -62,13 +64,15 @@ export const messageToolCalls = (message: MessageProjection) => {
     rows.push({
       id: asString(block.id),
       name: asString(block.name),
-      args: argsPreview(block.arguments),
+      args: toolArgsView(asString(block.name), block.arguments),
     });
   }
   return rows;
 };
 
 export interface ToolResultRow {
+  /** The tool call this result answers. */
+  readonly callId: string;
   readonly name: string;
   readonly text: string;
   readonly isError: boolean;
@@ -78,27 +82,39 @@ export interface ToolResultRow {
 export const messageToolResult = (message: MessageProjection) => {
   if (message.role !== "toolResult") return null;
   return {
+    callId: asString(message.toolCallId),
     name: asString(message.toolName),
     text: messageText(message),
     isError: message.isError === true,
   };
 };
 
-/**
- * One-line JSON of an unknown value, falling back to `String(value)` when
- * it cannot be stringified (circular refs). `Result.try` at the sync
- * stringify point (house style: no try/catch).
- */
-const jsonLine = (value: unknown) => {
-  const raw = Result.try(() => (typeof value === "string" ? value : JSON.stringify(value)));
-  return Result.isSuccess(raw) ? raw.success : String(value);
-};
+/** The trail's tool pairing index: toolResult messages keyed by the call
+ *  they answer, and the call ids that have a result. The view merges a
+ *  paired call + result into one row (the result entry itself is then not
+ *  rendered); an unpaired result keeps its standalone row (its call was
+ *  compacted away or never landed). */
+export interface TrailToolIndex {
+  readonly results: ReadonlyMap<string, ToolResultRow>;
+  readonly paired: ReadonlySet<string>;
+}
 
-/** A one-line JSON preview of tool arguments, truncated to the head. */
-export const argsPreview = (value: unknown) => {
-  if (value === undefined) return "";
-  const raw = jsonLine(value);
-  return raw.length > 240 ? `${raw.slice(0, 240)}…` : raw;
+export const trailToolIndex = (entries: readonly EntryProjection[]): TrailToolIndex => {
+  const results = new Map<string, ToolResultRow>();
+  const calls = new Set<string>();
+  for (const entry of entries) {
+    if (entry.type !== "message") continue;
+    const message = entry.message ?? {};
+    if (messageRole(message) === "toolResult") {
+      const result = messageToolResult(message);
+      if (result !== null && result.callId !== "") results.set(result.callId, result);
+    } else if (messageRole(message) === "assistant") {
+      for (const call of messageToolCalls(message)) {
+        if (call.id !== "") calls.add(call.id);
+      }
+    }
+  }
+  return { results, paired: new Set([...calls].filter((id) => results.has(id))) };
 };
 
 /** Streamed tool output grows; render its tail. */

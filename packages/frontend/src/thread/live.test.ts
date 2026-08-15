@@ -260,6 +260,40 @@ describe("tool execution", () => {
     );
   });
 
+  it("captures the tool's args: start pins them, a streamed update refreshes", () => {
+    let state = initial();
+    state = foldLive(state, {
+      _tag: "tool_execution_start",
+      toolCallId: "c1",
+      toolName: "bash",
+      args: { command: "ls" },
+    });
+    expect(state.live.tools[0]!.args).toEqual({ command: "ls" });
+    // An update without args keeps the start's args.
+    state = foldLive(state, {
+      _tag: "tool_execution_update",
+      toolCallId: "c1",
+      partialResult: "…",
+    });
+    expect(state.live.tools[0]!.args).toEqual({ command: "ls" });
+    // An update with args refreshes them (pi streams the accumulating args).
+    state = foldLive(state, {
+      _tag: "tool_execution_update",
+      toolCallId: "c1",
+      args: { command: "ls -la" },
+      partialResult: "…",
+    });
+    expect(state.live.tools[0]!.args).toEqual({ command: "ls -la" });
+    // The args survive the end event.
+    state = foldLive(state, {
+      _tag: "tool_execution_end",
+      toolCallId: "c1",
+      isError: false,
+      result: "total 0",
+    });
+    expect(state.live.tools[0]!.args).toEqual({ command: "ls -la" });
+  });
+
   it("leaves the tools untouched for an unknown call id", () => {
     fc.assert(
       fc.property(stateArb, fc.string({ minLength: 1, maxLength: 6 }), fc.boolean(), (state, callId, isError) => {

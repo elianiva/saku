@@ -42,8 +42,13 @@ export const SendFailed = Message.m("SendFailed", { message: S.String });
 export const ComposerFocused = Message.m("ComposerFocused");
 export const ComposerBlurred = Message.m("ComposerBlurred");
 
-/** The pinned thread's state read landed — the model badge's model. */
-export const StateLoaded = Message.m("StateLoaded", { model: S.NullOr(WireModelInfo) });
+/** The pinned thread's state read landed — the model badge's model and the
+ *  header's info (a thread opened mid-run must show its state and the stop
+ *  control immediately, not after the next broadcast). */
+export const StateLoaded = Message.m("StateLoaded", {
+  model: S.NullOr(WireModelInfo),
+  info: ThreadInfo,
+});
 export const StateFailed = Message.m("StateFailed");
 
 /** The composer's model badge was clicked: open the picker. */
@@ -69,6 +74,18 @@ export const CreateFailed = Message.m("CreateFailed", { message: S.String });
 export const AbortRequested = Message.m("AbortRequested");
 export const AbortDone = Message.m("AbortDone");
 
+/** A thinking block was toggled (the `<details>`'s native toggle event). */
+export const ThinkingToggled = Message.m("ThinkingToggled", {
+  messageId: S.String,
+  expanded: S.Boolean,
+});
+
+/** A tool row was toggled (the `<details>`'s native toggle event). */
+export const ToolToggled = Message.m("ToolToggled", {
+  id: S.String,
+  expanded: S.Boolean,
+});
+
 export const ThreadMessage = S.Union([
   SessionEvent,
   ThreadChanged,
@@ -93,6 +110,8 @@ export const ThreadMessage = S.Union([
   CreateFailed,
   AbortRequested,
   AbortDone,
+  ThinkingToggled,
+  ToolToggled,
 ]);
 export type ThreadMessage = S.Schema.Type<typeof ThreadMessage>;
 
