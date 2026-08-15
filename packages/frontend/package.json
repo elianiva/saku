@@ -4,8 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "portless",
-    "dev:app": "vite",
+    "dev": "portless run vite",
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
@@ -21,10 +20,6 @@
     "foldkit": "0.141.2",
     "tailwindcss": "^4.3.3"
   },
-  "portless": {
-    "name": "saku",
-    "script": "dev:app"
-  },
   "devDependencies": {
     "@foldkit/vite-plugin": "^0.11.3",
     "@tailwindcss/vite": "^4.3.3",
@@ -33,5 +28,8 @@
     "typescript": "^5.9.0",
     "vite": "^7.0.0",
     "vitest": "^4.1.9"
+  },
+  "portless": {
+    "name": "saku"
   }
 }

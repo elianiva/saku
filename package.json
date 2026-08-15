@@ -8,7 +8,6 @@
     "typecheck": "turbo typecheck",
     "test": "turbo test",
     "dev": "turbo dev",
-    "dev:proxy": "portless proxy start --no-tls",
     "fmt": "vp fmt",
     "lint": "vp lint",
     "check": "vp check",

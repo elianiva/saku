@@ -53,11 +53,13 @@ export const makeStack = (options: StackOptions = {}) =>
       // The deployment secret: a persistent random value minted once, or
       // the caller's own (the tests pass a fixed test secret).
       const secret = options.secret ?? (yield* Random("SakuDeploymentSecret")).text;
-      // The local dev server's port: portless (the `dev` script's proxy)
-      // assigns a free 4000-4999 port and passes it as PORT; without it,
-      // alchemy's default 1337 applies. strictPort makes a taken port a
-      // loud startup failure instead of a silent drift to the next free
-      // port — drift would break the stable URL the proxy registered.
+      // The local dev server's port: portless (the `dev` script) assigns a
+      // free 4000-4999 port and passes it as PORT — alchemy isn't a
+      // framework portless injects `--port` flags for, so the env var is
+      // the channel. Without it, alchemy's default 1337 applies. strictPort
+      // makes a taken port a loud startup failure instead of a silent drift
+      // to the next free port — drift would break the stable URL the proxy
+      // registered.
       const devPort = yield* Config.option(Config.number("PORT"));
       const worker = yield* Cloudflare.Worker("saku", {
         main: "./src/worker.ts",

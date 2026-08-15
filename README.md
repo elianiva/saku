@@ -109,25 +109,20 @@ pnpm --filter @saku/frontend dev
 ```
 
 The dev servers run behind **portless**, which replaces port numbers with
-stable named URLs on the `.localhost` domain (plain HTTP — no TLS setup):
+stable named URLs on the `.localhost` domain (HTTPS, via the proxy's own CA
+— `portless trust` once if a browser complains):
 
-| App | URL |
-| --- | --- |
-| console (`packages/frontend`) | `http://saku.localhost` |
-| local hub (`packages/deploy`) | `http://hub.localhost` |
+| App                           | URL                      |
+| ----------------------------- | ------------------------ |
+| console (`packages/frontend`) | `https://saku.localhost` |
+| local hub (`packages/deploy`) | `https://hub.localhost`  |
 
-On first run, portless needs the proxy up once (binds port 80, prompts for
-sudo):
-
-```bash
-pnpm dev:proxy
-```
-
-The proxy daemon keeps running and is reused by later `pnpm dev` runs;
-`portless list` shows the live routes and their backend ports. Without
-portless (or with `PORTLESS=0 pnpm dev`), the raw commands are one script
-deeper — `pnpm --filter @saku/frontend run dev:app` serves vite on `:5173`,
-`pnpm --filter @saku/deploy run dev:app` runs `bun alchemy dev` on `:1337`.
+The proxy auto-starts on the first `pnpm dev` (binds port 443, prompts for
+sudo) and is reused by later runs; `portless list` shows the live routes and
+their backend ports, `portless doctor` checks proxy/DNS/CA health. Without
+portless (or with `PORTLESS=0 pnpm dev`), the raw commands run directly —
+`pnpm --filter @saku/frontend exec vite` serves vite on `:5173`,
+`pnpm --filter @saku/deploy exec bun alchemy dev` runs alchemy on `:1337`.
 The console's `/__saku` bootstrap reads the daemon's
 published URL and token from `~/.saku/`, verifies them with a wire handshake
 probe, and only then hands them to the console (a killed daemon leaves a
