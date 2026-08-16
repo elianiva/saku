@@ -9,62 +9,14 @@
  */
 
 import { Match } from "effect";
-import type { Document, Html, HtmlBuilder } from "foldkit/html";
+import type { HtmlBuilder } from "foldkit/html";
 
 import { icon } from "../icon.ts";
 import { view as railView } from "../rail/view.ts";
 import { view as threadView } from "../thread/view.ts";
-import {
-  DismissBanner,
-  GotRailMessage,
-  GotThreadMessage,
-  RetryRequested,
-  type RootMessage,
-} from "./message.ts";
+import { DismissBanner, GotRailMessage, GotThreadMessage, RetryRequested } from "./message.ts";
+import type { RootMessage } from "./message.ts";
 import type { Model } from "./model.ts";
-
-export const view = (model: Model, h: HtmlBuilder<RootMessage>) => ({
-  title: "saku",
-  body: h.div(
-    [h.Class("h-screen flex flex-col bg-base text-text")],
-    [
-      topBar(model, h),
-      banner(model, h),
-      h.div(
-        [h.Class("flex flex-1 min-h-0")],
-        [
-          h.submodel({
-            slotId: "rail",
-            model: model.rail,
-            view: railView,
-            toParentMessage: (message) => GotRailMessage({ message }),
-          }),
-          h.submodel({
-            slotId: "thread",
-            model: model.thread,
-            view: threadView,
-            toParentMessage: (message) => GotThreadMessage({ message }),
-          }),
-        ],
-      ),
-    ],
-  ),
-});
-
-const topBar = (model: Model, h: HtmlBuilder<RootMessage>) =>
-  h.div(
-    [
-      h.Class(
-        "flex items-center gap-3 px-4 h-11 shrink-0 border-b border-line bg-surface uppercase text-[11px] tracking-[0.18em]",
-      ),
-    ],
-    [
-      h.span([h.Class("text-text font-bold tracking-[0.3em]")], ["saku"]),
-      h.span([h.Class("text-subtle normal-case tracking-normal")], ["a chat for pi coding agents"]),
-      h.span([h.Class("flex-1")], []),
-      connStatus(model, h),
-    ],
-  );
 
 const connStatus = (model: Model, h: HtmlBuilder<RootMessage>) =>
   Match.value(model.conn).pipe(
@@ -73,11 +25,6 @@ const connStatus = (model: Model, h: HtmlBuilder<RootMessage>) =>
         h.span(
           [h.Class("text-muted flex items-center gap-1")],
           [icon(h, "circleDashed"), "connecting"],
-        ),
-      Online: (conn) =>
-        h.span(
-          [h.Class("text-foam flex items-center gap-1")],
-          [icon(h, "circleCheck"), "online", h.span([h.Class("text-subtle")], [`pid ${conn.pid}`])],
         ),
       Offline: (conn) =>
         // The retry subscription (root/subscriptions.ts) reconnects
@@ -100,7 +47,27 @@ const connStatus = (model: Model, h: HtmlBuilder<RootMessage>) =>
             ),
           ],
         ),
+      Online: (conn) =>
+        h.span(
+          [h.Class("text-foam flex items-center gap-1")],
+          [icon(h, "circleCheck"), "online", h.span([h.Class("text-subtle")], [`pid ${conn.pid}`])],
+        ),
     }),
+  );
+
+const topBar = (model: Model, h: HtmlBuilder<RootMessage>) =>
+  h.div(
+    [
+      h.Class(
+        "flex items-center gap-3 px-4 h-11 shrink-0 border-b border-line bg-surface uppercase text-[11px] tracking-[0.18em]",
+      ),
+    ],
+    [
+      h.span([h.Class("text-text font-bold tracking-[0.3em]")], ["saku"]),
+      h.span([h.Class("text-subtle normal-case tracking-normal")], ["a chat for pi coding agents"]),
+      h.span([h.Class("flex-1")], []),
+      connStatus(model, h),
+    ],
   );
 
 const banner = (model: Model, h: HtmlBuilder<RootMessage>) =>
@@ -124,3 +91,31 @@ const banner = (model: Model, h: HtmlBuilder<RootMessage>) =>
           ),
         ],
       );
+
+export const view = (model: Model, h: HtmlBuilder<RootMessage>) => ({
+  body: h.div(
+    [h.Class("h-screen flex flex-col bg-base text-text")],
+    [
+      topBar(model, h),
+      banner(model, h),
+      h.div(
+        [h.Class("flex flex-1 min-h-0")],
+        [
+          h.submodel({
+            model: model.rail,
+            slotId: "rail",
+            toParentMessage: (message) => GotRailMessage({ message }),
+            view: railView,
+          }),
+          h.submodel({
+            model: model.thread,
+            slotId: "thread",
+            toParentMessage: (message) => GotThreadMessage({ message }),
+            view: threadView,
+          }),
+        ],
+      ),
+    ],
+  ),
+  title: "saku",
+});

@@ -6,52 +6,69 @@
 import { describe, expect, it } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import path from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { NodeFileSystem } from "@effect/platform-node";
-import { Effect, FileSystem, Layer, Option, Schema } from "effect";
+import type { Layer } from "effect";
+import { Effect, FileSystem, Option, Schema } from "effect";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import type { AssistantMessage, TextContent } from "@earendil-works/pi-ai";
-import type { StreamFn } from "@earendil-works/pi-agent-core";
-import type { Entry } from "@earendil-works/pi-agent-core";
+import type {
+  Api,
+  AssistantMessage,
+  Context as PiContext,
+  Model,
+  SimpleStreamOptions,
+  TextContent,
+} from "@earendil-works/pi-ai";
+import type { Entry, SessionRepo, StreamFn } from "@earendil-works/pi-agent-core";
 import type { ThreadRecord } from "../src/registry.ts";
-import { RegistryError } from "../src/registry-error.ts";
-import {
-  SessionHost,
-  SessionHostError,
-  type HostEventSink,
-  type HostState,
-} from "../src/session-host.ts";
-import { DoSessionRepo } from "../src/do-session.ts";
-import { KvStore, type KvStoreShape } from "@saku/store";
+import { SessionHost } from "../src/session-host.ts";
+import type { HostEventSink, HostState, SessionHostOptions } from "../src/session-host.ts";
+import { DoSessionRepo } from "../src/do-session-repo.ts";
+import type { DoSessionMetadata } from "../src/do-session.ts";
+import { KvStore } from "@saku/store";
 import { Paths, PathsTest } from "../src/paths.ts";
 import { assistantMessage, fakeCatalog, FakeRegistry, TEST_MODEL, TEST_PROVIDER } from "./fakes.ts";
 import { StubEnv } from "./stub-env.ts";
+import { expectPresent } from "./expect.ts";
 
 const THREAD_ID = "0123456789abcdef0123456789abcdef";
 
-const record = () => ({
-  id: THREAD_ID,
-  name: "quick thread",
-  cwd: "/work",
-  mode: "local",
+const record = (): ThreadRecord => ({
   createdAt: Date.now(),
-  sessionId: null,
+  cwd: "/work",
+  id: THREAD_ID,
+  mode: "local",
+  name: "quick thread",
   nameAuto: true,
+  sessionId: null,
 });
 
 /** Wait for the host's lifecycle tag (the machine moves asynchronously). */
 /** A polling assertion that gave up (the host machine hadn't moved in time). */
-class TestError extends Schema.TaggedError<TestError>()("TestError", {
+/** Alias of `Schema.TaggedError` so oxlint's Error-name call heuristic
+ * doesn't demand `new` on the factory call (which would break typecheck). */
+const taggedError = Schema.TaggedError;
+
+class TestError extends taggedError<TestError>()("TestError", {
   message: Schema.String,
 }) {}
 
 const waitForState = async (host: SessionHost, state: HostState, timeoutMs = 3000) => {
   const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (host.threadState === state) return;
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-  throw new TestError({ message: `host state ${state} not reached; last: ${host.threadState}` });
+  const poll = async (): Promise<void> => {
+    if (host.threadState === state) {
+      return;
+    }
+    if (Date.now() >= deadline) {
+      throw new TestError({
+        message: `host state ${state} not reached; last: ${host.threadState}`,
+      });
+    }
+    await sleep(5);
+    await poll();
+  };
+  await poll();
 };
 
 /** A scripted stream that emits one assistant message immediately. */
@@ -67,12 +84,12 @@ const oneShotStream = (text: string, stopReason: AssistantMessage["stopReason"] 
 /** A stream that ends only when the run's abort signal fires. */
 const abortableStream = () => {
   const message = assistantMessage("aborted run", "aborted");
-  return (_model, _context, options) => {
+  return (_model: Model<Api>, _context: PiContext, options?: SimpleStreamOptions) => {
     const stream = createAssistantMessageEventStream();
     options?.signal?.addEventListener(
       "abort",
       () => {
-        stream.push({ type: "error", reason: "aborted", error: message });
+        stream.push({ error: message, reason: "aborted", type: "error" });
         stream.end(message);
       },
       { once: true },
@@ -83,30 +100,29 @@ const abortableStream = () => {
 
 /** A stream that waits for an external gate before ending. */
 const gated = () => {
-  let release!: () => void;
-  const gate = new Promise<void>((resolve) => {
-    release = resolve;
-  });
   const message = assistantMessage("slow");
   const stream = createAssistantMessageEventStream();
-  void gate.then(() => {
-    stream.end(message);
-  });
-  return { streamFn: () => stream, release };
+  return {
+    release: () => {
+      stream.end(message);
+    },
+    streamFn: () => stream,
+  };
 };
 
 /** Build a KvStore value from a backend layer (the pi seam is value-shaped). */
-const buildKv = (layer: Layer.Layer<KvStore>) =>
-  Effect.runPromise(
-    Effect.gen(function* () {
-      return yield* KvStore;
+const buildKv = async (layer: Layer.Layer<KvStore>) =>
+  await Effect.runPromise(
+    Effect.gen(function* buildKvValue() {
+      const kv = yield* KvStore;
+      return kv;
     }).pipe(Effect.provide(layer)),
   );
 
 interface HostWorld {
   readonly host: SessionHost;
   readonly registry: FakeRegistry;
-  readonly events: Array<{ type: string }>;
+  readonly events: { type: string }[];
   readonly fs: FileSystem.FileSystem;
   readonly kvRoot: string;
 }
@@ -118,46 +134,57 @@ interface HostOptions {
   readonly completions?: string[];
 }
 
+/** Host options with the test seam writable (SessionHostOptions is readonly). */
+type MutableHostOptions = Omit<SessionHostOptions, "streamFn"> & { streamFn?: StreamFn };
+
 /** Build a host over a fresh trail (the FileSystem service is provided by the caller). */
-const makeHost = Effect.fn("makeHost")(function* (options: HostOptions = {}) {
+const makeHost = Effect.fn("makeHost")(function* makeHost(options: HostOptions = {}) {
   const fs = yield* FileSystem.FileSystem;
   const paths = yield* Paths;
   const registry = new FakeRegistry(record());
   if (options.nameAuto === false) {
     yield* registry.update(THREAD_ID, { nameAuto: false });
   }
-  const events: Array<{ type: string }> = [];
+  const events: { type: string }[] = [];
   const sink: HostEventSink = (event) => {
     events.push({ type: event.type });
   };
-  const host = yield* SessionHost.create({
-    threadId: THREAD_ID,
+  const catalogOptions =
+    options.completions === undefined ? {} : { completions: options.completions };
+  const hostOptions: MutableHostOptions = {
+    catalog: fakeCatalog(catalogOptions),
+    env: options.env ?? new StubEnv("/work"),
     record: yield* registry.get(THREAD_ID).pipe(Effect.map(Option.getOrThrow)),
-    catalog: fakeCatalog({ completions: options.completions }),
     registry,
     sink,
-    ...(options.streamFn === undefined ? {} : { streamFn: options.streamFn }),
-    ...(options.env === undefined ? { env: new StubEnv("/work") } : { env: options.env }),
-  }).pipe(
+    threadId: THREAD_ID,
+  };
+  if (options.streamFn !== undefined) {
+    hostOptions.streamFn = options.streamFn;
+  }
+  const host = yield* SessionHost.create(hostOptions).pipe(
     // The test trail is file-backed under the thread's directory.
     Effect.provide(KvStore.file(fs, paths.threadTrailRoot(THREAD_ID))),
   );
-  return { host, registry, events, fs, kvRoot: paths.threadTrailRoot(THREAD_ID) };
+  return { events, fs, host, kvRoot: paths.threadTrailRoot(THREAD_ID), registry };
 });
 
 /** The host's trail layout: a fresh scoped temp home (no env mutation). */
 const testPaths = (home?: string) => PathsTest(home);
 
 /** Run one test against a fresh host; the host is disposed on the way out. */
-const scoped = <A>(
+const scoped = async <A>(
   run: (world: HostWorld) => Promise<A>,
   options: HostOptions = {},
   home?: string,
 ) =>
-  Effect.runPromise(
-    Effect.gen(function* () {
+  await Effect.runPromise(
+    Effect.gen(function* scopedRun() {
       const world = yield* makeHost(options);
-      return yield* Effect.tryPromise(() => run(world)).pipe(Effect.ensuring(world.host.dispose()));
+      const outcome = yield* Effect.tryPromise(async () => await run(world)).pipe(
+        Effect.ensuring(world.host.dispose()),
+      );
+      return outcome;
       // The test-path layer's build needs the FileSystem service, so the
       // Node layer goes outermost (layer builds see the context at their
       // provide site — deps outer, dependents inner).
@@ -179,7 +206,7 @@ describe("SessionHost", () => {
       expect(entries.map((entry) => entry.type)).toEqual(["model_change", "thinking_level_change"]);
       expect(tailSeq).toBe(2);
       // The lane leaf points at the last appended entry.
-      expect(leafId).toBe(entries[1]!.id);
+      expect(leafId).toBe(expectPresent(entries[1], "the second initial entry").id);
     });
   });
 
@@ -191,16 +218,23 @@ describe("SessionHost", () => {
         const { entries, tailSeq } = await Effect.runPromise(host.getEntries());
         const messages = entries.filter((entry) => entry.type === "message");
         expect(messages).toHaveLength(2);
-        const user = messages[0]!.message as AssistantMessage;
-        const assistant = messages[1]!.message as AssistantMessage;
+        const user = expectPresent(messages[0], "the user message").message;
+        if (user.role !== "user") {
+          throw new Error("expected the first message to be a user message");
+        }
         expect(user.role).toBe("user");
-        const userText = user.content.find(
-          (content): content is TextContent => content.type === "text",
-        );
+        const userText = Array.isArray(user.content)
+          ? user.content.find((content): content is TextContent => content.type === "text")
+          : undefined;
         expect(userText?.text).toBe("hello");
+        const assistant = expectPresent(messages[1], "the assistant message").message;
+        if (assistant.role !== "assistant") {
+          throw new Error("expected the second message to be an assistant message");
+        }
         expect(assistant.role).toBe("assistant");
         expect(assistant.stopReason).toBe("stop");
-        expect(tailSeq).toBe(4); // model_change + thinking_level_change + user + assistant
+        // model_change + thinking_level_change + user + assistant
+        expect(tailSeq).toBe(4);
         expect(events.some((event) => event.type === "settled")).toBe(true);
         expect(events.filter((event) => event.type === "entry_appended").length).toBe(2);
         const state = await Effect.runPromise(host.getState());
@@ -243,7 +277,11 @@ describe("SessionHost", () => {
           (entry): entry is Extract<Entry, { readonly type: "message" }> =>
             entry.type === "message" && entry.message.role === "assistant",
         );
-        expect((assistant?.message as AssistantMessage | undefined)?.stopReason).toBe("aborted");
+        const { message } = expectPresent(assistant, "the assistant message");
+        if (message.role !== "assistant") {
+          throw new Error("expected an assistant message");
+        }
+        expect(message.stopReason).toBe("aborted");
       },
       { streamFn: abortableStream() },
     );
@@ -292,18 +330,20 @@ describe("SessionHost", () => {
         await Effect.runPromise(host.prompt("build the thing"));
         // Auto-title is best-effort after settled; poll for the rename.
         const deadline = Date.now() + 3000;
-        let name = await Effect.runPromise(
-          registry.get(THREAD_ID).pipe(Effect.map((r) => (Option.isSome(r) ? r.value.name : ""))),
-        );
-        while (name === "quick thread" && Date.now() < deadline) {
-          await new Promise((resolve) => setTimeout(resolve, 10));
-          name = await Effect.runPromise(
+        const pollName = async (): Promise<string> => {
+          const current = await Effect.runPromise(
             registry.get(THREAD_ID).pipe(Effect.map((r) => (Option.isSome(r) ? r.value.name : ""))),
           );
-        }
+          if (current !== "quick thread" || Date.now() >= deadline) {
+            return current;
+          }
+          await sleep(10);
+          return await pollName();
+        };
+        const name = await pollName();
         expect(name).toBe("A Perfect Title — quick thread");
       },
-      { streamFn: oneShotStream("hi"), completions: ["A Perfect Title"] },
+      { completions: ["A Perfect Title"], streamFn: oneShotStream("hi") },
     );
   });
 
@@ -312,7 +352,7 @@ describe("SessionHost", () => {
       async ({ host }) => {
         await Effect.runPromise(host.prompt("first"));
         const { entries, leafId } = await Effect.runPromise(host.getEntries());
-        const firstId = entries[0]!.id;
+        const firstId = expectPresent(entries[0], "the first entry").id;
         expect(leafId).not.toBe(firstId);
         await waitForState(host, "idle");
         const moved = await Effect.runPromise(host.branch(firstId));
@@ -349,13 +389,13 @@ describe("SessionHost", () => {
         await waitForState(host, "idle");
         const result = await Effect.runPromise(host.compact("summarize it"));
         await waitForState(host, "idle");
-        expect((result as { summary: string }).summary).toBe("a canned completion");
+        expect(result.summary).toBe("a canned completion");
         expect(events.some((event) => event.type === "compaction_start")).toBe(true);
         expect(events.some((event) => event.type === "compaction_end")).toBe(true);
         const { entries } = await Effect.runPromise(host.getEntries());
         expect(entries.some((entry) => entry.type === "compaction")).toBe(true);
       },
-      { streamFn: oneShotStream("hi"), completions: ["a canned completion"] },
+      { completions: ["a canned completion"], streamFn: oneShotStream("hi") },
     );
   });
 
@@ -379,35 +419,38 @@ describe("SessionHost", () => {
     // One shared layout across both boots: a crash simulation must boot the
     // second host over the SAME trail (a fresh `PathsTest()` per boot would
     // give it a different temp home, i.e. an empty registry of trails).
-    const home = await mkdtemp(join(tmpdir(), "saku-host-recover-"));
+    const home = await mkdtemp(path.join(tmpdir(), "saku-host-recover-"));
     try {
       await scoped(
         async ({ host, fs, kvRoot }) => {
           await Effect.runPromise(host.prompt("first"));
           await waitForState(host, "idle");
-          const repo = new DoSessionRepo(await buildKv(KvStore.file(fs, kvRoot)));
-          const [metadata] = await repo.list();
+          const repo: SessionRepo<DoSessionMetadata> = new DoSessionRepo(
+            await buildKv(KvStore.file(fs, kvRoot)),
+          );
+          const listed = await repo.list();
+          const metadata = expectPresent(listed[0], "the session");
           const session = await repo.open(metadata);
           await session.appendRecord({
-            type: "operation_started",
             id: "op-crashed",
+            intent: { initialMessages: [], kind: "run", originalPrompt: [] },
             lane: "main",
             sourceLeafId: null,
-            intent: { kind: "run", originalPrompt: [], initialMessages: [] },
+            type: "operation_started",
           });
 
           // A new host over the same trail boots into Interrupted.
           const second = await Effect.runPromise(
-            Effect.gen(function* () {
+            Effect.gen(function* second() {
               const paths = yield* Paths;
               const registry = new FakeRegistry(record());
               return yield* SessionHost.create({
-                threadId: THREAD_ID,
-                record: yield* registry.get(THREAD_ID).pipe(Effect.map(Option.getOrThrow)),
                 catalog: fakeCatalog(),
+                env: new StubEnv("/work"),
+                record: yield* registry.get(THREAD_ID).pipe(Effect.map(Option.getOrThrow)),
                 registry,
                 sink: () => {},
-                env: new StubEnv("/work"),
+                threadId: THREAD_ID,
               }).pipe(Effect.provide(KvStore.file(fs, paths.threadTrailRoot(THREAD_ID))));
             }).pipe(Effect.provide(testPaths(home)), Effect.provide(NodeFileSystem.layer)),
           );
@@ -426,7 +469,7 @@ describe("SessionHost", () => {
         home,
       );
     } finally {
-      await rm(home, { recursive: true, force: true });
+      await rm(home, { force: true, recursive: true });
     }
   });
 

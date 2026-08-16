@@ -16,41 +16,69 @@ import { markdownBody, markdownReady } from "./markdown.ts";
 
 /** The structural VNode subset the assertions read. */
 interface TestNode {
-  readonly sel?: string;
-  readonly data?: {
-    readonly class?: Readonly<Record<string, boolean>>;
-    readonly attrs?: Readonly<Record<string, string>>;
-    readonly props?: Readonly<Record<string, unknown>>;
-    readonly style?: Readonly<Record<string, string>>;
-  };
-  readonly children?: ReadonlyArray<TestNode | string>;
-  readonly text?: string;
+  readonly sel?: string | undefined;
+  readonly data?:
+    | {
+        readonly class?: Readonly<Record<string, boolean>> | undefined;
+        readonly props?: Readonly<Record<string, string>> | undefined;
+        readonly style?: Readonly<Record<string, string>> | undefined;
+      }
+    | undefined;
+  readonly children?: readonly (TestNode | string)[] | undefined;
+  readonly text?: string | undefined;
 }
 
 type TestChild = TestNode | string;
 
-const body = (markdown: string, cursor = false) =>
-  markdownBody(inertHtml, markdown, cursor) as TestNode;
+/** The markdown body as a TestNode, failing the test when the body is empty. */
+const body = (markdown: string, cursor = false): TestNode => {
+  const node = markdownBody(inertHtml, markdown, cursor);
+  if (node === null) {
+    throw new Error("expected a non-empty markdown body");
+  }
+  return node;
+};
 
 const classNames = (node: TestNode) => Object.keys(node.data?.class ?? {});
 
-const textOf = (node: TestNode): string =>
-  node.text ??
-  (node.children ?? [])
-    .map((child) => (typeof child === "string" ? child : textOf(child)))
-    .join("");
+const isText = (child: TestChild): child is string => typeof child === "string";
 
-const kids = (node: TestNode) => (node.children ?? []) as Array<TestChild>;
+const textOf = (node: TestNode | string): string =>
+  isText(node) ? node : (node.text ?? (node.children ?? []).map((child) => textOf(child)).join(""));
+
+const kids = (node: TestNode) => node.children ?? [];
+
+const isElement = (child: TestChild): child is TestNode =>
+  !isText(child) && child.sel !== undefined;
 
 /** The element children (text runs and text vnodes skipped). */
-const elementKids = (node: TestNode): TestNode[] =>
-  kids(node).filter((c): c is TestNode => typeof c !== "string" && c.sel !== undefined);
+const elementKids = (node: TestNode): TestNode[] => kids(node).filter(isElement);
+
+/** The child at `index`, failing the test when absent. */
+const kid = (node: TestNode, index: number): TestChild => {
+  const item = kids(node)[index];
+  if (item === undefined) {
+    throw new Error(`no child at ${index}`);
+  }
+  return item;
+};
 
 /** The element child at `index`, failing the test when absent. */
 const child = (node: TestNode, index: number): TestNode => {
   const item = elementKids(node)[index];
-  if (item === undefined) throw new Error(`no element child at ${index}`);
+  if (item === undefined) {
+    throw new Error(`no element child at ${index}`);
+  }
   return item;
+};
+
+/** The first child's `sel`, undefined when absent or a text run. */
+const selOfFirst = (node: TestNode): string | undefined => {
+  const [item] = kids(node);
+  if (item === undefined || isText(item)) {
+    return undefined;
+  }
+  return item.sel;
 };
 
 describe("markdown body", () => {
@@ -80,7 +108,7 @@ describe("markdown body", () => {
     const root = body("a *b* **c** `d` ~~e~~ [f](https://x.test)");
     const p = child(root, 0);
     expect(p.sel).toBe("p");
-    expect(textOf(kids(p)[0] as TestNode)).toBe("a ");
+    expect(textOf(kid(p, 0))).toBe("a ");
     expect(child(p, 0).sel).toBe("em");
     expect(child(p, 1).sel).toBe("strong");
     expect(child(p, 2).sel).toBe("code");
@@ -100,11 +128,11 @@ describe("markdown body", () => {
     const ol = child(root, 1);
     expect(ul.sel).toBe("ul");
     const items = kids(ul);
-    expect(items.map((li) => textOf(li as TestNode))).toEqual(["one", "two", "three"]);
-    expect(classNames(child(items[1] as TestNode, 0))).toContain("saku-md-task");
-    expect(child(child(items[1] as TestNode, 0), 0).sel).toBe("svg");
-    expect(classNames(child(items[2] as TestNode, 0))).toContain("saku-md-task");
-    expect(child(child(items[2] as TestNode, 0), 0).sel).toBe("svg");
+    expect(items.map((li) => textOf(li))).toEqual(["one", "two", "three"]);
+    expect(classNames(child(child(ul, 1), 0))).toContain("saku-md-task");
+    expect(child(child(child(ul, 1), 0), 0).sel).toBe("svg");
+    expect(classNames(child(child(ul, 2), 0))).toContain("saku-md-task");
+    expect(child(child(child(ul, 2), 0), 0).sel).toBe("svg");
     expect(ol.sel).toBe("ol");
   });
 
@@ -128,11 +156,11 @@ describe("markdown body", () => {
     const table = child(wrap, 0);
     expect(table.sel).toBe("table");
     const thead = child(table, 0);
-    const th = kids(child(thead, 0));
-    expect((th[0] as TestNode).sel).toBe("th");
-    expect((th[1] as TestNode).data?.style?.textAlign).toBe("center");
+    const headerRow = child(thead, 0);
+    expect(child(headerRow, 0).sel).toBe("th");
+    expect(child(headerRow, 1).data?.style?.textAlign).toBe("center");
     const tbody = child(table, 1);
-    expect((kids(child(tbody, 0))[0] as TestNode | undefined)?.sel).toBe("td");
+    expect(selOfFirst(child(tbody, 0))).toBe("td");
   });
 
   it("renders blockquotes and alerts", async () => {

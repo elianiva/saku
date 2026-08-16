@@ -15,12 +15,12 @@
 export { HubError, messageOf } from "./hub-error.ts";
 export {
   IdleStop,
-  type IdleStopShape,
+  type IdleStopApi,
   type IdleStopController,
   type IdleStopDeps,
 } from "./idle-stop.ts";
-export { HubRegistry, type HubRecord, type HubRegistryShape } from "./registry.ts";
-export { SkillsStore, skillNameFromSource, type SkillsStoreShape } from "./skills.ts";
+export { HubRegistry, type HubRecord, type HubRegistryApi } from "./registry.ts";
+export { SkillsStore, skillNameFromSource, type SkillsStoreApi } from "./skills.ts";
 export {
   Provisioner,
   boxSystemdUnit,
@@ -37,18 +37,18 @@ export {
   BoxApi,
   pollUntilReady,
   BoxError,
-  type BoxApiShape,
+  type BoxApiContract,
   type BoxInfo,
   type BoxApiDeps,
   type CommandResult,
 } from "./box.ts";
 export {
   HubRelayCore,
-  type HubRelayCoreShape,
-  type HubRelayShape,
+  type HubRelayCoreApi,
+  type HubRelayApi,
   type RelayServerOptions,
 } from "./relay-core.ts";
-export { WireCore, type WireCoreOptions, type WireCoreShape } from "./wire-core.ts";
+export { WireCore, type WireCoreOptions, type WireCoreApi } from "./wire-core.ts";
 export { workerdSocket, type SocketLike, type WorkerdWebSocketLike } from "./socket.ts";
 export {
   type HubEventSink,
@@ -56,4 +56,4 @@ export {
   type WorkerCommandResult,
   type WorkerReport,
 } from "./worker-ref.ts";
-export { Hub, type HubDeps, type HubEvent, type HubListener, type HubShape } from "./hub.ts";
+export { Hub, type HubDeps, type HubEvent, type HubListener, type HubApi } from "./hub.ts";

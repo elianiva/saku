@@ -22,16 +22,16 @@ import { ThreadInfo } from "./thread.ts";
  * = first user message with content).
  */
 export const PiSessionInfo = S.Struct({
-  id: S.String,
+  createdAt: S.Number,
   /** Working directory where the session was started ("" for old sessions). */
   cwd: S.String,
-  /** User-defined display name (session_info); absent when never named. */
-  name: S.optional(S.String),
-  createdAt: S.Number,
-  modifiedAt: S.Number,
-  messageCount: S.Number,
   /** The first user message's text content; "(no messages)" when none. */
   firstMessage: S.String,
+  id: S.String,
+  messageCount: S.Number,
+  modifiedAt: S.Number,
+  /** User-defined display name (session_info); absent when never named. */
+  name: S.optional(S.String),
   /** Absolute path to the session file — the import key (opaque, unique). */
   path: S.String,
 });

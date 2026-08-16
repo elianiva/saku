@@ -19,11 +19,11 @@
  * when the alchemy deployment lands (M4).
  */
 
-import { Effect } from "effect";
+import type { Effect } from "effect";
 import type { ResponsePayload, SessionCommand, SessionWireEvent, ThreadState } from "@saku/wire";
 import type { EnvHandle } from "@saku/env";
 
-import { HubError } from "./hub-error.ts";
+import type { HubError } from "./hub-error.ts";
 import type { HubRecord } from "./registry.ts";
 
 /** The outcome of one forwarded session command. */

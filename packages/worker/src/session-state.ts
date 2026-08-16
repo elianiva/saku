@@ -15,19 +15,19 @@
  * so a trail written here is readable by pi's codec and vice versa.
  */
 
-import {
-  SessionError,
-  type BranchBounds,
-  type Entry,
-  type EntryQuery,
-  type ForkOptions,
-  type LanePointer,
-  type LaneRecord,
-  type LogItem,
-  type LogOptions,
-  type OperationStartedRecord,
-  type RecordQuery,
-  type SessionStats,
+import { SessionError } from "@earendil-works/pi-agent-core";
+import type {
+  BranchBounds,
+  Entry,
+  EntryQuery,
+  ForkOptions,
+  LanePointer,
+  LaneRecord,
+  LogItem,
+  LogOptions,
+  OperationStartedRecord,
+  RecordQuery,
+  SessionStats,
 } from "@earendil-works/pi-agent-core";
 
 import { Match } from "effect";
@@ -62,6 +62,17 @@ type _MutationKindsExact = _Assert<
     : false
 >;
 
+/** The mutation's log sequence (the entry/record carry theirs). */
+const mutationSeqOf = (mutation: SessionMutation) => {
+  if (mutation.kind === "entry") {
+    return mutation.entry.seq;
+  }
+  if (mutation.kind === "record") {
+    return mutation.record.seq;
+  }
+  return mutation.seq;
+};
+
 const invalidMutation = (message: string) => {
   throw new SessionError("invalid_entry", `Invalid session mutation: ${message}`);
 };
@@ -78,18 +89,42 @@ const assertValidCursor = (afterSeq: number | undefined) => {
   }
 };
 
-function* ordered<T>(
+const ordered = function* ordered<T>(
   items: readonly T[],
   order: "newestFirst" | "oldestFirst" | undefined,
 ) {
   if (order === "oldestFirst") {
-    for (const item of items) yield item;
+    for (const item of items) {
+      yield item;
+    }
     return;
   }
-  for (const item of [...items].reverse()) {
+  for (const item of [...items].toReversed()) {
     yield item;
   }
-}
+};
+
+/** The entry query's filter (the session state's query semantics). */
+const matchesEntryQuery = (entry: Entry, query: EntryQuery) =>
+  (query.type === undefined || entry.type === query.type) &&
+  (query.customType === undefined ||
+    (entry.type === "custom" && entry.customType === query.customType)) &&
+  (query.cursor === undefined ||
+    (query.order === "oldestFirst"
+      ? entry.seq > query.cursor.afterSeq
+      : entry.seq < query.cursor.afterSeq));
+
+/** The record query's filter (the session state's query semantics). */
+const matchesRecordQuery = (record: LaneRecord, query: RecordQuery) =>
+  (query.lane === undefined || record.lane === query.lane) &&
+  (query.type === undefined || record.type === query.type) &&
+  (query.runId === undefined ||
+    (record.type === "operation_started"
+      ? record.id === query.runId
+      : "runId" in record && record.runId === query.runId)) &&
+  (query.operationKind === undefined ||
+    (record.type === "operation_started" && record.intent.kind === query.operationKind)) &&
+  (query.afterSeq === undefined || record.seq > query.afterSeq);
 
 /** The semantic core of one session: replay mutations, answer queries. */
 export class SessionState {
@@ -102,11 +137,11 @@ export class SessionState {
   private readonly lanes = new Map<string, string | null>([["main", null]]);
   private readonly log: LogItem[] = [];
   private readonly stats: SessionStats = {
-    messageCount: 0,
     cachedTokens: 0,
-    uncachedTokens: 0,
-    totalTokens: 0,
     costTotal: 0,
+    messageCount: 0,
+    totalTokens: 0,
+    uncachedTokens: 0,
   };
   private name: string | undefined;
   private readonly labels = new Map<string, string>();
@@ -145,23 +180,24 @@ export class SessionState {
     }
   }
 
-  applyMutation(mutation: SessionMutation) {
-    const seq =
-      mutation.kind === "entry"
-        ? mutation.entry.seq
-        : mutation.kind === "record"
-          ? mutation.record.seq
-          : mutation.seq;
-    if (seq !== this.sequence + 1) invalidMutation(`has non-consecutive seq ${seq}`);
-    Match.value(mutation).pipe(
+  applyMutation(change: SessionMutation) {
+    const seq = mutationSeqOf(change);
+    if (seq !== this.sequence + 1) {
+      invalidMutation(`has non-consecutive seq ${seq}`);
+    }
+    Match.value(change).pipe(
       Match.discriminator("kind")("entry", (mutation) => {
-        if (this.usedIds.has(mutation.entry.id))
+        if (this.usedIds.has(mutation.entry.id)) {
           invalidMutation(`contains duplicate id ${mutation.entry.id}`);
+        }
         if (mutation.lane !== undefined) {
           const leafId = this.lanes.get(mutation.lane);
-          if (leafId === undefined) invalidMutation(`references missing lane ${mutation.lane}`);
-          if (mutation.entry.parentId !== leafId)
+          if (leafId === undefined) {
+            invalidMutation(`references missing lane ${mutation.lane}`);
+          }
+          if (mutation.entry.parentId !== leafId) {
             invalidMutation("does not chain to the lane leaf");
+          }
         }
         if (mutation.entry.parentId !== null && !this.entriesById.has(mutation.entry.parentId)) {
           invalidMutation(`references missing parent ${mutation.entry.parentId}`);
@@ -170,15 +206,21 @@ export class SessionState {
         this.usedIds.add(mutation.entry.id);
         this.entries.push(mutation.entry);
         this.entriesById.set(mutation.entry.id, mutation.entry);
-        if (mutation.lane !== undefined) this.lanes.set(mutation.lane, mutation.entry.id);
-        this.log.push({ kind: "entry", seq, entry: mutation.entry });
-        if (mutation.entry.type === "message") this.stats.messageCount += 1;
+        if (mutation.lane !== undefined) {
+          this.lanes.set(mutation.lane, mutation.entry.id);
+        }
+        this.log.push({ entry: mutation.entry, kind: "entry", seq });
+        if (mutation.entry.type === "message") {
+          this.stats.messageCount += 1;
+        }
       }),
       Match.discriminator("kind")("record", (mutation) => {
-        if (!this.lanes.has(mutation.record.lane))
+        if (!this.lanes.has(mutation.record.lane)) {
           invalidMutation(`references missing lane ${mutation.record.lane}`);
-        if (this.usedIds.has(mutation.record.id))
+        }
+        if (this.usedIds.has(mutation.record.id)) {
           invalidMutation(`contains duplicate id ${mutation.record.id}`);
+        }
         this.sequence = seq;
         this.usedIds.add(mutation.record.id);
         this.records.push(mutation.record);
@@ -192,7 +234,7 @@ export class SessionState {
         } else if (mutation.record.type === "operation_finished") {
           this.openOperationsByLane.get(mutation.record.lane)?.delete(mutation.record.runId);
         }
-        this.log.push({ kind: "record", seq, record: mutation.record });
+        this.log.push({ kind: "record", record: mutation.record, seq });
         if (mutation.record.type === "usage") {
           this.stats.cachedTokens += mutation.record.usage.cacheRead;
           this.stats.uncachedTokens +=
@@ -207,7 +249,7 @@ export class SessionState {
         }
         this.sequence = seq;
         this.lanes.set(mutation.lane, mutation.leafId);
-        this.log.push({ kind: "lane", seq, lane: mutation.lane, leafId: mutation.leafId });
+        this.log.push({ kind: "lane", lane: mutation.lane, leafId: mutation.leafId, seq });
       }),
       Match.discriminator("kind")("fact", (mutation) => {
         if (mutation.fact === "label" && !this.entriesById.has(mutation.targetId)) {
@@ -216,20 +258,22 @@ export class SessionState {
         this.sequence = seq;
         if (mutation.fact === "name") {
           this.name = mutation.name;
-          this.log.push({ kind: "fact", seq, fact: "name", name: mutation.name });
+          this.log.push({ fact: "name", kind: "fact", name: mutation.name, seq });
         } else {
-          if (mutation.label === undefined) this.labels.delete(mutation.targetId);
-          else this.labels.set(mutation.targetId, mutation.label);
+          if (mutation.label === undefined) {
+            this.labels.delete(mutation.targetId);
+          } else {
+            this.labels.set(mutation.targetId, mutation.label);
+          }
           this.log.push({
-            kind: "fact",
-            seq,
             fact: "label",
-            targetId: mutation.targetId,
+            kind: "fact",
             label: mutation.label,
+            seq,
+            targetId: mutation.targetId,
           });
         }
       }),
-      Match.exhaustive,
     );
   }
 
@@ -242,9 +286,13 @@ export class SessionState {
     assertValidCursor(query.cursor?.afterSeq);
     const results: Entry[] = [];
     for (const entry of ordered(this.entries, query.order)) {
-      if (!this.matchesEntryQuery(entry, query)) continue;
+      if (!matchesEntryQuery(entry, query)) {
+        continue;
+      }
       results.push(entry);
-      if (results.length === query.limit) break;
+      if (results.length === query.limit) {
+        break;
+      }
     }
     return results;
   }
@@ -254,15 +302,23 @@ export class SessionState {
     assertValidCursor(query.cursor?.afterSeq);
     const results: Entry[] = [];
     if (query.order === "oldestFirst") {
-      for (const entry of [...this.walkToRoot(query.start)].reverse()) {
+      for (const entry of [...this.walkToRoot(query.start)].toReversed()) {
         const reachedBound = entry.id === query.stopAtId || entry.type === query.stopAtType;
-        if (this.matchesEntryQuery(entry, query)) results.push(entry);
-        if (reachedBound || results.length === query.limit) break;
+        if (matchesEntryQuery(entry, query)) {
+          results.push(entry);
+        }
+        if (reachedBound || results.length === query.limit) {
+          break;
+        }
       }
     } else {
       for (const entry of this.walkToRoot(query.start, query)) {
-        if (this.matchesEntryQuery(entry, query)) results.push(entry);
-        if (results.length === query.limit) break;
+        if (matchesEntryQuery(entry, query)) {
+          results.push(entry);
+        }
+        if (results.length === query.limit) {
+          break;
+        }
       }
     }
     return results;
@@ -273,9 +329,13 @@ export class SessionState {
     assertValidCursor(query.afterSeq);
     const results: LaneRecord[] = [];
     for (const record of ordered(this.records, query.order)) {
-      if (!this.matchesRecordQuery(record, query)) continue;
+      if (!matchesRecordQuery(record, query)) {
+        continue;
+      }
       results.push(record);
-      if (results.length === query.limit) break;
+      if (results.length === query.limit) {
+        break;
+      }
     }
     return results;
   }
@@ -283,7 +343,7 @@ export class SessionState {
   findOpenOperations(lane: string, options?: { limit?: number }) {
     assertValidLimit(options?.limit);
     const openOperationsById = this.openOperationsByLane.get(lane);
-    const openOperations = openOperationsById ? [...openOperationsById.values()].reverse() : [];
+    const openOperations = openOperationsById ? [...openOperationsById.values()].toReversed() : [];
     return options?.limit === undefined ? openOperations : openOperations.slice(0, options.limit);
   }
 
@@ -292,9 +352,13 @@ export class SessionState {
     assertValidCursor(options.afterSeq);
     const results: LogItem[] = [];
     for (const item of this.log) {
-      if (options.afterSeq !== undefined && item.seq <= options.afterSeq) continue;
+      if (options.afterSeq !== undefined && item.seq <= options.afterSeq) {
+        continue;
+      }
       results.push(item);
-      if (results.length === options.limit) break;
+      if (results.length === options.limit) {
+        break;
+      }
     }
     return results;
   }
@@ -335,40 +399,47 @@ export class SessionState {
       copiedEntries =
         targetId === null
           ? []
-          : this.findEntriesOnBranch({ start: targetId, order: "oldestFirst" });
+          : this.findEntriesOnBranch({ order: "oldestFirst", start: targetId });
       forkLanes = [{ lane: "main", leafId: targetId }];
     }
     const mutations: SessionMutation[] = [];
-    let sequence = 1;
+    // Seq starts at 1 for the first copied entry (pre-increment per mutation).
+    let sequence = 0;
     for (const sourceEntry of copiedEntries) {
+      sequence += 1;
       mutations.push({
+        entry: { ...structuredClone(sourceEntry), seq: sequence },
         kind: "entry",
-        entry: { ...structuredClone(sourceEntry), seq: sequence++ },
       });
     }
     for (const pointer of forkLanes) {
-      mutations.push({ kind: "lane", seq: sequence++, lane: pointer.lane, leafId: pointer.leafId });
+      sequence += 1;
+      mutations.push({ kind: "lane", lane: pointer.lane, leafId: pointer.leafId, seq: sequence });
     }
     if (this.name !== undefined) {
-      mutations.push({ kind: "fact", seq: sequence++, fact: "name", name: this.name });
+      sequence += 1;
+      mutations.push({ fact: "name", kind: "fact", name: this.name, seq: sequence });
     }
     for (const entry of copiedEntries) {
       const label = this.labels.get(entry.id);
       if (label !== undefined) {
-        mutations.push({ kind: "fact", seq: sequence++, fact: "label", targetId: entry.id, label });
+        sequence += 1;
+        mutations.push({ fact: "label", kind: "fact", label, seq: sequence, targetId: entry.id });
       }
     }
     return mutations;
   }
 
   private *walkToRoot(start: string, bounds?: BranchBounds) {
-    if (start === null) return;
+    if (start === null) {
+      return;
+    }
     const visited = new Set<string>();
     let current = this.entriesById.get(start);
     if (current === undefined) {
       throw new SessionError("not_found", `Entry not found: ${start}`);
     }
-    while (current) {
+    while (current !== undefined) {
       if (visited.has(current.id)) {
         throw new SessionError("invalid_entry", `Session branch contains a cycle at ${current.id}`);
       }
@@ -378,39 +449,14 @@ export class SessionState {
         current.id === bounds?.stopAtId ||
         current.type === bounds?.stopAtType ||
         current.parentId === null
-      )
+      ) {
         break;
-      const parentId = current.parentId;
+      }
+      const { parentId } = current;
       current = this.entriesById.get(parentId);
       if (current === undefined) {
         throw new SessionError("invalid_entry", `Entry not found: ${parentId}`);
       }
     }
-  }
-
-  private matchesEntryQuery(entry: Entry, query: EntryQuery) {
-    return (
-      (query.type === undefined || entry.type === query.type) &&
-      (query.customType === undefined ||
-        (entry.type === "custom" && entry.customType === query.customType)) &&
-      (query.cursor === undefined ||
-        (query.order === "oldestFirst"
-          ? entry.seq > query.cursor.afterSeq
-          : entry.seq < query.cursor.afterSeq))
-    );
-  }
-
-  private matchesRecordQuery(record: LaneRecord, query: RecordQuery) {
-    return (
-      (query.lane === undefined || record.lane === query.lane) &&
-      (query.type === undefined || record.type === query.type) &&
-      (query.runId === undefined ||
-        (record.type === "operation_started"
-          ? record.id === query.runId
-          : "runId" in record && record.runId === query.runId)) &&
-      (query.operationKind === undefined ||
-        (record.type === "operation_started" && record.intent.kind === query.operationKind)) &&
-      (query.afterSeq === undefined || record.seq > query.afterSeq)
-    );
   }
 }

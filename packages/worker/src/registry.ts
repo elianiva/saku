@@ -14,12 +14,12 @@
  */
 
 import { Context, Effect, FileSystem, Layer, Option, Ref } from "effect";
-import { ThreadMode, type ThreadInfo, type ThreadSource, type ThreadState } from "@saku/wire";
+import type { ThreadInfo, ThreadMode, ThreadSource, ThreadState } from "@saku/wire";
 
 import { jsonRecords, KvStore } from "@saku/store";
 import { Paths, PathsTest } from "./paths.ts";
-import { RegistryError } from "./registry-error.ts";
-import { DECODE_THREAD_RECORD, type ThreadRecord } from "./registry-record.ts";
+import type { RegistryError } from "./registry-error.ts";
+import type { ThreadRecord } from "./registry-record.ts";
 
 export { ThreadRecordSchema, type ThreadRecord } from "./registry-record.ts";
 
@@ -29,17 +29,17 @@ export { ThreadRecordSchema, type ThreadRecord } from "./registry-record.ts";
  * exactly this; the daemon adapts its full registry over it. Hosts never
  * create/delete threads or project wire info — the hub/daemon own those.
  */
-export interface HostRegistryShape {
+export interface HostRegistryApi {
   readonly get: (threadId: string) => Effect.Effect<Option.Option<ThreadRecord>, RegistryError>;
   readonly update: (
     threadId: string,
     patch: Partial<Pick<ThreadRecord, "name" | "sessionId" | "nameAuto">>,
   ) => Effect.Effect<Option.Option<ThreadRecord>, RegistryError>;
   /** Liveness state derived by hosts; not persisted (re-derived at boot). */
-  readonly setState: (threadId: string, state: ThreadState) => Effect.Effect<void, never>;
+  readonly setState: (threadId: string, state: ThreadState) => Effect.Effect<void>;
 }
 
-export interface ThreadRegistryShape extends HostRegistryShape {
+export interface ThreadRegistryApi extends HostRegistryApi {
   readonly list: () => Effect.Effect<readonly ThreadRecord[], RegistryError>;
   readonly create: (input: {
     name: string;
@@ -53,18 +53,17 @@ export interface ThreadRegistryShape extends HostRegistryShape {
   /** Archive a thread: visibility-only, the trail is untouched (CONTEXT.md: Archive). */
   readonly archive: (threadId: string) => Effect.Effect<Option.Option<ThreadRecord>, RegistryError>;
   /** Unarchive a thread: back to the active list, nothing else changes. */
-  readonly unarchive: (threadId: string) => Effect.Effect<Option.Option<ThreadRecord>, RegistryError>;
+  readonly unarchive: (
+    threadId: string,
+  ) => Effect.Effect<Option.Option<ThreadRecord>, RegistryError>;
   /** Delete the record AND the thread's directory (sessions included). */
   readonly delete: (threadId: string) => Effect.Effect<boolean, RegistryError>;
   /** Wire projection: registry view + derived state. */
-  readonly toInfo: (
-    threadId: string,
-    tailSeq: number,
-  ) => Effect.Effect<Option.Option<ThreadInfo>, never>;
+  readonly toInfo: (threadId: string, tailSeq: number) => Effect.Effect<Option.Option<ThreadInfo>>;
 }
 
 /** The durable thread index. Consoles only ever see it through the wire. */
-export class ThreadRegistry extends Context.Service<ThreadRegistry, ThreadRegistryShape>()(
+export class ThreadRegistry extends Context.Service<ThreadRegistry, ThreadRegistryApi>()(
   "ThreadRegistry",
 ) {}
 
@@ -77,9 +76,19 @@ const THREAD_RECORD_RE = /^[0-9a-f]{32}\/thread\.json$/u;
 
 /** The daemon's working directory (node; the DO passes cwd explicitly). */
 const cwdOf = () => {
+  // SAFETY: node's globalThis exposes process.cwd; the optional access
+  // pattern keeps this shape safe in non-node hosts.
   const g = globalThis as { process?: { cwd?: () => string } };
   return g.process?.cwd?.();
 };
+
+/** Attach adoption provenance when the record was imported (the `source` field is optional). */
+const withRecordSource = (base: Omit<ThreadRecord, "source">, source: ThreadSource | undefined) =>
+  source === undefined ? base : { ...base, source };
+
+/** Attach adoption provenance when the wire info was projected (the `source` field is optional). */
+const withInfoSource = (base: Omit<ThreadInfo, "source">, source: ThreadSource | undefined) =>
+  source === undefined ? base : { ...base, source };
 
 /** Index loaded records; every thread starts idle (hosts derive the rest on touch). */
 const indexLoaded = (loaded: readonly ThreadRecord[]) => {
@@ -91,8 +100,8 @@ const indexLoaded = (loaded: readonly ThreadRecord[]) => {
     // optionalWith default fills null, this normalizes belt-and-braces).
     records.set(record.id, {
       ...record,
-      nameAuto: record.nameAuto === true,
       archivedAt: record.archivedAt ?? null,
+      nameAuto: record.nameAuto,
     });
     states.set(record.id, "idle");
   }
@@ -107,7 +116,7 @@ const indexLoaded = (loaded: readonly ThreadRecord[]) => {
  * of the old FileSystem persist is the backend's job now.
  */
 export const RegistryKvLive = Layer.unwrap(
-  Effect.gen(function* () {
+  Effect.gen(function* RegistryKvLive() {
     const fs = yield* FileSystem.FileSystem;
     const paths = yield* Paths;
     return KvStore.file(fs, paths.threadsDir);
@@ -122,16 +131,16 @@ export const RegistryKvLive = Layer.unwrap(
  */
 export const ThreadRegistryLive = Layer.effect(
   ThreadRegistry,
-  Effect.gen(function* () {
+  Effect.gen(function* ThreadRegistryLive() {
     const kv = yield* KvStore;
     const paths = yield* Paths;
     const fs = yield* FileSystem.FileSystem;
-    const records = jsonRecords<ThreadRecord>(kv, "");
+    const recordsStore = jsonRecords<ThreadRecord>(kv, "");
     // Boot load: every file under the threads root is listed (and decoded
     // by the layer — corrupt files are skipped with a logWarning), then
     // filtered to record-shaped keys. A missing threads dir reads as an
     // empty registry (the file backend answers [] on a missing root).
-    const loaded = yield* records
+    const loaded = yield* recordsStore
       .list()
       .pipe(
         Effect.map((entries) =>
@@ -143,66 +152,42 @@ export const ThreadRegistryLive = Layer.effect(
     const statesRef = yield* Ref.make<ReadonlyMap<string, ThreadState>>(initialStates);
 
     return ThreadRegistry.of({
-      list: () =>
-        Ref.get(recordsRef).pipe(
-          Effect.map((records) => [...records.values()].sort((a, b) => a.createdAt - b.createdAt)),
-        ),
-      get: (threadId) =>
-        Ref.get(recordsRef).pipe(
-          Effect.map((records) => Option.fromNullishOr(records.get(threadId))),
-        ),
-      create: Effect.fn("create")(function* (input) {
-        const record: ThreadRecord = {
-          id: crypto.randomUUID().replaceAll("-", ""),
-          name: input.name,
-          cwd: input.cwd ?? cwdOf() ?? "/",
-          mode: input.mode ?? "local",
-          createdAt: Date.now(),
-          sessionId: null,
-          nameAuto: input.autoName === true,
-          archivedAt: null,
-          ...(input.source === undefined ? {} : { source: input.source }),
-        };
-        yield* records.put(`${record.id}/thread.json`, record);
+      archive: Effect.fn("archive")(function* archive(threadId) {
+        const record = yield* Ref.get(recordsRef).pipe(
+          Effect.map((records) => records.get(threadId)),
+        );
+        if (record === undefined) {
+          return Option.none();
+        }
+        const next: ThreadRecord = { ...record, archivedAt: Date.now() };
+        yield* recordsStore.put(`${threadId}/thread.json`, next);
+        yield* Ref.update(recordsRef, (records) => new Map(records).set(threadId, next));
+        return Option.some(next);
+      }),
+      create: Effect.fn("create")(function* create(input) {
+        const record = withRecordSource(
+          {
+            archivedAt: null,
+            createdAt: Date.now(),
+            cwd: input.cwd ?? cwdOf() ?? "/",
+            id: crypto.randomUUID().replaceAll("-", ""),
+            mode: input.mode ?? "local",
+            name: input.name,
+            nameAuto: input.autoName === true,
+            sessionId: null,
+          },
+          input.source,
+        );
+        yield* recordsStore.put(`${record.id}/thread.json`, record);
         yield* Ref.update(recordsRef, (records) => new Map(records).set(record.id, record));
         yield* Ref.update(statesRef, (states) => new Map(states).set(record.id, "idle"));
         return record;
       }),
-      update: Effect.fn("update")(function* (threadId, patch) {
-        const record = yield* Ref.get(recordsRef).pipe(
-          Effect.map((records) => records.get(threadId)),
-        );
-        if (record === undefined) return Option.none();
-        const next: ThreadRecord = { ...record, ...patch };
-        yield* records.put(`${threadId}/thread.json`, next);
-        yield* Ref.update(recordsRef, (records) => new Map(records).set(threadId, next));
-        return Option.some(next);
-      }),
-      archive: Effect.fn("archive")(function* (threadId) {
-        const record = yield* Ref.get(recordsRef).pipe(
-          Effect.map((records) => records.get(threadId)),
-        );
-        if (record === undefined) return Option.none();
-        const next: ThreadRecord = { ...record, archivedAt: Date.now() };
-        yield* records.put(`${threadId}/thread.json`, next);
-        yield* Ref.update(recordsRef, (records) => new Map(records).set(threadId, next));
-        return Option.some(next);
-      }),
-      unarchive: Effect.fn("unarchive")(function* (threadId) {
-        const record = yield* Ref.get(recordsRef).pipe(
-          Effect.map((records) => records.get(threadId)),
-        );
-        if (record === undefined) return Option.none();
-        const next: ThreadRecord = { ...record, archivedAt: null };
-        yield* records.put(`${threadId}/thread.json`, next);
-        yield* Ref.update(recordsRef, (records) => new Map(records).set(threadId, next));
-        return Option.some(next);
-      }),
-      setState: (threadId, state) =>
-        Ref.update(statesRef, (states) => new Map(states).set(threadId, state)),
-      delete: Effect.fn("delete")(function* (threadId) {
+      delete: Effect.fn("delete")(function* deleteThread(threadId) {
         const current = yield* Ref.get(recordsRef);
-        if (!current.has(threadId)) return false;
+        if (!current.has(threadId)) {
+          return false;
+        }
         yield* Ref.update(recordsRef, (records) => {
           const next = new Map(records);
           next.delete(threadId);
@@ -213,36 +198,77 @@ export const ThreadRegistryLive = Layer.effect(
           next.delete(threadId);
           return next;
         });
-        yield* records.delete(`${threadId}/thread.json`);
+        yield* recordsStore.delete(`${threadId}/thread.json`);
         // Best-effort removal of the thread's directory (sessions included);
         // the registry entry is gone either way.
         yield* fs
-          .remove(paths.threadDir(threadId), { recursive: true, force: true })
+          .remove(paths.threadDir(threadId), { force: true, recursive: true })
           .pipe(Effect.catchEager(() => Effect.void));
         return true;
       }),
-      toInfo: Effect.fn("toInfo")(function* (threadId, tailSeq) {
+      get: (threadId) =>
+        Ref.get(recordsRef).pipe(
+          Effect.map((records) => Option.fromNullishOr(records.get(threadId))),
+        ),
+      list: () =>
+        Ref.get(recordsRef).pipe(
+          Effect.map((records) =>
+            [...records.values()].toSorted((a, b) => a.createdAt - b.createdAt),
+          ),
+        ),
+      setState: (threadId, state) =>
+        Ref.update(statesRef, (states) => new Map(states).set(threadId, state)),
+      toInfo: Effect.fn("toInfo")(function* toInfo(threadId, tailSeq) {
         const record = yield* Ref.get(recordsRef).pipe(
           Effect.map((records) => records.get(threadId)),
         );
-        if (record === undefined) return Option.none();
+        if (record === undefined) {
+          return Option.none();
+        }
         const state = yield* Ref.get(statesRef).pipe(
           Effect.map((states) => states.get(threadId) ?? "idle"),
         );
-        return Option.some({
-          id: record.id,
-          name: record.name,
-          cwd: record.cwd,
-          mode: record.mode,
-          state,
-          // The local daemon is the env for local threads; the hub derives
-          // the real env states (stopped/provisioning/ready/error) for Boxes.
-          env: "ready",
-          sessionId: record.sessionId,
-          tailSeq,
-          ...(record.source === undefined ? {} : { source: record.source }),
-          archivedAt: record.archivedAt ?? null,
-        });
+        const info = withInfoSource(
+          {
+            archivedAt: record.archivedAt ?? null,
+            cwd: record.cwd,
+            // The local daemon is the env for local threads; the hub derives
+            // the real env states (stopped/provisioning/ready/error) for Boxes.
+            env: "ready",
+            id: record.id,
+            mode: record.mode,
+            name: record.name,
+            sessionId: record.sessionId,
+            state,
+            tailSeq,
+          },
+          record.source,
+        );
+        return Option.some(info);
+      }),
+      unarchive: Effect.fn("unarchive")(function* unarchive(threadId) {
+        const record = yield* Ref.get(recordsRef).pipe(
+          Effect.map((records) => records.get(threadId)),
+        );
+        if (record === undefined) {
+          return Option.none();
+        }
+        const next: ThreadRecord = { ...record, archivedAt: null };
+        yield* recordsStore.put(`${threadId}/thread.json`, next);
+        yield* Ref.update(recordsRef, (records) => new Map(records).set(threadId, next));
+        return Option.some(next);
+      }),
+      update: Effect.fn("update")(function* update(threadId, patch) {
+        const record = yield* Ref.get(recordsRef).pipe(
+          Effect.map((records) => records.get(threadId)),
+        );
+        if (record === undefined) {
+          return Option.none();
+        }
+        const next: ThreadRecord = { ...record, ...patch };
+        yield* recordsStore.put(`${threadId}/thread.json`, next);
+        yield* Ref.update(recordsRef, (records) => new Map(records).set(threadId, next));
+        return Option.some(next);
       }),
     });
   }),

@@ -25,12 +25,12 @@ import type { SakuHubDO, SakuThreadDO } from "./src/worker.ts";
 
 export interface StackOptions {
   /** The deployment secret (default: a persistent random value). */
-  readonly secret?: Redacted.Redacted<string>;
+  readonly secret?: Redacted.Redacted;
   /** The Box API key (default: the BOX_API_KEY secret). Box is incomplete — ADR 0008. */
-  readonly boxApiKey?: Redacted.Redacted<string>;
+  readonly boxApiKey?: Redacted.Redacted;
   /** The Freestyle API key (default: the FREESTYLE_API_KEY secret; unused
    * until the freestyle provisioner backend lands — ADR 0008). */
-  readonly freestyleApiKey?: Redacted.Redacted<string>;
+  readonly freestyleApiKey?: Redacted.Redacted;
   /** "box" (default, incomplete), "static", or "freestyle" (fails loudly until the backend lands). */
   readonly provisioner?: "box" | "static" | "freestyle";
   /** Static provisioner: the env daemon's endpoint + token. */
@@ -49,7 +49,7 @@ export const makeStack = (options: StackOptions = {}) =>
       providers: Cloudflare.providers(),
       state: Cloudflare.state(),
     },
-    Effect.gen(function* () {
+    Effect.gen(function* makeStackProgram() {
       // The deployment secret: a persistent random value minted once, or
       // the caller's own (the tests pass a fixed test secret).
       const secret = options.secret ?? (yield* Random("SakuDeploymentSecret")).text;
@@ -62,39 +62,39 @@ export const makeStack = (options: StackOptions = {}) =>
       // registered.
       const devPort = yield* Config.option(Config.number("PORT"));
       const worker = yield* Cloudflare.Worker("saku", {
-        main: "./src/worker.ts",
         dev: {
           port: Option.getOrElse(devPort, () => 1337),
           strictPort: Option.isSome(devPort),
         },
         env: {
-          HUB: Cloudflare.DurableObject<SakuHubDO>("HUB", { className: "SakuHubDO" }),
-          THREAD: Cloudflare.DurableObject<SakuThreadDO>("THREAD", {
-            className: "SakuThreadDO",
-          }),
-          DEPLOYMENT_SECRET: secret,
           BOX_API_KEY:
             options.boxApiKey ??
             Config.redacted("BOX_API_KEY").pipe(Config.withDefault(Redacted.make(""))),
+          DEPLOYMENT_SECRET: secret,
           FREESTYLE_API_KEY:
             options.freestyleApiKey ??
             Config.redacted("FREESTYLE_API_KEY").pipe(Config.withDefault(Redacted.make(""))),
+          HUB: Cloudflare.DurableObject<SakuHubDO>("HUB", { className: "SakuHubDO" }),
           SAKU_ENV_PROVISIONER: Config.string("SAKU_ENV_PROVISIONER").pipe(
             Config.withDefault(options.provisioner ?? "box"),
-          ),
-          SAKU_ENV_URL: Config.string("SAKU_ENV_URL").pipe(
-            Config.withDefault(options.envUrl ?? ""),
           ),
           SAKU_ENV_TOKEN: Config.string("SAKU_ENV_TOKEN").pipe(
             Config.withDefault(options.envToken ?? ""),
           ),
-          SAKU_IDLE_STOP_MS: Config.string("SAKU_IDLE_STOP_MS").pipe(
-            Config.withDefault(String(options.idleStopMs ?? 300_000)),
+          SAKU_ENV_URL: Config.string("SAKU_ENV_URL").pipe(
+            Config.withDefault(options.envUrl ?? ""),
           ),
           SAKU_FAKE_MODEL: Config.string("SAKU_FAKE_MODEL").pipe(
             Config.withDefault(options.fakeModel === true ? "1" : ""),
           ),
+          SAKU_IDLE_STOP_MS: Config.string("SAKU_IDLE_STOP_MS").pipe(
+            Config.withDefault(String(options.idleStopMs ?? 300_000)),
+          ),
+          THREAD: Cloudflare.DurableObject<SakuThreadDO>("THREAD", {
+            className: "SakuThreadDO",
+          }),
         },
+        main: "./src/worker.ts",
       });
       return { url: worker.url };
     }),

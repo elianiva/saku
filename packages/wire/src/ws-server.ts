@@ -15,7 +15,9 @@
  * frontend bundles for the browser.
  */
 
-import { WebSocketServer, type WebSocket } from "ws";
+import { WebSocketServer } from "ws";
+import type { WebSocket } from "ws";
+import type { AddressInfo } from "node:net";
 import { Effect, Schema } from "effect";
 
 /**
@@ -24,10 +26,19 @@ import { Effect, Schema } from "effect";
  * when it happens — tagged so the callers' `onError` mappers stay
  * structural, never message-matched).
  */
-export class WsServerError extends Schema.TaggedError<WsServerError>()("WsServerError", {
+// Aliased so the TaggedError class declaration below stays a plain call
+// (oxlint's throw-new-error would demand `new`, which breaks the schema
+// typecheck — `TaggedError` is a function returning a class, not a class).
+const tagged = Schema.TaggedError;
+
+export class WsServerError extends tagged<WsServerError>()("WsServerError", {
   kind: Schema.Literals(["no_address"]),
   message: Schema.String,
 }) {}
+
+/** Whether the listening address is a TCP port (loopback never yields a pipe name). */
+const isAddressObject = (address: AddressInfo | string | null): address is AddressInfo =>
+  address !== null && typeof address !== "string";
 
 /** Listen on an ephemeral loopback port; resolves once listening. Startup failures fail with the caller's tagged error via onError. The server closes on interruption/failure. */
 export const listenWs = <E>(options: {
@@ -45,7 +56,7 @@ export const listenWs = <E>(options: {
     });
     server.on("listening", () => {
       const address = server.address();
-      if (address === null || typeof address === "string") {
+      if (!isAddressObject(address)) {
         // Unreachable for a TCP loopback listener; still a startup failure.
         server.close();
         resume(
@@ -69,5 +80,5 @@ export const listenWs = <E>(options: {
 /** "ws://127.0.0.1:PORT" for a listening server ("" when unavailable). */
 export const wsUrlOf = (server: WebSocketServer) => {
   const address = server.address();
-  return address !== null && typeof address !== "string" ? `ws://127.0.0.1:${address.port}` : "";
+  return isAddressObject(address) ? `ws://127.0.0.1:${address.port}` : "";
 };

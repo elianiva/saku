@@ -14,7 +14,7 @@ const decode = (value: Uint8Array) => new TextDecoder().decode(value);
 describe("KvStore.memory()", () => {
   it("round-trips put/get/list/delete", async () => {
     await Effect.runPromise(
-      Effect.gen(function* () {
+      Effect.gen(function* roundTrip() {
         const kv = yield* KvStore;
         expect(Option.isNone(yield* kv.get("meta"))).toBe(true);
         yield* kv.put("meta", encode("hello"));
@@ -23,7 +23,9 @@ describe("KvStore.memory()", () => {
         yield* kv.put("log/0001", encode("one"));
         yield* kv.put("log/0002", encode("two"));
         const listed = yield* kv.list({ prefix: "log/" });
-        expect(listed.map((e) => e.key).sort()).toEqual(["log/0001", "log/0002"]);
+        const keys = listed.map((e) => e.key);
+        keys.sort();
+        expect(keys).toEqual(["log/0001", "log/0002"]);
         yield* kv.delete("log/0001");
         expect((yield* kv.list({ prefix: "log/" })).map((e) => e.key)).toEqual(["log/0002"]);
         expect(Option.isNone(yield* kv.get("log/0001"))).toBe(true);
@@ -32,11 +34,11 @@ describe("KvStore.memory()", () => {
   });
 
   it("isolates builds: each provided layer is a fresh store", async () => {
-    const put = Effect.gen(function* () {
+    const put = Effect.gen(function* put() {
       const kv = yield* KvStore;
       yield* kv.put("meta", encode("a"));
     });
-    const get = Effect.gen(function* () {
+    const get = Effect.gen(function* get() {
       const kv = yield* KvStore;
       expect(Option.isNone(yield* kv.get("meta"))).toBe(true);
     });
@@ -49,14 +51,14 @@ describe("KvStore.file()", () => {
   it("round-trips through the filesystem (survives a restart)", async () => {
     const fs = await Effect.runPromise(
       Effect.provide(NodeFileSystem.layer)(
-        Effect.gen(function* () {
+        Effect.gen(function* fs() {
           return yield* FileSystem.FileSystem;
         }),
       ),
     );
     const root = await fs.makeTempDirectory({ prefix: "saku-kv-" }).pipe(Effect.runPromise);
     await Effect.runPromise(
-      Effect.gen(function* () {
+      Effect.gen(function* persist() {
         const kv = yield* KvStore;
         yield* kv.put("meta", encode("persisted"));
         yield* kv.put("log/0001", encode('{"kind":"lane"}'));
@@ -64,7 +66,7 @@ describe("KvStore.file()", () => {
     );
     // A fresh store over the same root sees the writes.
     await Effect.runPromise(
-      Effect.gen(function* () {
+      Effect.gen(function* reload() {
         const kv = yield* KvStore;
         expect(decode(Option.getOrThrow(yield* kv.get("meta")))).toBe("persisted");
         expect((yield* kv.list({ prefix: "log/" })).map((e) => e.key)).toEqual(["log/0001"]);
@@ -73,6 +75,6 @@ describe("KvStore.file()", () => {
       }).pipe(Effect.provide(KvStore.file(fs, root))),
     );
     // Best-effort cleanup.
-    await fs.remove(root, { recursive: true, force: true }).pipe(Effect.runPromise);
+    await fs.remove(root, { force: true, recursive: true }).pipe(Effect.runPromise);
   });
 });

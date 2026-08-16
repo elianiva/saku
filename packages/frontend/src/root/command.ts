@@ -18,30 +18,30 @@ import { GotRailMessage, NavigatedTo } from "./message.ts";
 /** Connect (or reconnect). The service re-resolves the bootstrap and swaps
  *  the client when the daemon restarted on a new port (wire.ts). */
 export const WireConnectCmd = Command.define("WireConnect", {
-  messages: [Connected, ConnectFailed],
-  execute: Effect.gen(function* () {
+  execute: Effect.gen(function* execute() {
     const wire = yield* Wire;
     const hello = yield* wire.connect();
     return Connected({ hello });
   }).pipe(
-    Effect.catchTag("WireError", (error) =>
-      Effect.succeed(ConnectFailed({ message: error.message })),
+    Effect.catchTag("WireError", (failure) =>
+      Effect.succeed(ConnectFailed({ message: failure.message })),
     ),
   ),
+  messages: [Connected, ConnectFailed],
 });
 
 /** The conn machine's Connected edge: a fresh connection needs a fresh list
  *  (the boot list would race the handshake). Lands a wrapped rail message so
  *  the rail's own update runs the list command. */
 export const RefreshRailCmd = Command.define("RefreshRail", {
-  messages: [GotRailMessage],
   execute: Effect.sync(() => GotRailMessage({ message: RefreshRequested() })),
+  messages: [GotRailMessage],
 });
 
 /** Push a URL; the navigation layer reports the change back as ChangedRoute,
  *  which drives the route-derived submodel state (the informing convention). */
 export const NavigateToCmd = Command.define("NavigateTo", {
   args: { path: S.String },
-  messages: [NavigatedTo],
   execute: ({ path }) => pushUrl(path).pipe(Effect.as(NavigatedTo())),
+  messages: [NavigatedTo],
 });

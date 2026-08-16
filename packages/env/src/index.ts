@@ -1,5 +1,5 @@
 /**
- * @saku/env — the env daemon: the hands of the managed-agents spine
+ * The @saku/env package — the env daemon: the hands of the managed-agents spine
  * (ADR 0003). One binary, one protocol — the pi tool surface
  * (`read`/`bash`/`edit`/`write`) over WebSocket JSONL — running on the
  * user's machine (local mode, reached through the hub's relay) or inside
@@ -53,7 +53,7 @@ export {
   EnvDaemon,
   handleEnvConnection,
   type EnvDaemonOptions,
-  type EnvDaemonShape,
+  type EnvDaemonApi,
   type EnvConnectionContext,
 } from "./daemon.ts";
 export { RemoteEnv, EnvConnectionError, type RemoteEnvOptions } from "./remote.ts";
@@ -64,5 +64,5 @@ export {
   type SocketLike,
   type WorkerdWebSocketLike,
 } from "./socket.ts";
-export { EnvRelayClient, type RelayClientOptions, type RelayClientShape } from "./relay.ts";
+export { EnvRelayClient, type RelayClientOptions, type RelayClientApi } from "./relay.ts";
 export * from "./paths.ts";

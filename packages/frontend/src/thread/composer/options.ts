@@ -6,12 +6,7 @@
  */
 
 export type ComposerTrigger = "file" | "command";
-export type ComposerSuggestionAction =
-  | "mention"
-  | "compact"
-  | "model"
-  | "abort"
-  | "clear";
+export type ComposerSuggestionAction = "mention" | "compact" | "model" | "abort" | "clear";
 
 export interface ComposerSuggestion {
   readonly value: string;
@@ -23,38 +18,38 @@ export interface ComposerSuggestion {
 
 const slashCommands = [
   {
-    value: "compact",
-    label: "/compact",
+    action: "compact",
     detail: "summarize the current thread",
     icon: "layers",
-    action: "compact",
+    label: "/compact",
     threadOnly: true,
+    value: "compact",
   },
   {
-    value: "model",
-    label: "/model",
+    action: "model",
     detail: "change the thread's model",
     icon: "pencil",
-    action: "model",
+    label: "/model",
     threadOnly: true,
+    value: "model",
   },
   {
-    value: "abort",
-    label: "/abort",
+    action: "abort",
     detail: "stop the running thread",
     icon: "square",
-    action: "abort",
+    label: "/abort",
     threadOnly: true,
+    value: "abort",
   },
   {
-    value: "clear",
-    label: "/clear",
+    action: "clear",
     detail: "clear the current prompt",
     icon: "x",
-    action: "clear",
+    label: "/clear",
     threadOnly: false,
+    value: "clear",
   },
-] as const satisfies ReadonlyArray<ComposerSuggestion & { readonly threadOnly: boolean }>;
+] as const satisfies readonly (ComposerSuggestion & { readonly threadOnly: boolean })[];
 
 /** The slash palette is deliberately data, not a second command runtime. The
  * actions map to existing Foldkit updates/Commands in thread/update.ts; an
@@ -71,11 +66,11 @@ export const composerSuggestions = (
       ? []
       : [
           {
-            value: path,
-            label: `@${path}`,
+            action: "mention" as const,
             detail: "mention this file",
             icon: "fileStack" as const,
-            action: "mention" as const,
+            label: `@${path}`,
+            value: path,
           },
         ];
   }

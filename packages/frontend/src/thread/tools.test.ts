@@ -22,14 +22,14 @@ describe("toolArgsView", () => {
 
   it("renders read with pi's line-range suffix", () => {
     expect(toolArgsView("read", { path: "src/a.ts" }).preview).toBe("src/a.ts");
-    expect(toolArgsView("read", { path: "src/a.ts", offset: 10, limit: 40 }).preview).toBe(
+    expect(toolArgsView("read", { limit: 40, offset: 10, path: "src/a.ts" }).preview).toBe(
       "src/a.ts:10-49",
     );
-    expect(toolArgsView("read", { path: "src/a.ts", offset: 10 }).preview).toBe("src/a.ts:10");
+    expect(toolArgsView("read", { offset: 10, path: "src/a.ts" }).preview).toBe("src/a.ts:10");
   });
 
   it("renders write as the path plus a capped content block", () => {
-    const view = toolArgsView("write", { path: "src/new.ts", content: "export const a = 1;" });
+    const view = toolArgsView("write", { content: "export const a = 1;", path: "src/new.ts" });
     expect(view.preview).toBe("src/new.ts");
     expect(view.lines[0]).toEqual({ kind: "code", text: "src/new.ts" });
     expect(view.lines[1]).toEqual({ kind: "code", text: "export const a = 1;" });
@@ -37,11 +37,11 @@ describe("toolArgsView", () => {
 
   it("renders edit as the path with one −/+ pair per edit", () => {
     const view = toolArgsView("edit", {
-      path: "src/a.ts",
       edits: [
-        { oldText: "old one", newText: "new one" },
-        { oldText: "old two", newText: "new two" },
+        { newText: "new one", oldText: "old one" },
+        { newText: "new two", oldText: "old two" },
       ],
+      path: "src/a.ts",
     });
     expect(view.preview).toBe("src/a.ts · 2 edits");
     expect(view.lines).toEqual([
@@ -55,18 +55,18 @@ describe("toolArgsView", () => {
     ]);
     // A single edit keeps the bare path preview.
     expect(
-      toolArgsView("edit", { path: "src/a.ts", edits: [{ oldText: "a", newText: "b" }] }).preview,
+      toolArgsView("edit", { edits: [{ newText: "b", oldText: "a" }], path: "src/a.ts" }).preview,
     ).toBe("src/a.ts");
   });
 
   it("renders grep with the pattern, path, flags, glob, and limit", () => {
     const view = toolArgsView("grep", {
-      pattern: "foo",
-      path: "src/",
-      ignoreCase: true,
       context: 2,
       glob: "*.ts",
+      ignoreCase: true,
       limit: 50,
+      path: "src/",
+      pattern: "foo",
     });
     expect(view.preview).toBe("/foo/ in src/ -i -c 2 (*.ts) limit 50");
     expect(view.lines[0]).toEqual({ kind: "code", text: "/foo/" });
@@ -75,12 +75,10 @@ describe("toolArgsView", () => {
   });
 
   it("renders find and ls with their path and limit", () => {
-    expect(toolArgsView("find", { pattern: "**/*.ts", path: "src", limit: 10 }).preview).toBe(
+    expect(toolArgsView("find", { limit: 10, path: "src", pattern: "**/*.ts" }).preview).toBe(
       "**/*.ts in src limit 10",
     );
-    expect(toolArgsView("ls", { path: "packages", limit: 500 }).preview).toBe(
-      "packages limit 500",
-    );
+    expect(toolArgsView("ls", { limit: 500, path: "packages" }).preview).toBe("packages limit 500");
     expect(toolArgsView("ls", {}).preview).toBe(".");
   });
 
@@ -100,8 +98,12 @@ describe("toolArgsView", () => {
     const long = "a".repeat(500);
     const bash = toolArgsView("bash", { command: long });
     expect(bash.preview.endsWith("…")).toBe(true);
-    const write = toolArgsView("write", { path: "f", content: "b".repeat(1000) });
-    expect(write.lines[1]!.text.length).toBeLessThan(1000);
+    const write = toolArgsView("write", { content: "b".repeat(1000), path: "f" });
+    const [, contentLine] = write.lines;
+    if (contentLine === undefined) {
+      throw new Error("expected the content line");
+    }
+    expect(contentLine.text.length).toBeLessThan(1000);
   });
 });
 
@@ -109,6 +111,7 @@ describe("jsonLine", () => {
   it("renders strings verbatim, objects as JSON, and undefined as empty", () => {
     expect(jsonLine("raw")).toBe("raw");
     expect(jsonLine({ a: 1 })).toBe('{"a":1}');
-    expect(jsonLine(undefined)).toBe("");
+    const empty = undefined;
+    expect(jsonLine(empty)).toBe("");
   });
 });

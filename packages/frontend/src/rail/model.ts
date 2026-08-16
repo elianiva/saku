@@ -38,67 +38,67 @@ export const browseEntries = BrowseEntries;
  *  (an index into the visible rows: up row first, then the filtered dirs).
  *  The dialog shell itself is the foldkit Dialog submodel. */
 export const PickerModel = S.Struct({
-  /** The directory currently listed ("" until the first browse lands). */
-  path: S.String,
-  /** The listed directory's parent; null at the filesystem root. */
-  parent: S.NullOr(S.String),
   entries: BrowseEntries.schema,
   /** Narrows the current level's rows by basename. */
   filter: S.String,
   /** The highlighted row within the visible rows. */
   highlight: S.Number,
+  /** The listed directory's parent; null at the filesystem root. */
+  parent: S.NullOr(S.String),
+  /** The directory currently listed ("" until the first browse lands). */
+  path: S.String,
 });
 export type PickerModel = S.Schema.Type<typeof PickerModel>;
 
 export const initialPicker = (): PickerModel => ({
-  path: "",
-  parent: null,
   entries: BrowseEntries.Idle(),
   filter: "",
   highlight: 0,
+  parent: null,
+  path: "",
 });
 
 export const Model = S.Struct({
-  list: ThreadList.schema,
-  /** The route's pinned thread (the row highlight); null on the root route. */
-  selectedId: S.NullOr(S.String),
-  /** A transient banner message (e.g. a failed gesture); null when clean. */
-  notice: S.NullOr(S.String),
-  /** The added projects (CONTEXT.md: Project) — the session window's scope. */
-  projects: Projects.schema,
-  /** One lazy session list per project path (loaded on first expand). */
-  projectSessions: S.Record(S.String, ProjectSessions.schema),
+  /** A pi adoption is in flight (guards double adoptions); null when clean. */
+  adopting: S.NullOr(S.String),
+  /** The add-project dialog (the foldkit Dialog submodel). */
+  dialog: Dialog.Model,
   /** Expanded project paths; adding a project expands it. */
   expanded: S.Record(S.String, S.Boolean),
+  list: ThreadList.schema,
+  /** A transient banner message (e.g. a failed gesture); null when clean. */
+  notice: S.NullOr(S.String),
+  /** The dialog's tree state (the level being traversed). */
+  picker: PickerModel,
+  /** One lazy session list per project path (loaded on first expand). */
+  projectSessions: S.Record(S.String, ProjectSessions.schema),
+  /** The added projects (CONTEXT.md: Project) — the session window's scope. */
+  projects: Projects.schema,
+  /** An inline rename is in flight (the thread id + draft text). */
+  renaming: S.NullOr(S.Struct({ id: S.String, value: S.String })),
+  /** The route's pinned thread (the row highlight); null on the root route. */
+  selectedId: S.NullOr(S.String),
   /** Per-project "show more" for the session preview. */
   sessionShowMore: S.Record(S.String, S.Boolean),
   /** The active thread list's preview "show more". */
   threadShowMore: S.Boolean,
   /** The rail's list: active threads + the projects window, or archived. */
   view: S.Literals(["active", "archived"]),
-  /** The add-project dialog (the foldkit Dialog submodel). */
-  dialog: Dialog.Model,
-  /** The dialog's tree state (the level being traversed). */
-  picker: PickerModel,
-  /** A pi adoption is in flight (guards double adoptions); null when clean. */
-  adopting: S.NullOr(S.String),
-  /** An inline rename is in flight (the thread id + draft text). */
-  renaming: S.NullOr(S.Struct({ id: S.String, value: S.String })),
 });
 export type Model = S.Schema.Type<typeof Model>;
 
 export const initialModel = (): Model => ({
-  list: ThreadList.Idle(),
-  selectedId: null,
-  notice: null,
-  projects: Projects.Idle(),
-  projectSessions: {},
+  adopting: null,
+  dialog: Dialog.init({ id: "project-picker" }),
   expanded: {},
+  list: ThreadList.Idle(),
+  notice: null,
+  picker: initialPicker(),
+  projectSessions: {},
+  projects: Projects.Idle(),
+  renaming: null,
+  selectedId: null,
   sessionShowMore: {},
   threadShowMore: false,
   view: "active",
-  dialog: Dialog.init({ id: "project-picker" }),
-  picker: initialPicker(),
-  adopting: null,
-  renaming: null,
 });

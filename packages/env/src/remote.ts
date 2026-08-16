@@ -27,6 +27,16 @@
  * formats.
  */
 
+import { ExecutionError, FileError, err, ok } from "@earendil-works/pi-agent-core";
+import type {
+  ExecutionEnv,
+  Result as PiResult,
+  ShellExecOptions,
+} from "@earendil-works/pi-agent-core";
+import { decodeFrame, isSocketMessage, parseFrame, serializeFrame } from "@saku/wire";
+import type { JsonValue, SocketMessage } from "@saku/wire";
+import { Effect, Option, Schema } from "effect";
+import { EnvConnectionError } from "./env-connection-error.ts";
 import {
   ENV_VERSION,
   EnvAbort,
@@ -40,11 +50,11 @@ import {
   EnvErrorFrame,
   RelayAttach,
   toPiError,
-  type EnvOp as EnvOpType,
 } from "./protocol.ts";
-import { Effect } from "effect";
-import { type SocketLike } from "./socket.ts";
+import type { EnvOp as EnvOpType } from "./protocol.ts";
+import type { SocketLike } from "./socket.ts";
 
+export { EnvConnectionError } from "./env-connection-error.ts";
 export {
   workerdSocket,
   workerdSocketFactory,
@@ -52,38 +62,6 @@ export {
   type WorkerdWebSocketLike,
 } from "./socket.ts";
 export { EnvHandle } from "./protocol.ts";
-import {
-  ExecutionError,
-  err,
-  ok,
-  type ExecutionEnv,
-  type FileError,
-  type FileInfo,
-  type Result as PiResult,
-  type ShellExecOptions,
-} from "@earendil-works/pi-agent-core";
-import { Option, Schema } from "effect";
-import { decodeFrame, parseFrame, serializeFrame } from "@saku/wire";
-
-/**
- * A connection-level failure of the env protocol (connect/hello), tagged
- * so callers can distinguish a rejected hello from a timeout or a socket
- * failure instead of matching message text.
- */
-export class EnvConnectionError extends Schema.TaggedError<EnvConnectionError>()(
-  "EnvConnectionError",
-  {
-    kind: Schema.Literals([
-      "already_connected",
-      "socket_error",
-      "closed_before_hello",
-      "hello_timeout",
-      "rejected",
-    ]),
-    message: Schema.String,
-    cause: Schema.optional(Schema.Unknown),
-  },
-) {}
 
 /** An `env_response` frame, decoded at the socket boundary (ok/error). */
 const EnvResponse = Schema.Union([EnvResponseOk, EnvResponseError]);
@@ -105,26 +83,36 @@ export interface RemoteEnvOptions {
   readonly relay?: { readonly envId: string; readonly token: string };
   /** Per-request cap; `exec` may override with its own timeout. Default: none. */
   readonly requestTimeoutMs?: number;
-  readonly log?: (message: string) => Effect.Effect<void, never, never>;
+  readonly log?: (message: string) => Effect.Effect<void>;
 }
 
 interface Pending {
-  readonly resolve: (
-    outcome: { ok: true; payload: unknown } | { ok: false; error: EnvErrorLike },
-  ) => void;
+  readonly resolve: (outcome: RequestOutcome) => void;
   readonly onStream?: ((kind: "stdout" | "stderr", text: string) => void) | undefined;
   timer?: NodeJS.Timeout | undefined;
 }
 
-type EnvErrorLike = {
+interface EnvErrorLike {
   readonly kind: string;
   readonly message: string;
   readonly path?: string | undefined;
-};
+}
+
+/** One request's outcome: the response payload, or the wire error. */
+type RequestOutcome = { ok: true; payload: unknown } | { ok: false; error: EnvErrorLike };
+
+/** Client-side per-request options: streaming callbacks, timeout, abort. */
+interface RequestOptions {
+  onStream?: (kind: "stdout" | "stderr", text: string) => void;
+  timeoutMs?: number;
+  abortSignal?: AbortSignal;
+}
 
 const CONNECTION_LOST = new ExecutionError("unknown", "env connection closed");
 
-/** The node process object, when RemoteEnv runs on node (a DO has none). */
+// SAFETY: `process` exists only on node; the DO (workerd) global lacks it,
+// and the `?? "/"` fallback in the constructor handles that case, so this
+// widened shape is exactly the contract the code reads.
 const nodeProcess = globalThis as { process?: { cwd?: () => string } };
 
 /** pi's Result is structural ({ok, value}|{ok:false, error}); a narrow guard. */
@@ -132,12 +120,57 @@ const isSuccess = <T, E>(
   outcome: PiResult<T, E>,
 ): outcome is Extract<PiResult<T, E>, { readonly ok: true }> => outcome.ok;
 
-/** The FileError boundary: after `isSuccess`, the failure is a FileError. */
-const asFile = <T>(outcome: PiResult<T, FileError | ExecutionError>) =>
-  outcome as PiResult<T, FileError>;
+/**
+ * Narrow a failure to a FileError (file-op boundary): the daemon paths
+ * every file-op failure, so a non-FileError failure is a connection-level
+ * collapse folded into an "unknown" FileError below.
+ */
+const isFileFailure = <T>(
+  outcome: PiResult<T, FileError | ExecutionError>,
+): outcome is Extract<
+  PiResult<T, FileError | ExecutionError>,
+  { readonly ok: false; readonly error: FileError }
+> => !outcome.ok && outcome.error instanceof FileError;
+
+/** Narrow a failure to an ExecutionError (exec/health boundary). */
+const isExecFailure = <T>(
+  outcome: PiResult<T, FileError | ExecutionError>,
+): outcome is Extract<
+  PiResult<T, FileError | ExecutionError>,
+  { readonly ok: false; readonly error: ExecutionError }
+> => !outcome.ok && outcome.error instanceof ExecutionError;
+
+/**
+ * A frame is a JSON object carrying an optional `_tag`; the per-frame
+ * payload schemas validate the rest at the decode boundary.
+ */
+const isFrame = (value: JsonValue | undefined): value is { readonly _tag?: string } =>
+  typeof value === "object" && value !== null;
+
+/** True when the payload is text; the wire ops branch on this. */
+const isText = (content: string | Uint8Array): content is string => typeof content === "string";
 
 /** The op's response payload type, read from the payload table (protocol.ts). */
 type PayloadOf<O extends EnvOpType> = (typeof EnvPayloadSchema)[O["_tag"]]["Type"];
+
+/** Binary ↔ base64 without node's Buffer (workerd has atob/btoa). */
+const bytesToBase64 = (bytes: Uint8Array) => {
+  let binary = "";
+  const chunk = 0x80_00;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCodePoint(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+};
+
+const base64ToBytes = (encoded: string) => {
+  const binary = atob(encoded);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.codePointAt(i) ?? 0;
+  }
+  return bytes;
+};
 
 /**
  * The worker side of the env protocol. One instance per env connection
@@ -151,7 +184,7 @@ export class RemoteEnv implements ExecutionEnv {
   private readonly socketFactory: (url: string) => SocketLike;
   private readonly relay: { readonly envId: string; readonly token: string } | undefined;
   private readonly requestTimeoutMs: number | undefined;
-  private readonly log: (message: string) => Effect.Effect<void, never, never>;
+  private readonly log: (message: string) => Effect.Effect<void>;
 
   private socket: SocketLike | null = null;
   private pending = new Map<string, Pending>();
@@ -172,100 +205,118 @@ export class RemoteEnv implements ExecutionEnv {
   }
 
   /** Open the connection, attach through the relay if configured, hello. */
-  connect() {
+  async connect(): Promise<EnvHelloOk> {
     if (this.socket !== null) {
-      return Promise.reject(
-        new EnvConnectionError({ kind: "already_connected", message: "already connected" }),
-      );
+      throw new EnvConnectionError({ kind: "already_connected", message: "already connected" });
     }
-    return new Promise<EnvHelloOk>((resolve, reject) => {
-      let settled = false;
-      const fail = (error: EnvConnectionError) => {
-        if (settled) return;
-        settled = true;
-        if (this.onceHelloTimer !== undefined) clearTimeout(this.onceHelloTimer);
-        this.onceHello = undefined;
-        this.socket = null;
-        reject(error);
-      };
-      const socket = this.socketFactory(this.url);
-      this.socket = socket;
-      socket.on("open", () => {
-        if (this.relay !== undefined) {
+    return await Effect.runPromise(
+      Effect.callback<EnvHelloOk, EnvConnectionError>((resume) => {
+        let settled = false;
+        const fail = (error: EnvConnectionError) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          if (this.onceHelloTimer !== undefined) {
+            clearTimeout(this.onceHelloTimer);
+          }
+          this.onceHello = undefined;
+          this.socket = null;
+          resume(Effect.fail(error));
+        };
+        const socket = this.socketFactory(this.url);
+        this.socket = socket;
+        socket.on("open", () => {
+          if (this.relay !== undefined) {
+            socket.send(
+              serializeFrame(
+                RelayAttach.make({
+                  envId: this.relay.envId,
+                  token: this.relay.token,
+                  version: ENV_VERSION,
+                }),
+              ),
+            );
+          }
           socket.send(
             serializeFrame(
-              RelayAttach.make({
-                envId: this.relay.envId,
-                token: this.relay.token,
-                version: ENV_VERSION,
-              }),
+              EnvHello.make({ cwd: this.cwd, token: this.token, version: ENV_VERSION }),
             ),
           );
-        }
-        socket.send(
-          serializeFrame(EnvHello.make({ token: this.token, version: ENV_VERSION, cwd: this.cwd })),
-        );
-      });
-      socket.on("message", (data) => this.onMessage(data));
-      socket.on("error", (error) => {
-        const message = error instanceof Error ? error.message : String(error);
-        // The socket callback is outside the Effect runtime: fork the log.
-        void Effect.runFork(this.log(`env connection error: ${message}`));
-        fail(
-          new EnvConnectionError({
-            kind: "socket_error",
-            message: `env connection failed: ${message}`,
-            cause: error,
-          }),
-        );
-      });
-      socket.on("close", () => {
-        const wasConnected = this.connected;
-        this.socket = null;
-        this.failAll(CONNECTION_LOST);
-        if (!wasConnected) {
+        });
+        socket.on("message", (data) => {
+          if (isSocketMessage(data)) {
+            this.onMessage(data);
+          }
+        });
+        socket.on("error", (error) => {
+          const message =
+            error instanceof Error ? error.message : (JSON.stringify(error) ?? "undefined");
+          // The socket callback is outside the Effect runtime: fork the log.
+          void Effect.runFork(this.log(`env connection error: ${message}`));
           fail(
             new EnvConnectionError({
-              kind: "closed_before_hello",
-              message: "env connection closed before hello",
+              cause: error,
+              kind: "socket_error",
+              message: `env connection failed: ${message}`,
             }),
           );
-        }
-      });
-      this.onceHello = {
-        resolve: (hello) => {
-          if (settled) return;
-          settled = true;
-          if (this.onceHelloTimer !== undefined) clearTimeout(this.onceHelloTimer);
-          this.onceHello = undefined;
-          this.connected = true;
-          resolve(hello);
-        },
-        reject: (error) => {
-          fail(error);
+        });
+        socket.on("close", () => {
+          const wasConnected = this.connected;
+          this.socket = null;
+          this.failAll(CONNECTION_LOST);
+          if (!wasConnected) {
+            fail(
+              new EnvConnectionError({
+                kind: "closed_before_hello",
+                message: "env connection closed before hello",
+              }),
+            );
+          }
+        });
+        this.onceHello = {
+          reject: (error) => {
+            fail(error);
+            this.socket?.close();
+          },
+          resolve: (hello) => {
+            if (settled) {
+              return;
+            }
+            settled = true;
+            if (this.onceHelloTimer !== undefined) {
+              clearTimeout(this.onceHelloTimer);
+            }
+            this.onceHello = undefined;
+            this.connected = true;
+            resume(Effect.succeed(hello));
+          },
+        };
+        this.onceHelloTimer = setTimeout(() => {
+          fail(new EnvConnectionError({ kind: "hello_timeout", message: "env hello timed out" }));
           this.socket?.close();
-        },
-      };
-      this.onceHelloTimer = setTimeout(() => {
-        fail(new EnvConnectionError({ kind: "hello_timeout", message: "env hello timed out" }));
-        this.socket?.close();
-      }, 15_000);
-    });
+        }, 15_000);
+        return Effect.void;
+      }),
+    );
   }
 
   private connected = false;
 
-  private onMessage(data: unknown) {
+  private onMessage(data: SocketMessage) {
     const parsed = parseFrame(decodeFrame(data));
-    if (typeof parsed !== "object" || parsed === null) return;
-    const frame = parsed as { _tag?: string };
-
-    if (frame._tag === "env_hello_ok") {
-      const hello = DECODE_HELLO_OK(parsed);
-      if (Option.isSome(hello)) this.onceHello?.resolve(hello.value);
+    if (!isFrame(parsed)) {
       return;
     }
-    if (frame._tag === "env_error") {
+    if (parsed._tag === "env_hello_ok") {
+      const hello = DECODE_HELLO_OK(parsed);
+      if (Option.isSome(hello)) {
+        this.onceHello?.resolve(hello.value);
+      }
+      return;
+    }
+    if (parsed._tag === "env_error") {
       const error = DECODE_ERROR_FRAME(parsed);
       if (Option.isSome(error)) {
         this.onceHello?.reject(
@@ -274,24 +325,30 @@ export class RemoteEnv implements ExecutionEnv {
       }
       return;
     }
-    if (frame._tag === "env_stream") {
+    if (parsed._tag === "env_stream") {
       const stream = DECODE_STREAM(parsed);
       if (Option.isSome(stream)) {
         this.pending.get(stream.value.id)?.onStream?.(stream.value.kind, stream.value.text);
       }
       return;
     }
-    if (frame._tag === "env_response") {
+    if (parsed._tag === "env_response") {
       const response = DECODE_RESPONSE(parsed);
-      if (Option.isNone(response)) return;
+      if (Option.isNone(response)) {
+        return;
+      }
       const pending = this.pending.get(response.value.id);
-      if (pending === undefined) return;
+      if (pending === undefined) {
+        return;
+      }
       this.pending.delete(response.value.id);
-      if (pending.timer !== undefined) clearTimeout(pending.timer);
+      if (pending.timer !== undefined) {
+        clearTimeout(pending.timer);
+      }
       if (response.value.ok) {
         pending.resolve({ ok: true, payload: response.value.payload });
       } else {
-        pending.resolve({ ok: false, error: response.value.error });
+        pending.resolve({ error: response.value.error, ok: false });
       }
     }
   }
@@ -299,8 +356,10 @@ export class RemoteEnv implements ExecutionEnv {
   /** Reject every in-flight request; used on close. */
   private failAll(error: Error) {
     for (const pending of this.pending.values()) {
-      if (pending.timer !== undefined) clearTimeout(pending.timer);
-      pending.resolve({ ok: false, error: { kind: "unknown", message: error.message } });
+      if (pending.timer !== undefined) {
+        clearTimeout(pending.timer);
+      }
+      pending.resolve({ error: { kind: "unknown", message: error.message }, ok: false });
     }
     this.pending = new Map();
   }
@@ -309,41 +368,44 @@ export class RemoteEnv implements ExecutionEnv {
    * Send one request and wait for its response. `abortSignal` kills the
    * daemon-side process (exec) with an `env_abort` frame.
    */
-  private request(
-    op: EnvOpType,
-    options: {
-      onStream?: (kind: "stdout" | "stderr", text: string) => void;
-      timeoutMs?: number;
-      abortSignal?: AbortSignal;
-    } = {},
-  ): Promise<{ ok: true; payload: unknown } | { ok: false; error: EnvErrorLike }> {
+  private async request(op: EnvOpType, options: RequestOptions = {}): Promise<RequestOutcome> {
     if (this.socket === null || !this.connected) {
-      return Promise.resolve({
-        ok: false,
-        error: { kind: "unknown", message: "env not connected" },
-      });
+      return { error: { kind: "unknown", message: "env not connected" }, ok: false };
     }
-    const id = `${++this.seq}:${crypto.randomUUID().slice(0, 8)}`;
-    return new Promise((resolve) => {
-      const pending: Pending = { resolve, onStream: options.onStream };
-      const effective = options.timeoutMs ?? this.requestTimeoutMs;
-      if (effective !== undefined) {
-        pending.timer = setTimeout(() => {
-          this.pending.delete(id);
-          resolve({
+    this.seq += 1;
+    const id = `${this.seq}:${crypto.randomUUID().slice(0, 8)}`;
+    return await Effect.runPromise(
+      Effect.callback<RequestOutcome>((resume) => {
+        const pending: Pending = {
+          onStream: options.onStream,
+          resolve: (outcome) => {
+            resume(Effect.succeed(outcome));
+          },
+        };
+        const effective = options.timeoutMs ?? this.requestTimeoutMs;
+        if (effective !== undefined) {
+          const timedOut: RequestOutcome = {
+            error: {
+              kind: "timeout",
+              message: `env request timed out after ${effective}ms`,
+            },
             ok: false,
-            error: { kind: "timeout", message: `env request timed out after ${effective}ms` },
-          });
+          };
+          pending.timer = setTimeout(() => {
+            this.pending.delete(id);
+            resume(Effect.succeed(timedOut));
+            this.socket?.send(serializeFrame(EnvAbort.make({ id })));
+          }, effective);
+        }
+        const onAbort = () => {
           this.socket?.send(serializeFrame(EnvAbort.make({ id })));
-        }, effective);
-      }
-      const onAbort = () => {
-        this.socket?.send(serializeFrame(EnvAbort.make({ id })));
-      };
-      options.abortSignal?.addEventListener("abort", onAbort, { once: true });
-      this.pending.set(id, pending);
-      this.socket?.send(serializeFrame(EnvRequest.make({ id, op })));
-    });
+        };
+        options.abortSignal?.addEventListener("abort", onAbort, { once: true });
+        this.pending.set(id, pending);
+        this.socket?.send(serializeFrame(EnvRequest.make({ id, op })));
+        return Effect.void;
+      }),
+    );
   }
 
   /**
@@ -353,22 +415,13 @@ export class RemoteEnv implements ExecutionEnv {
    */
   private async op<O extends EnvOpType>(
     op: O,
-    options: {
-      onStream?: (kind: "stdout" | "stderr", text: string) => void;
-      timeoutMs?: number;
-      abortSignal?: AbortSignal;
-    } = {},
-  ) {
+    options: RequestOptions = {},
+  ): Promise<PiResult<PayloadOf<O>, FileError | ExecutionError>> {
     const outcome = await this.request(op, options);
     if (!outcome.ok) {
       return err(toPiError(outcome.error));
     }
-    // TS widens `EnvPayloadSchema[op._tag]` to the table's union for a
-    // generic tag; the schema the runtime decode uses is exactly the
-    // op's entry, so this is the only cast — the decode below is the
-    // boundary check that makes it safe.
-    const schema = EnvPayloadSchema[op._tag] as (typeof EnvPayloadSchema)[O["_tag"]];
-    const payload = Schema.decodeUnknownOption(schema)(outcome.payload);
+    const payload = Schema.decodeUnknownOption(EnvPayloadSchema[op._tag])(outcome.payload);
     if (Option.isNone(payload)) {
       return err(toPiError({ kind: "invalid", message: `undecodable ${op._tag} payload` }));
     }
@@ -382,32 +435,44 @@ export class RemoteEnv implements ExecutionEnv {
     this.connected = false;
   }
 
-  /** File-channel ops: failures are FileErrors, the payload is the raw value. */
-  private fileOp<O extends EnvOpType>(op: O) {
-    return this.op(op) as Promise<PiResult<PayloadOf<O>, FileError>>;
+  /**
+   * File-channel ops: failures are FileErrors, the payload is the raw
+   * value. The daemon produces FileErrors for every file-op failure; a
+   * pathless connection-level error (disconnect/timeout) is folded into
+   * an "unknown" FileError to keep the pi contract.
+   */
+  private async fileOp<O extends EnvOpType>(op: O): Promise<PiResult<PayloadOf<O>, FileError>> {
+    const outcome = await this.op(op);
+    if (outcome.ok) {
+      return outcome;
+    }
+    if (isFileFailure(outcome)) {
+      return outcome;
+    }
+    return err(new FileError("unknown", outcome.error.message));
   }
 
   async absolutePath(path: string) {
-    return this.fileOp({ _tag: "absolute_path", path });
+    return await this.fileOp({ _tag: "absolute_path", path });
   }
 
   async joinPath(parts: string[]) {
-    return this.fileOp({ _tag: "join_path", parts });
+    return await this.fileOp({ _tag: "join_path", parts });
   }
 
   async readTextFile(path: string) {
-    return this.fileOp({ _tag: "read_text_file", path });
+    return await this.fileOp({ _tag: "read_text_file", path });
   }
 
-  async readTextLines(
-    path: string,
-    options?: { maxLines?: number; abortSignal?: AbortSignal },
-  ) {
-    return this.fileOp({
+  async readTextLines(path: string, options?: { maxLines?: number; abortSignal?: AbortSignal }) {
+    let op: Extract<EnvOpType, { readonly _tag: "read_text_lines" }> = {
       _tag: "read_text_lines",
       path,
-      ...(options?.maxLines === undefined ? {} : { maxLines: options.maxLines }),
-    });
+    };
+    if (options?.maxLines !== undefined) {
+      op = { ...op, maxLines: options.maxLines };
+    }
+    return await this.fileOp(op);
   }
 
   async readBinaryFile(
@@ -415,149 +480,159 @@ export class RemoteEnv implements ExecutionEnv {
     _signal?: AbortSignal,
   ): Promise<PiResult<Uint8Array, FileError>> {
     const outcome = await this.fileOp({ _tag: "read_binary_file", path });
-    return isSuccess(outcome) ? ok(base64ToBytes(outcome.value)) : asFile(outcome);
+    return isSuccess(outcome) ? ok(base64ToBytes(outcome.value)) : outcome;
   }
 
   async writeFile(path: string, content: string | Uint8Array) {
-    const binary = typeof content !== "string";
-    return this.fileOp({
+    let op: Extract<EnvOpType, { readonly _tag: "write_file" }> = {
       _tag: "write_file",
+      content: isText(content) ? content : bytesToBase64(content),
       path,
-      content: binary ? bytesToBase64(content) : content,
-      ...(binary ? { encoding: "base64" as const } : {}),
-    });
+    };
+    if (!isText(content)) {
+      op = { ...op, encoding: "base64" };
+    }
+    return await this.fileOp(op);
   }
 
   async appendFile(path: string, content: string | Uint8Array) {
-    const binary = typeof content !== "string";
-    return this.fileOp({
+    let op: Extract<EnvOpType, { readonly _tag: "append_file" }> = {
       _tag: "append_file",
+      content: isText(content) ? content : bytesToBase64(content),
       path,
-      content: binary ? bytesToBase64(content) : content,
-      ...(binary ? { encoding: "base64" as const } : {}),
-    });
+    };
+    if (!isText(content)) {
+      op = { ...op, encoding: "base64" };
+    }
+    return await this.fileOp(op);
   }
 
-  async renameFile(
-    sourcePath: string,
-    destinationPath: string,
-  ) {
-    return this.fileOp({ _tag: "rename_file", sourcePath, destinationPath });
+  async renameFile(sourcePath: string, destinationPath: string) {
+    return await this.fileOp({ _tag: "rename_file", destinationPath, sourcePath });
   }
 
   async fileInfo(path: string) {
-    return this.fileOp({ _tag: "file_info", path });
+    return await this.fileOp({ _tag: "file_info", path });
   }
 
   async listDir(path: string, _signal?: AbortSignal) {
-    return this.fileOp({ _tag: "list_dir", path });
+    return await this.fileOp({ _tag: "list_dir", path });
   }
 
   async canonicalPath(path: string) {
-    return this.fileOp({ _tag: "canonical_path", path });
+    return await this.fileOp({ _tag: "canonical_path", path });
   }
 
   async exists(path: string) {
-    return this.fileOp({ _tag: "exists", path });
+    return await this.fileOp({ _tag: "exists", path });
   }
 
-  async createDir(
-    path: string,
-    options?: { recursive?: boolean; abortSignal?: AbortSignal },
-  ) {
-    return this.fileOp({
+  async createDir(path: string, options?: { recursive?: boolean; abortSignal?: AbortSignal }) {
+    let op: Extract<EnvOpType, { readonly _tag: "create_dir" }> = {
       _tag: "create_dir",
       path,
-      ...(options?.recursive === undefined ? {} : { recursive: options.recursive }),
-    });
+    };
+    if (options?.recursive !== undefined) {
+      op = { ...op, recursive: options.recursive };
+    }
+    return await this.fileOp(op);
   }
 
   async remove(
     path: string,
     options?: { recursive?: boolean; force?: boolean; abortSignal?: AbortSignal },
   ) {
-    return this.fileOp({
-      _tag: "remove",
-      path,
-      ...(options?.recursive === undefined ? {} : { recursive: options.recursive }),
-      ...(options?.force === undefined ? {} : { force: options.force }),
-    });
+    let op: Extract<EnvOpType, { readonly _tag: "remove" }> = { _tag: "remove", path };
+    if (options?.recursive !== undefined) {
+      op = { ...op, recursive: options.recursive };
+    }
+    if (options?.force !== undefined) {
+      op = { ...op, force: options.force };
+    }
+    return await this.fileOp(op);
   }
 
   async createTempDir(prefix = "tmp-") {
-    return this.fileOp({
+    let op: Extract<EnvOpType, { readonly _tag: "create_temp_dir" }> = {
       _tag: "create_temp_dir",
-      ...(prefix === "tmp-" ? {} : { prefix }),
-    });
+    };
+    if (prefix !== "tmp-") {
+      op = { ...op, prefix };
+    }
+    return await this.fileOp(op);
   }
 
-  async createTempFile(options?: {
-    prefix?: string;
-    suffix?: string;
-  }) {
-    return this.fileOp({
+  async createTempFile(options?: { prefix?: string; suffix?: string }) {
+    let op: Extract<EnvOpType, { readonly _tag: "create_temp_file" }> = {
       _tag: "create_temp_file",
-      ...(options?.prefix === undefined ? {} : { prefix: options.prefix }),
-      ...(options?.suffix === undefined ? {} : { suffix: options.suffix }),
-    });
+    };
+    if (options?.prefix !== undefined) {
+      op = { ...op, prefix: options.prefix };
+    }
+    if (options?.suffix !== undefined) {
+      op = { ...op, suffix: options.suffix };
+    }
+    return await this.fileOp(op);
   }
 
   async cleanup() {
     // The connection outlives individual ops; close() releases it.
+    await Promise.resolve(this.connected);
   }
 
   async exec(
     command: string,
     options?: ShellExecOptions,
-  ) {
-    const outcome = await this.op(
-      {
-        _tag: "exec",
-        command,
-        ...(options?.cwd === undefined ? {} : { cwd: options.cwd }),
-        ...(options?.env === undefined ? {} : { env: options.env }),
-        ...(options?.timeout === undefined ? {} : { timeout: options.timeout }),
-        ...(options?.inheritEnv === undefined ? {} : { inheritEnv: options.inheritEnv }),
+  ): Promise<PiResult<{ stdout: string; stderr: string; exitCode: number }, ExecutionError>> {
+    let execOp: Extract<EnvOpType, { readonly _tag: "exec" }> = { _tag: "exec", command };
+    if (options?.cwd !== undefined) {
+      execOp = { ...execOp, cwd: options.cwd };
+    }
+    if (options?.env !== undefined) {
+      execOp = { ...execOp, env: options.env };
+    }
+    if (options?.timeout !== undefined) {
+      execOp = { ...execOp, timeout: options.timeout };
+    }
+    if (options?.inheritEnv !== undefined) {
+      execOp = { ...execOp, inheritEnv: options.inheritEnv };
+    }
+    const requestOptions: RequestOptions = {
+      onStream: (kind, text) => {
+        if (kind === "stdout") {
+          options?.onStdout?.(text);
+        } else {
+          options?.onStderr?.(text);
+        }
       },
-      {
-        onStream: (kind, text) => {
-          if (kind === "stdout") options?.onStdout?.(text);
-          else options?.onStderr?.(text);
-        },
-        // The daemon enforces the exec timeout; allow a grace window for the
-        // final response to arrive after the process dies.
-        ...(options?.timeout === undefined ? {} : { timeoutMs: options.timeout * 1000 + 10_000 }),
-        ...(options?.abortSignal === undefined ? {} : { abortSignal: options.abortSignal }),
-      },
-    );
-    return outcome as PiResult<
-      { stdout: string; stderr: string; exitCode: number },
-      ExecutionError
-    >;
+    };
+    if (options?.timeout !== undefined) {
+      // The daemon enforces the exec timeout; allow a grace window for the
+      // final response to arrive after the process dies.
+      requestOptions.timeoutMs = options.timeout * 1000 + 10_000;
+    }
+    if (options?.abortSignal !== undefined) {
+      requestOptions.abortSignal = options.abortSignal;
+    }
+    const outcome = await this.op(execOp, requestOptions);
+    if (outcome.ok) {
+      return outcome;
+    }
+    if (isExecFailure(outcome)) {
+      return outcome;
+    }
+    return err(new ExecutionError("unknown", outcome.error.message));
   }
 
   /** The env's health payload: workspace, pid, protocol version. */
-  async health() {
+  async health(): Promise<PiResult<{ cwd: string; pid: number; version: string }, ExecutionError>> {
     const outcome = await this.op({ _tag: "health" });
-    return outcome as PiResult<{ cwd: string; pid: number; version: string }, ExecutionError>;
+    if (outcome.ok) {
+      return outcome;
+    }
+    if (isExecFailure(outcome)) {
+      return outcome;
+    }
+    return err(new ExecutionError("unknown", outcome.error.message));
   }
 }
-
-/** Binary ↔ base64 without node's Buffer (workerd has atob/btoa). */
-const bytesToBase64 = (bytes: Uint8Array) => {
-  let binary = "";
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return btoa(binary);
-};
-
-const base64ToBytes = (encoded: string) => {
-  const binary = atob(encoded);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes;
-};

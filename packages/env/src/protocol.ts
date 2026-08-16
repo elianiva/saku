@@ -27,13 +27,8 @@
  */
 
 import { Schema as S } from "effect";
-import {
-  ExecutionError,
-  FileError,
-  type ExecutionErrorCode,
-  type FileErrorCode,
-} from "@earendil-works/pi-agent-core";
-
+import { ExecutionError, FileError } from "@earendil-works/pi-agent-core";
+import type { ExecutionErrorCode, FileErrorCode } from "@earendil-works/pi-agent-core";
 /** The env protocol version; `env_hello` mismatches are rejected. */
 export const ENV_VERSION = "1";
 
@@ -42,33 +37,33 @@ export const EnvFileKind = S.Literals(["file", "directory", "symlink"]);
 
 /** pi's FileInfo shape, JSON-safe (LocalEnv's describeEntry output). */
 export const EnvFileInfo = S.Struct({
+  kind: EnvFileKind,
+  mtimeMs: S.Number,
   name: S.String,
   path: S.String,
-  kind: EnvFileKind,
   size: S.Number,
-  mtimeMs: S.Number,
 });
 export type EnvFileInfo = S.Schema.Type<typeof EnvFileInfo>;
 
 export const EnvHello = S.TaggedStruct("env_hello", {
-  token: S.String,
-  version: S.String,
   /** The workspace root the connection's tools operate on. */
   cwd: S.optional(S.String),
+  token: S.String,
+  version: S.String,
 });
 export type EnvHello = S.Schema.Type<typeof EnvHello>;
 
 export const EnvHelloOk = S.TaggedStruct("env_hello_ok", {
+  cwd: S.String,
   pid: S.Number,
   version: S.String,
-  cwd: S.String,
 });
 export type EnvHelloOk = S.Schema.Type<typeof EnvHelloOk>;
 
 /** One operation request; the `id` pairs it with its response/streams. */
 export const EnvRequest = S.TaggedStruct("env_request", {
   id: S.String,
-  op: S.Unknown,
+  op: S.Json,
 });
 export type EnvRequest = S.Schema.Type<typeof EnvRequest>;
 
@@ -98,14 +93,14 @@ export const EnvResponseOk = S.TaggedStruct("env_response", {
   // The wire omits the payload of void ops (JSON drops `undefined`), so
   // the field is optional — the client decodes it per op with
   // `EnvPayloadSchema` below.
-  payload: S.optional(S.Unknown),
+  payload: S.optional(S.Json),
 });
 export type EnvResponseOk = S.Schema.Type<typeof EnvResponseOk>;
 
 export const EnvResponseError = S.TaggedStruct("env_response", {
+  error: EnvError,
   id: S.String,
   ok: S.Literal(false),
-  error: EnvError,
 });
 export type EnvResponseError = S.Schema.Type<typeof EnvResponseError>;
 
@@ -135,23 +130,23 @@ export const EnvOp = S.Union([
   S.TaggedStruct("join_path", { parts: S.Array(S.String) }),
   S.TaggedStruct("read_text_file", { path: S.String }),
   S.TaggedStruct("read_text_lines", {
-    path: S.String,
     maxLines: S.optional(S.Number),
+    path: S.String,
   }),
   S.TaggedStruct("read_binary_file", { path: S.String }),
   S.TaggedStruct("write_file", {
-    path: S.String,
     content: S.String,
-    encoding: S.optional(S.Literals(["utf8", "base64"])),
+    encoding: S.optional(S.Literals(["utf-8", "base64"])),
+    path: S.String,
   }),
   S.TaggedStruct("append_file", {
-    path: S.String,
     content: S.String,
-    encoding: S.optional(S.Literals(["utf8", "base64"])),
+    encoding: S.optional(S.Literals(["utf-8", "base64"])),
+    path: S.String,
   }),
   S.TaggedStruct("rename_file", {
-    sourcePath: S.String,
     destinationPath: S.String,
+    sourcePath: S.String,
   }),
   S.TaggedStruct("file_info", { path: S.String }),
   S.TaggedStruct("list_dir", { path: S.String }),
@@ -162,9 +157,9 @@ export const EnvOp = S.Union([
     recursive: S.optional(S.Boolean),
   }),
   S.TaggedStruct("remove", {
+    force: S.optional(S.Boolean),
     path: S.String,
     recursive: S.optional(S.Boolean),
-    force: S.optional(S.Boolean),
   }),
   S.TaggedStruct("create_temp_dir", { prefix: S.optional(S.String) }),
   S.TaggedStruct("create_temp_file", {
@@ -175,9 +170,9 @@ export const EnvOp = S.Union([
     command: S.String,
     cwd: S.optional(S.String),
     env: S.optional(S.Record(S.String, S.String)),
+    inheritEnv: S.optional(S.Boolean),
     /** Seconds; the daemon kills the process on timeout. */
     timeout: S.optional(S.Number),
-    inheritEnv: S.optional(S.Boolean),
   }),
 ]);
 export type EnvOp = S.Schema.Type<typeof EnvOp>;
@@ -192,24 +187,24 @@ export type EnvOp = S.Schema.Type<typeof EnvOp>;
  * cast.
  */
 export const EnvPayloadSchema = {
-  health: S.Struct({ cwd: S.String, pid: S.Number, version: S.String }),
   absolute_path: S.String,
-  join_path: S.String,
-  read_text_file: S.String,
-  read_text_lines: S.mutable(S.Array(S.String)),
-  read_binary_file: S.String,
-  write_file: S.Void,
   append_file: S.Void,
-  rename_file: S.Void,
-  file_info: EnvFileInfo,
-  list_dir: S.mutable(S.Array(EnvFileInfo)),
   canonical_path: S.String,
-  exists: S.Boolean,
   create_dir: S.Void,
-  remove: S.Void,
   create_temp_dir: S.String,
   create_temp_file: S.String,
-  exec: S.Struct({ stdout: S.String, stderr: S.String, exitCode: S.Number }),
+  exec: S.Struct({ exitCode: S.Number, stderr: S.String, stdout: S.String }),
+  exists: S.Boolean,
+  file_info: EnvFileInfo,
+  health: S.Struct({ cwd: S.String, pid: S.Number, version: S.String }),
+  join_path: S.String,
+  list_dir: S.mutable(S.Array(EnvFileInfo)),
+  read_binary_file: S.String,
+  read_text_file: S.String,
+  read_text_lines: S.mutable(S.Array(S.String)),
+  remove: S.Void,
+  rename_file: S.Void,
+  write_file: S.Void,
 } as const satisfies Record<EnvOp["_tag"], S.Schema<unknown>>;
 
 /**
@@ -219,10 +214,6 @@ export const EnvPayloadSchema = {
  * protocol — the JSON shape is the contract.
  */
 export const EnvHandle = S.Struct({
-  /** The env's endpoint: a `host --private` URL (Box) or the hub relay URL. */
-  url: S.String,
-  /** The env protocol token the daemon enforces in `env_hello`. */
-  token: S.String,
   /** The backing Box, when the env is a sandbox thread's. */
   boxId: S.Union([S.Null, S.String]),
   /**
@@ -230,13 +221,48 @@ export const EnvHandle = S.Struct({
    * machine's daemon, cloud workers) — the direct-URL path otherwise.
    */
   relay: S.optional(S.Struct({ envId: S.String, token: S.String })),
+  /** The env protocol token the daemon enforces in `env_hello`. */
+  token: S.String,
+  /** The env's endpoint: a `host --private` URL (Box) or the hub relay URL. */
+  url: S.String,
 });
 export type EnvHandle = S.Schema.Type<typeof EnvHandle>;
+
+/** The pi error-code vocabulary (pi-agent-core); the daemon only emits these. */
+const FILE_ERROR_CODES: ReadonlySet<string> = new Set([
+  "aborted",
+  "not_found",
+  "permission_denied",
+  "not_directory",
+  "is_directory",
+  "invalid",
+  "not_supported",
+  "unknown",
+]);
+const EXECUTION_ERROR_CODES: ReadonlySet<string> = new Set([
+  "aborted",
+  "timeout",
+  "shell_unavailable",
+  "spawn_error",
+  "callback_error",
+  "unknown",
+]);
+
+const isFileErrorCode = (kind: string): kind is FileErrorCode => FILE_ERROR_CODES.has(kind);
+const isExecutionErrorCode = (kind: string): kind is ExecutionErrorCode =>
+  EXECUTION_ERROR_CODES.has(kind);
+
+/** Parse a wire kind into the pi FileError vocabulary (unknown on drift). */
+const fileErrorCode = (kind: string): FileErrorCode => (isFileErrorCode(kind) ? kind : "unknown");
+
+/** Parse a wire kind into the pi ExecutionError vocabulary (unknown on drift). */
+const executionErrorCode = (kind: string): ExecutionErrorCode =>
+  isExecutionErrorCode(kind) ? kind : "unknown";
 
 /** Reconstruct pi's FileError/ExecutionError classes from a wire error. */
 export const toPiError = (error: EnvError) => {
   if (error.path !== undefined) {
-    return new FileError(error.kind as FileErrorCode, error.message, error.path);
+    return new FileError(fileErrorCode(error.kind), error.message, error.path);
   }
-  return new ExecutionError(error.kind as ExecutionErrorCode, error.message);
+  return new ExecutionError(executionErrorCode(error.kind), error.message);
 };

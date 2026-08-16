@@ -30,41 +30,41 @@ export const Offline = ts("Offline", { error: S.optional(S.String) });
 export const Conn = S.Union([Connecting, Online, Offline]);
 export type Conn = S.Schema.Type<typeof Conn>;
 
-export const connMachine = Machine.define({ state: Conn, message: RootMessage })({
+export const connMachine = Machine.define({ message: RootMessage, state: Conn })({
   initial: Connecting(),
   states: {
     Connecting: {
       on: {
+        ConnectFailed: to("Offline", ({ message }) => Offline({ error: message.message })),
         Connected: to(
           "Online",
           ({ message }) => Online({ pid: message.hello.pid, version: message.hello.version }),
           () => [RefreshRailCmd()],
         ),
-        ConnectFailed: to("Offline", ({ message }) => Offline({ error: message.message })),
-      },
-    },
-    Online: {
-      on: {
-        ConnectionClosed: to("Offline", () => Offline({ error: "connection closed" })),
       },
     },
     Offline: {
       on: {
-        // The retry tick: back to dialing, the connect command rides along.
-        RetryRequested: to(
-          "Connecting",
-          () => Connecting(),
-          () => [WireConnectCmd()],
-        ),
+        // A failed retry replaces the shown error (and keeps the retry loop
+        // ticking — the state stayed Offline).
+        ConnectFailed: to("Offline", ({ message }) => Offline({ error: message.message })),
         // A reconnect succeeded: online again, and the registry re-lists.
         Connected: to(
           "Online",
           ({ message }) => Online({ pid: message.hello.pid, version: message.hello.version }),
           () => [RefreshRailCmd()],
         ),
-        // A failed retry replaces the shown error (and keeps the retry loop
-        // ticking — the state stayed Offline).
-        ConnectFailed: to("Offline", ({ message }) => Offline({ error: message.message })),
+        ConnectionClosed: to("Offline", () => Offline({ error: "connection closed" })),
+        // The retry tick: back to dialing, the connect command rides along.
+        RetryRequested: to(
+          "Connecting",
+          () => Connecting(),
+          () => [WireConnectCmd()],
+        ),
+      },
+    },
+    Online: {
+      on: {
         ConnectionClosed: to("Offline", () => Offline({ error: "connection closed" })),
       },
     },

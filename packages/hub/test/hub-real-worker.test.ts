@@ -13,10 +13,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect, Exit, FileSystem, Schema, Scope } from "effect";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import type { StreamFn } from "@earendil-works/pi-agent-core";
-import { Paths, PathsTest, type PathsShape } from "@saku/worker";
+import { Paths, PathsTest } from "@saku/worker";
+import type { PathsLayout } from "@saku/worker";
 import { KvStore } from "@saku/store";
-import { WireClient, type ThreadInfo, type WireClientShape } from "@saku/wire";
+import { WireClient } from "@saku/wire";
+import type { ThreadInfo } from "@saku/wire";
 
 import { Hub, HubRegistry, HubServer, SkillsStore } from "../src/index.ts";
 import { inProcessWorker } from "./in-process-worker.ts";
@@ -43,7 +44,7 @@ const oneShotStream = (text: string) => {
 interface World {
   readonly url: string;
   readonly fs: FileSystem.FileSystem;
-  readonly paths: PathsShape;
+  readonly paths: PathsLayout;
   readonly scope: Scope.Scope;
 }
 
@@ -57,35 +58,35 @@ beforeEach(async () => {
   // test layout (`PathsTest`) alive until afterEach closes it.
   const scope = await Effect.runPromise(Scope.make());
   const { fs, paths, url } = await Effect.runPromise(
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const paths = yield* Paths;
+    Effect.gen(function* built() {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const layout = yield* Paths;
       const registry = yield* HubRegistry.make().pipe(Effect.provide(KvStore.memory()));
       const skills = yield* SkillsStore.make().pipe(Effect.provide(KvStore.memory()));
       const worker = yield* inProcessWorker({
-        fs,
-        paths,
         catalog: workerCatalog(),
+        fs: fileSystem,
+        paths: layout,
         streamFn: oneShotStream("a canned response"),
       });
       const hub = yield* Hub.make({
+        provisioner: scriptedProvisioner(),
         registry,
         skills,
         workerRef: worker.ref,
-        provisioner: scriptedProvisioner(),
       });
       worker.attach(hub.events);
       const server = yield* HubServer.make({ hub, token: TEST_TOKEN }).pipe(
         Effect.provideService(Scope.Scope, scope),
       );
-      return { fs, paths, url: server.url };
+      return { fs: fileSystem, paths: layout, url: server.url };
     }).pipe(
       Effect.provide(PathsTest()),
       Effect.provideService(Scope.Scope, scope),
       Effect.provide(NodeFileSystem.layer),
     ),
   );
-  world = { url, fs, paths, scope };
+  world = { fs, paths, scope, url };
 });
 
 afterEach(async () => {
@@ -93,32 +94,44 @@ afterEach(async () => {
   await Effect.runPromise(Scope.close(world.scope, Exit.void));
 });
 
-const connect = () =>
-  Effect.runPromise(WireClient.make({ url: world.url, token: TEST_TOKEN, role: "cli" }));
+const connect = async () =>
+  await Effect.runPromise(WireClient.make({ role: "cli", token: TEST_TOKEN, url: world.url }));
 
 /** A polling assertion that gave up (the async fork hadn't landed in time). */
-class TestError extends Schema.TaggedError<TestError>()("TestError", {
+// Aliased so the TaggedError class declaration below stays a plain call
+// (`new` breaks the schema typecheck — `TaggedError` is a function
+// returning a class, not a class).
+const tagged = Schema.TaggedError;
+class TestError extends tagged<TestError>()("TestError", {
   message: Schema.String,
 }) {}
 
 /** Poll until `fn` holds (hub event forks + agent stream land asynchronously). */
-const waitFor = async (fn: () => boolean | Promise<boolean>, timeoutMs = 3000) => {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (fn()) return;
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-  throw new TestError({ message: "condition not met" });
-};
+const waitFor = (fn: () => boolean | Promise<boolean>, timeoutMs = 3000) =>
+  Effect.gen(function* poll() {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const done = yield* Effect.promise(async () => await fn());
+      if (done) {
+        return;
+      }
+      yield* Effect.sleep("5 millis");
+    }
+    yield* Effect.fail(new TestError({ message: "condition not met" }));
+  });
 
 describe("hub + real SessionHost over the wire", () => {
   it("runs a real prompt: lazy reads, streamed events, state broadcasts, durable entries", async () => {
     const client = await connect();
     await Effect.runPromise(client.connect());
-    const events: Array<{ type: string }> = [];
+    const events: { type: string }[] = [];
     const changed: ThreadInfo[] = [];
-    client.on("event", (e) => events.push({ type: e.event.type }));
-    client.on("thread_changed", (thread) => changed.push(thread));
+    client.on("event", (e) => {
+      events.push({ type: e.event.type });
+    });
+    client.on("thread_changed", (thread) => {
+      changed.push(thread);
+    });
 
     // The thread's real session id is the thread id; the host creates its
     // own trail under SAKU_HOME (the adapter's record mirrors the hub's).
@@ -133,10 +146,14 @@ describe("hub + real SessionHost over the wire", () => {
 
     // A prompt runs the real host: entry + settled events, working → idle.
     await Effect.runPromise(client.prompt(thread.id, "hello"));
-    await waitFor(() => events.some((e) => e.type === "entry_appended"));
-    await waitFor(() => events.some((e) => e.type === "settled"));
-    await waitFor(() => changed.some((t) => t.id === thread.id && t.state === "working"));
-    await waitFor(() => changed.some((t) => t.id === thread.id && t.state === "idle"));
+    await Effect.runPromise(waitFor(() => events.some((e) => e.type === "entry_appended")));
+    await Effect.runPromise(waitFor(() => events.some((e) => e.type === "settled")));
+    await Effect.runPromise(
+      waitFor(() => changed.some((t) => t.id === thread.id && t.state === "working")),
+    );
+    await Effect.runPromise(
+      waitFor(() => changed.some((t) => t.id === thread.id && t.state === "idle")),
+    );
     expect(events.map((e) => e.type)).toContain("settled");
 
     // The durable trail: the run's entries are readable through the hub.
@@ -157,11 +174,11 @@ describe("hub + real SessionHost over the wire", () => {
     // channel), the catalog's default model, the thread's tailSeq.
     const state = await Effect.runPromise(client.getState(thread.id));
     expect(state.sessionId).toBe(thread.id);
-    expect(state.model).toMatchObject({ provider: TEST_PROVIDER, id: TEST_MODEL });
+    expect(state.model).toMatchObject({ id: TEST_MODEL, provider: TEST_PROVIDER });
     expect(state.tailSeq).toBe(4);
     // The hub's registry view carries the same sessionId and tailSeq.
     const info = await Effect.runPromise(client.getThread(thread.id));
-    expect(info).toMatchObject({ sessionId: thread.id, tailSeq: 4, state: "idle" });
+    expect(info).toMatchObject({ sessionId: thread.id, state: "idle", tailSeq: 4 });
   });
 
   it("reports the auto-title to the hub and applies it to the registry name", async () => {
@@ -170,12 +187,11 @@ describe("hub + real SessionHost over the wire", () => {
     await Effect.runPromise(client.connect());
     const thread = await Effect.runPromise(client.createThread("quick start", { autoName: true }));
     await Effect.runPromise(client.prompt(thread.id, "hello"));
-    await waitFor(
-      async () =>
-        (await Effect.runPromise(client.getThread(thread.id))).name.startsWith(
-          "a canned completion",
-        ),
-      5000,
+    await Effect.runPromise(
+      waitFor(async () => {
+        const info = await Effect.runPromise(client.getThread(thread.id));
+        return info.name.startsWith("a canned completion");
+      }, 5000),
     );
     const renamed = await Effect.runPromise(client.getThread(thread.id));
     expect(renamed.name).toContain("quick start");

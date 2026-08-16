@@ -25,14 +25,8 @@
  */
 
 import { Context, Data, Effect, Fiber, Layer, PubSub, Queue, Stream } from "effect";
-import {
-  HelloOk,
-  SessionWireEvent,
-  ThreadInfo,
-  WireClient,
-  WireClientShape,
-  WireError,
-} from "@saku/wire";
+import type { HelloOk, SessionWireEvent, ThreadInfo, WireClientApi } from "@saku/wire";
+import { WireClient, WireError } from "@saku/wire";
 
 import { defaultConfig, resolveConfig } from "./config.ts";
 
@@ -41,33 +35,33 @@ export type BridgeEvent = Data.TaggedEnum<{
   event: { threadId: string; event: SessionWireEvent };
   thread_changed: { thread: ThreadInfo };
   error: { message: string };
-  close: {};
+  close: Record<never, never>;
 }>;
 /** The bridge event constructors — one per kind, from the same definition. */
 export const BridgeEvent = Data.taggedEnum<BridgeEvent>();
 
-export interface WireShape {
+export interface WireApi {
   /** The current client; always a settled, connectable value. */
-  readonly client: WireClientShape;
+  readonly client: WireClientApi;
   /** Re-resolve the bootstrap, swap the client when the endpoint changed, connect. */
-  readonly connect: () => Effect.Effect<HelloOk, WireError, never>;
+  readonly connect: () => Effect.Effect<HelloOk, WireError>;
   /** Wire events from the current client, forwarded across client swaps. */
-  readonly events: Stream.Stream<BridgeEvent, never, never>;
+  readonly events: Stream.Stream<BridgeEvent>;
 }
 
-export class Wire extends Context.Service<Wire, WireShape>()("saku/Wire") {}
+export class Wire extends Context.Service<Wire, WireApi>()("saku/Wire") {}
 
 export const WireLive = Layer.effect(
   Wire,
-  Effect.gen(function* () {
+  Effect.gen(function* WireLive() {
     // The eager client exists from boot so the service always holds one;
     // connect() re-resolves and swaps it as the daemon's endpoint moves.
     const boot = yield* resolveConfig;
     const bootEndpoint = boot._tag === "offline" ? defaultConfig() : boot.endpoint;
     let current = yield* WireClient.make({
-      url: bootEndpoint.url,
-      token: bootEndpoint.token,
       role: "cli",
+      token: bootEndpoint.token,
+      url: bootEndpoint.url,
     });
     let currentEndpoint = bootEndpoint;
 
@@ -82,7 +76,7 @@ export const WireLive = Layer.effect(
 
     /** One client's wire events as a stream (foldkit's listener-to-stream
      *  shape): the listeners register on scope open, deregister on close. */
-    const eventsOf = (client: WireClientShape) =>
+    const eventsOf = (client: WireClientApi) =>
       Stream.callback<BridgeEvent>((queue) =>
         Effect.acquireRelease(
           Effect.sync(() => {
@@ -90,7 +84,7 @@ export const WireLive = Layer.effect(
               client.on("event", (payload) => {
                 Queue.offerUnsafe(
                   queue,
-                  BridgeEvent.event({ threadId: payload.threadId, event: payload.event }),
+                  BridgeEvent.event({ event: payload.event, threadId: payload.threadId }),
                 );
               }),
               client.on("thread_changed", (thread) => {
@@ -103,15 +97,19 @@ export const WireLive = Layer.effect(
                 Queue.offerUnsafe(queue, BridgeEvent.close());
               }),
             ];
-            return () => offs.forEach((off) => off());
+            return () => {
+              for (const off of offs) {
+                off();
+              }
+            };
           }),
           (dispose) => Effect.sync(dispose),
         ).pipe(Effect.flatMap(() => Effect.never)),
       );
 
-    let bridge: Fiber.Fiber<void, never> | null = null;
-    const attach = (client: WireClientShape) =>
-      Effect.gen(function* () {
+    let bridge: Fiber.Fiber<void> | null = null;
+    const attach = (client: WireClientApi) =>
+      Effect.gen(function* attachEvents() {
         if (bridge !== null) {
           yield* Fiber.interrupt(bridge);
         }
@@ -123,7 +121,7 @@ export const WireLive = Layer.effect(
       });
     yield* attach(current);
 
-    const connect = Effect.fn("connect")(function* () {
+    const connect = Effect.fn("connect")(function* connect() {
       const resolved = yield* resolveConfig;
       if (resolved._tag === "offline") {
         return yield* Effect.fail(
@@ -133,15 +131,15 @@ export const WireLive = Layer.effect(
           }),
         );
       }
-      const endpoint = resolved.endpoint;
+      const { endpoint } = resolved;
       if (endpoint.url !== currentEndpoint.url) {
         // The daemon restarted on a new port; the stale client's socket
         // can never come back. Dispose it and swap in a fresh one.
         yield* current.disconnect();
         current = yield* WireClient.make({
-          url: endpoint.url,
-          token: endpoint.token,
           role: "cli",
+          token: endpoint.token,
+          url: endpoint.url,
         });
         currentEndpoint = endpoint;
         yield* attach(current);

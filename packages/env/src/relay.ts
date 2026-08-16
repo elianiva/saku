@@ -15,11 +15,13 @@
  */
 
 import { WebSocket } from "ws";
-import { Context, Effect, Fiber, Ref, Result, Scope } from "effect";
+import { Context, Effect, Fiber, Ref, Result } from "effect";
 
 import { serializeFrame } from "@saku/wire";
-import { ENV_VERSION, RelayHello, type EnvHello } from "./protocol.ts";
-import { handleEnvConnection, type EnvConnectionContext } from "./daemon.ts";
+import { ENV_VERSION, RelayHello } from "./protocol.ts";
+import type { EnvHello } from "./protocol.ts";
+import { handleEnvConnection } from "./daemon.ts";
+import type { EnvConnectionContext } from "./daemon.ts";
 
 const BACKOFF_MS = 1000;
 
@@ -33,24 +35,27 @@ export interface RelayClientOptions {
   /** The env protocol hello this connection presents after the attach. */
   readonly hello: Pick<EnvHello, "token" | "version" | "cwd">;
   readonly fs: EnvConnectionContext["fs"];
-  readonly log?: (message: string) => Effect.Effect<void, never, never>;
+  readonly log?: (message: string) => Effect.Effect<void>;
 }
 
-export interface RelayClientShape {
+export interface RelayClientApi {
   /** Whether a registration socket is currently open. */
-  readonly connected: () => Effect.Effect<boolean, never, never>;
+  readonly connected: () => Effect.Effect<boolean>;
   /** Stop the loop and close the socket. */
-  readonly stop: () => Effect.Effect<void, never>;
+  readonly stop: () => Effect.Effect<void>;
 }
 
 /** One registration attempt: dial, hello, then serve until the socket dies. */
-const runRegistration = Effect.fn("runRegistration")(function* (
+const runRegistration = Effect.fn("runRegistration")(function* runRegistration(
   options: RelayClientOptions,
   ctx: EnvConnectionContext,
 ) {
   const socket = yield* Effect.acquireRelease(
     Effect.sync(() => new WebSocket(options.url)),
-    (socket) => Effect.sync(() => socket.close()),
+    (ws) =>
+      Effect.sync(() => {
+        ws.close();
+      }),
   );
   // Wait for the socket to open, send relay_hello, and hand the socket
   // straight to the shared env connection handler: the hub's next frame
@@ -59,10 +64,10 @@ const runRegistration = Effect.fn("runRegistration")(function* (
   const outcome = yield* Effect.callback<Result.Result<void, string>>((resume) => {
     let settled = false;
     const finish = (result: Result.Result<void, string>) => {
-      if (settled) return;
+      if (settled) {
+        return;
+      }
       settled = true;
-      socket.off("error", onError);
-      socket.off("close", onClose);
       resume(Effect.succeed(result));
     };
     const onError = (error: Error) => {
@@ -79,8 +84,9 @@ const runRegistration = Effect.fn("runRegistration")(function* (
           RelayHello.make({ envId: options.envId, token: options.token, version: ENV_VERSION }),
         ),
       );
-      finish(Result.succeed(undefined));
+      finish(Result.void);
     });
+    // The registration effect completed: drop the socket listeners.
     return Effect.sync(() => {
       socket.off("error", onError);
       socket.off("close", onClose);
@@ -98,24 +104,26 @@ const runRegistration = Effect.fn("runRegistration")(function* (
 });
 
 /** The reconnect loop: `EnvRelayClient.make(options)` starts it in the caller's scope. */
-export class EnvRelayClient extends Context.Service<EnvRelayClient, RelayClientShape>()(
+export class EnvRelayClient extends Context.Service<EnvRelayClient, RelayClientApi>()(
   "EnvRelayClient",
   {
-    make: Effect.fn("EnvRelayClient.make")(function* (options: RelayClientOptions) {
+    make: Effect.fn("EnvRelayClient.make")(function* make(options: RelayClientOptions) {
       const log = options.log ?? (() => Effect.void);
       const ctx: EnvConnectionContext = {
-        token: options.hello.token,
         cwd: options.hello.cwd ?? process.cwd(),
         fs: options.fs,
         log,
+        token: options.hello.token,
       };
       const runningRef = yield* Ref.make(true);
       const connectedRef = yield* Ref.make(false);
-      const loop = Effect.gen(function* () {
+      const loop = Effect.gen(function* loop() {
         while (yield* Ref.get(runningRef)) {
           const registered = yield* runRegistration(options, ctx);
           yield* Ref.set(connectedRef, registered);
-          if (!(yield* Ref.get(runningRef))) return;
+          if (!(yield* Ref.get(runningRef))) {
+            return;
+          }
           yield* log("relay disconnected; reconnecting");
           yield* Effect.sleep(`${BACKOFF_MS} millis`);
         }
@@ -125,7 +133,7 @@ export class EnvRelayClient extends Context.Service<EnvRelayClient, RelayClientS
       yield* Effect.addFinalizer(() => Fiber.interrupt(fiber));
       return {
         connected: () => Ref.get(connectedRef),
-        stop: Effect.fn("stop")(function* () {
+        stop: Effect.fn("stop")(function* stop() {
           yield* Ref.set(runningRef, false);
           yield* Fiber.interrupt(fiber);
         }),

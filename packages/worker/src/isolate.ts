@@ -12,7 +12,8 @@
  * (`RemoteEnv`), and builds a catalog from deployment secrets.
  */
 
-export { DoSessionRepo, DoSessionStorage, type DoSessionMetadata } from "./do-session.ts";
+export { DoSessionStorage, type DoSessionMetadata } from "./do-session.ts";
+export { DoSessionRepo } from "./do-session-repo.ts";
 export { buildTools } from "./tools.ts";
 export { RegistryError } from "./registry-error.ts";
 export {
@@ -26,7 +27,7 @@ export { runSessionCommand, type SessionCommandDeps } from "./session-commands.t
 export {
   createModelCatalog,
   type ModelCatalogAuthSource,
-  type ModelCatalogShape,
+  type ModelCatalogApi,
 } from "./model-catalog-factory.ts";
 export { ThreadRecordSchema, type ThreadRecord } from "./registry-record.ts";
-export type { HostRegistryShape, ThreadRegistryShape } from "./registry.ts";
+export type { HostRegistryApi, ThreadRegistryApi } from "./registry.ts";

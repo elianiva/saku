@@ -16,7 +16,7 @@
  * "malformed"), so the caller never matches on message text.
  */
 
-import { Effect, Option, Schema } from "effect";
+import { Schema } from "effect";
 import { SessionCommand, ThreadState } from "@saku/wire";
 import { EnvHandle } from "@saku/env/remote";
 import { HubError } from "@saku/hub/core";
@@ -29,23 +29,29 @@ export interface RpcEnvelope {
   readonly error?: { readonly kind: string; readonly message: string };
 }
 
-export const jsonOk = (payload: unknown) => Response.json({ ok: true, payload });
+export const jsonOk = (payload: RpcEnvelope["payload"]) => Response.json({ ok: true, payload });
 
 export const jsonError = (kind: string, message: string) =>
-  Response.json({ ok: false, error: { kind, message } }, { status: 400 });
+  Response.json({ error: { kind, message }, ok: false }, { status: 400 });
 
 /** The error's discriminator for the envelope: tagged errors keep their kind. */
-const errorKindOf = (error: unknown) => {
-  if (error instanceof SessionHostError) return error.kind;
-  if (error instanceof RegistryError) return error.op ?? "registry";
-  if (error instanceof HubError) return error.kind;
+const errorKindOf = (cause: unknown) => {
+  if (cause instanceof SessionHostError) {
+    return cause.kind;
+  }
+  if (cause instanceof RegistryError) {
+    return cause.op ?? "registry";
+  }
+  if (cause instanceof HubError) {
+    return cause.kind;
+  }
   return "malformed";
 };
 
 /** The envelope's error for any failure crossing the fetch boundary. */
-export const rpcErrorOf = (error: unknown) => ({
-  kind: errorKindOf(error),
-  message: error instanceof Error ? error.message : String(error),
+export const rpcErrorOf = (cause: unknown) => ({
+  kind: errorKindOf(cause),
+  message: cause instanceof Error ? cause.message : String(cause),
 });
 
 /**
@@ -60,18 +66,18 @@ export const rpcErrorOf = (error: unknown) => ({
  */
 export const HubPushSchema = Schema.Union([
   Schema.TaggedStruct("report", {
-    threadId: Schema.String,
     report: Schema.Struct({
-      state: Schema.optionalKey(ThreadState),
-      sessionId: Schema.optionalKey(Schema.Union([Schema.Null, Schema.String])),
       name: Schema.optionalKey(Schema.String),
+      sessionId: Schema.optionalKey(Schema.Union([Schema.Null, Schema.String])),
+      state: Schema.optionalKey(ThreadState),
       tailSeq: Schema.optionalKey(Schema.Number),
     }),
+    threadId: Schema.String,
   }).pipe(Schema.encodeKeys({ _tag: "type" })),
   Schema.TaggedStruct("sessionEvent", {
-    threadId: Schema.String,
     event: Schema.Unknown,
     tailSeq: Schema.Number,
+    threadId: Schema.String,
   }).pipe(Schema.encodeKeys({ _tag: "type" })),
   Schema.TaggedStruct("idleStopFired", { threadId: Schema.String }).pipe(
     Schema.encodeKeys({ _tag: "type" }),

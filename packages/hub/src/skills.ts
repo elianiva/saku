@@ -10,10 +10,10 @@
 import { Context, Effect, Ref } from "effect";
 import type { SkillInfo, SkillScope } from "@saku/wire";
 
-import { HubError } from "./hub-error.ts";
+import type { HubError } from "./hub-error.ts";
 import { jsonRecords, KvStore } from "@saku/store";
 
-export interface SkillsStoreShape {
+export interface SkillsStoreApi {
   readonly list: () => Effect.Effect<readonly SkillInfo[], HubError>;
   /** Import from a repo; the name is derived from the source (git-style). */
   readonly import: (input: {
@@ -32,8 +32,8 @@ export const skillNameFromSource = (source: string) =>
     ?.replace(/\.git$/u, "") ?? "skill";
 
 /** The hub's skills store (ADR 0007): `SkillsStore.make` builds one over the `KvStore`. */
-export class SkillsStore extends Context.Service<SkillsStore, SkillsStoreShape>()("SkillsStore", {
-  make: Effect.fn("SkillsStore.make")(function* () {
+export class SkillsStore extends Context.Service<SkillsStore, SkillsStoreApi>()("SkillsStore", {
+  make: Effect.fn("SkillsStore.make")(function* make() {
     const kv = yield* KvStore;
     const skills = jsonRecords<SkillInfo>(kv, "skills/");
     const loaded = yield* skills.list();
@@ -42,11 +42,20 @@ export class SkillsStore extends Context.Service<SkillsStore, SkillsStoreShape>(
     );
 
     return {
-      list: () =>
-        Ref.get(skillsRef).pipe(
-          Effect.map((skills) => [...skills.values()].sort((a, b) => a.name.localeCompare(b.name))),
-        ),
-      import: Effect.fn("import")(function* (input) {
+      delete: Effect.fn("delete")(function* deleteSkill(id) {
+        const current = yield* Ref.get(skillsRef);
+        if (!current.has(id)) {
+          return false;
+        }
+        yield* Ref.update(skillsRef, (map) => {
+          const next = new Map(map);
+          next.delete(id);
+          return next;
+        });
+        yield* skills.delete(id);
+        return true;
+      }),
+      import: Effect.fn("import")(function* importSkill(input) {
         const skill: SkillInfo = {
           id: crypto.randomUUID().replaceAll("-", ""),
           name: skillNameFromSource(input.source),
@@ -55,20 +64,13 @@ export class SkillsStore extends Context.Service<SkillsStore, SkillsStoreShape>(
           version: null,
         };
         yield* skills.put(skill.id, skill);
-        yield* Ref.update(skillsRef, (skills) => new Map(skills).set(skill.id, skill));
+        yield* Ref.update(skillsRef, (map) => new Map(map).set(skill.id, skill));
         return skill;
       }),
-      delete: Effect.fn("delete")(function* (id) {
-        const current = yield* Ref.get(skillsRef);
-        if (!current.has(id)) return false;
-        yield* Ref.update(skillsRef, (skills) => {
-          const next = new Map(skills);
-          next.delete(id);
-          return next;
-        });
-        yield* skills.delete(id);
-        return true;
-      }),
+      list: () =>
+        Ref.get(skillsRef).pipe(
+          Effect.map((map) => [...map.values()].toSorted((a, b) => a.name.localeCompare(b.name))),
+        ),
     };
   }),
 }) {}

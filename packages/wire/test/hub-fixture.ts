@@ -14,7 +14,7 @@
 
 import { randomUUID } from "node:crypto";
 import { Effect, Match, Schema as S } from "effect";
-import { type WebSocket } from "ws";
+import type { WebSocket } from "ws";
 
 import {
   AbortResponse,
@@ -47,28 +47,51 @@ import {
   THINKING_LEVELS,
   ThreadChanged,
   UnarchiveThreadResponse,
-  type PiSessionCommand,
-  type ProjectCommand,
-  type ResponsePayload,
-  type SessionCommand,
-  type SkillCommand,
-  type SkillInfo,
-  type ThinkingLevel,
-  type ThreadCommand,
-  type ThreadInfo,
-  type ThreadMode,
+} from "../src/index.ts";
+import type {
+  ArchiveThreadCommand,
+  BranchCommand,
+  CreateThreadCommand,
+  DeleteSkillCommand,
+  DeleteThreadCommand,
+  FollowUpCommand,
+  GetEntriesCommand,
+  GetThreadCommand,
+  ImportSkillCommand,
+  PiSessionCommand,
+  ProjectCommand,
+  PromptCommand,
+  RenameThreadCommand,
+  ResponsePayload,
+  SessionCommand,
+  SetModelCommand,
+  SetSessionNameCommand,
+  SetThinkingLevelCommand,
+  SkillCommand,
+  SkillInfo,
+  SteerCommand,
+  ThinkingLevel,
+  ThreadCommand,
+  ThreadMode,
+  UnarchiveThreadCommand,
 } from "../src/index.ts";
 import { WireServer, listenWs, wsUrlOf } from "../src/server-core.ts";
+import type { WireServerApi } from "../src/server-core.ts";
 
 /** The token the fixture accepts (clients use the same constant). */
 export const TEST_TOKEN = "test-secret";
 /** The single model the fixture's catalog knows. */
-export const MOCK_MODEL = { provider: "mock", id: "m1", contextWindow: 128_000, reasoning: true };
+export const MOCK_MODEL = { contextWindow: 128_000, id: "m1", provider: "mock", reasoning: true };
 /** Simulated run latency; prompts with this text are slow (timeout tests). */
 const SLOW_MARKER = "slow";
 
+// Aliased so the TaggedError class declaration below stays a plain call
+// (`new` breaks the schema typecheck — `TaggedError` is a function returning
+// a class, not a class).
+const tagged = S.TaggedError;
+
 /** The fixture's command failures (the core stringifies them into response errors). */
-export class FixtureError extends S.TaggedError<FixtureError>()("FixtureError", {
+export class FixtureError extends tagged<FixtureError>()("FixtureError", {
   kind: S.Literals([
     "unknown_thread",
     "unknown_model",
@@ -93,9 +116,28 @@ interface ScriptedThread {
   archivedAt: number | null;
   thinkingLevel: ThinkingLevel;
   nextSeq: number;
-  entries: Array<{ seq: number; type: string; id: string }>;
+  entries: { seq: number; type: string; id: string }[];
   nameSet: string | null;
 }
+
+/** The wire's `ThreadInfo` shape for one scripted thread. */
+const threadInfo = (thread: ScriptedThread) => ({
+  archivedAt: thread.archivedAt,
+  cwd: thread.cwd,
+  env: "ready",
+  id: thread.id,
+  mode: thread.mode,
+  name: thread.name,
+  sessionId: thread.sessionId,
+  state: thread.state,
+  tailSeq: thread.nextSeq - 1,
+});
+
+/** The close event's payload: the connection carries nothing on close. */
+const CLOSE_PAYLOAD = undefined;
+
+/** The session's optional name — present only once a console set one. */
+const sessionName = (nameSet: string | null) => (nameSet === null ? {} : { name: nameSet });
 
 export interface HubFixture {
   /** The ws:// URL the fixture's server listens on. */
@@ -103,15 +145,15 @@ export interface HubFixture {
   /** The command tags the handlers have served, in order. */
   readonly calls: () => readonly string[];
   /** Close every client connection (simulates a server restart). */
-  readonly dropAll: () => Effect.Effect<void, never>;
+  readonly dropAll: () => Effect.Effect<void>;
   /** Send a raw frame to every connected client (malformed-frame tests). */
-  readonly sendRaw: (text: string) => Effect.Effect<void, never>;
+  readonly sendRaw: (text: string) => Effect.Effect<void>;
   /** Close the server for good. */
-  readonly close: () => Effect.Effect<void, never>;
+  readonly close: () => Effect.Effect<void>;
 }
 
 /** Start the fixture: the real server core on an ephemeral loopback port. */
-export const startHubFixture = Effect.fn("startHubFixture")(function* () {
+export const startHubFixture = Effect.fn("startHubFixture")(function* startHubFixture() {
   const threads = new Map<string, ScriptedThread>();
   const skills = new Map<string, SkillInfo>();
   const sockets = new Set<WebSocket>();
@@ -119,94 +161,143 @@ export const startHubFixture = Effect.fn("startHubFixture")(function* () {
 
   const record = (tag: string) => Effect.sync(() => calls.push(tag));
 
-  const core = yield* WireServer.make({
-    token: () => Effect.succeed(TEST_TOKEN),
-    handlers: {
-      runHubCommand: (command) =>
-        record(command._tag).pipe(Effect.flatMap(() => runHubCommand(command))),
-      runSessionCommand: (threadId, command) =>
-        record(command._tag).pipe(Effect.flatMap(() => runSessionCommand(threadId, command))),
-    },
-  });
-
-  const threadInfo = (thread: ScriptedThread) => ({
-    id: thread.id,
-    name: thread.name,
-    cwd: thread.cwd,
-    mode: thread.mode,
-    state: thread.state,
-    env: "ready",
-    sessionId: thread.sessionId,
-    tailSeq: thread.nextSeq - 1,
-    archivedAt: thread.archivedAt,
-  });
-
-  const threadChanged = (thread: ScriptedThread) =>
+  const threadChanged = (core: WireServerApi, thread: ScriptedThread) =>
     core.broadcast(ThreadChanged.make({ thread: threadInfo(thread) }));
 
   const findThread = (threadId: string) => {
     // Exact id first, then an unambiguous prefix (the real hub's contract).
     const exact = threads.get(threadId);
-    if (exact !== undefined) return exact;
+    if (exact !== undefined) {
+      return exact;
+    }
     const byPrefix = [...threads.values()].filter((t) => t.id.startsWith(threadId));
     return byPrefix.length === 1 ? byPrefix[0] : undefined;
   };
 
   const newThread = (input: {
-    name: string;
+    autoName?: boolean | undefined;
     cwd?: string | undefined;
     mode?: ThreadMode | undefined;
-    autoName?: boolean | undefined;
+    name: string;
   }) => {
     const thread: ScriptedThread = {
-      id: randomUUID().replaceAll("-", ""),
-      name: input.name,
-      cwd: input.mode === "sandbox" ? null : (input.cwd ?? null),
-      mode: input.mode ?? "local",
+      archivedAt: null,
       autoName: input.autoName === true,
+      cwd: input.mode === "sandbox" ? null : (input.cwd ?? null),
+      entries: [],
+      id: randomUUID().replaceAll("-", ""),
+      mode: input.mode ?? "local",
+      name: input.name,
+      nameSet: null,
+      nextSeq: 1,
       sessionId: null,
       state: "idle",
-      archivedAt: null,
       thinkingLevel: "off",
-      nextSeq: 1,
-      entries: [],
-      nameSet: null,
     };
     threads.set(thread.id, thread);
     return thread;
   };
 
   /** Settle one run: append the fake entry, broadcast it, go idle. */
-  const settleRun = Effect.fn("settleRun")(function* (thread: ScriptedThread, _text: string) {
-    const entry = { seq: thread.nextSeq++, type: "user_message", id: `e${thread.nextSeq - 1}` };
+  const settleRun = Effect.fn("settleRun")(function* settleRun(
+    core: WireServerApi,
+    thread: ScriptedThread,
+    _text: string,
+  ) {
+    const entry = { id: `e${thread.nextSeq - 1}`, seq: thread.nextSeq, type: "user_message" };
+    thread.nextSeq += 1;
     thread.entries.push(entry);
-    if (thread.sessionId === null) thread.sessionId = thread.id;
+    thread.sessionId ??= thread.id;
     yield* core.broadcast(
-      EventFrame.make({ threadId: thread.id, event: { type: "entry_appended", entry } }),
+      EventFrame.make({ event: { entry, type: "entry_appended" }, threadId: thread.id }),
     );
     thread.state = "idle";
-    yield* threadChanged(thread);
-    yield* core.broadcast(EventFrame.make({ threadId: thread.id, event: { type: "settled" } }));
+    yield* threadChanged(core, thread);
+    yield* core.broadcast(EventFrame.make({ event: { type: "settled" }, threadId: thread.id }));
   });
 
   const runHubCommand = (
-    command: ThreadCommand | SkillCommand | PiSessionCommand | ProjectCommand,
+    core: WireServerApi,
+    hubCommand: ThreadCommand | SkillCommand | PiSessionCommand | ProjectCommand,
   ) =>
-    Match.value(command).pipe(
-      Match.withReturnType<Effect.Effect<ResponsePayload, FixtureError, never>>(),
+    Match.value(hubCommand).pipe(
+      Match.withReturnType<Effect.Effect<ResponsePayload, FixtureError>>(),
       Match.tagsExhaustive({
-        list_threads: () =>
-          Effect.succeed(
-            ListThreadsResponse.make({ threads: [...threads.values()].map(threadInfo) }),
+        add_project: () =>
+          Effect.fail(
+            new FixtureError({
+              kind: "projects_not_served",
+              message: "projects are served by the local daemon, not the hub",
+            }),
           ),
-        create_thread: Effect.fn("create_thread")(function* (command) {
+        archive_thread: Effect.fn("archive_thread")(function* archive_thread(
+          command: S.Schema.Type<typeof ArchiveThreadCommand>,
+        ) {
+          const thread = findThread(command.threadId);
+          if (thread === undefined) {
+            return yield* Effect.fail(
+              new FixtureError({
+                kind: "unknown_thread",
+                message: `unknown thread: ${command.threadId}`,
+              }),
+            );
+          }
+          thread.archivedAt = Date.now();
+          yield* threadChanged(core, thread);
+          return ArchiveThreadResponse.make({ thread: threadInfo(thread) });
+        }),
+        browse_project_dirs: () =>
+          Effect.fail(
+            new FixtureError({
+              kind: "projects_not_served",
+              message: "projects are served by the local daemon, not the hub",
+            }),
+          ),
+        create_thread: Effect.fn("create_thread")(function* create_thread(
+          command: S.Schema.Type<typeof CreateThreadCommand>,
+        ) {
           const thread = newThread(command);
           // Broadcast before responding — the hub's ordering: consoles
           // see the change before the command resolves.
-          yield* threadChanged(thread);
+          yield* threadChanged(core, thread);
           return CreateThreadResponse.make({ thread: threadInfo(thread) });
         }),
-        get_thread: Effect.fn("get_thread")(function* (command) {
+        delete_skill: Effect.fn("delete_skill")(function* delete_skill(
+          command: S.Schema.Type<typeof DeleteSkillCommand>,
+        ) {
+          if (!skills.has(command.id)) {
+            return yield* Effect.fail(
+              new FixtureError({
+                kind: "unknown_skill",
+                message: `unknown skill: ${command.id}`,
+              }),
+            );
+          }
+          skills.delete(command.id);
+          return DeleteSkillResponse.make({});
+        }),
+        // The fixture is the hub's shape: pi sessions live on the user's
+        // machine, so only the local daemon serves these (mirror of the
+        // daemon rejecting hub-only skills commands).
+        delete_thread: Effect.fn("delete_thread")(function* delete_thread(
+          command: S.Schema.Type<typeof DeleteThreadCommand>,
+        ) {
+          const thread = findThread(command.threadId);
+          if (thread === undefined) {
+            return yield* Effect.fail(
+              new FixtureError({
+                kind: "unknown_thread",
+                message: `unknown thread: ${command.threadId}`,
+              }),
+            );
+          }
+          threads.delete(thread.id);
+          yield* threadChanged(core, thread);
+          return DeleteThreadResponse.make({});
+        }),
+        get_thread: Effect.fn("get_thread")(function* get_thread(
+          command: S.Schema.Type<typeof GetThreadCommand>,
+        ) {
           const thread = findThread(command.threadId);
           if (thread === undefined) {
             return yield* Effect.fail(
@@ -218,7 +309,61 @@ export const startHubFixture = Effect.fn("startHubFixture")(function* () {
           }
           return GetThreadResponse.make({ thread: threadInfo(thread) });
         }),
-        rename_thread: Effect.fn("rename_thread")(function* (command) {
+        import_pi_session: () =>
+          Effect.fail(
+            new FixtureError({
+              kind: "pi_sessions_not_served",
+              message: "pi sessions are served by the local daemon, not the hub",
+            }),
+          ),
+        // The fixture is the hub's shape: the project list scopes the local
+        // daemon's pi-session window, so the hub rejects it too.
+        import_skill: (command: S.Schema.Type<typeof ImportSkillCommand>) =>
+          Effect.sync(() => {
+            const skill: SkillInfo = {
+              id: randomUUID().replaceAll("-", ""),
+              name:
+                command.source
+                  .split("/")
+                  .pop()
+                  ?.replace(/\.git$/u, "") ?? "skill",
+              scope: command.scope ?? "personal",
+              source: command.source,
+              version: null,
+            };
+            skills.set(skill.id, skill);
+            return ImportSkillResponse.make({ skill });
+          }),
+        list_pi_sessions: () =>
+          Effect.fail(
+            new FixtureError({
+              kind: "pi_sessions_not_served",
+              message: "pi sessions are served by the local daemon, not the hub",
+            }),
+          ),
+        list_projects: () =>
+          Effect.fail(
+            new FixtureError({
+              kind: "projects_not_served",
+              message: "projects are served by the local daemon, not the hub",
+            }),
+          ),
+        list_skills: () =>
+          Effect.succeed(ListSkillsResponse.make({ skills: [...skills.values()] })),
+        list_threads: () =>
+          Effect.succeed(
+            ListThreadsResponse.make({ threads: [...threads.values()].map(threadInfo) }),
+          ),
+        remove_project: () =>
+          Effect.fail(
+            new FixtureError({
+              kind: "projects_not_served",
+              message: "projects are served by the local daemon, not the hub",
+            }),
+          ),
+        rename_thread: Effect.fn("rename_thread")(function* rename_thread(
+          command: S.Schema.Type<typeof RenameThreadCommand>,
+        ) {
           const thread = findThread(command.threadId);
           if (thread === undefined) {
             return yield* Effect.fail(
@@ -235,24 +380,12 @@ export const startHubFixture = Effect.fn("startHubFixture")(function* () {
             );
           }
           thread.name = name;
-          yield* threadChanged(thread);
+          yield* threadChanged(core, thread);
           return RenameThreadResponse.make({ thread: threadInfo(thread) });
         }),
-        archive_thread: Effect.fn("archive_thread")(function* (command) {
-          const thread = findThread(command.threadId);
-          if (thread === undefined) {
-            return yield* Effect.fail(
-              new FixtureError({
-                kind: "unknown_thread",
-                message: `unknown thread: ${command.threadId}`,
-              }),
-            );
-          }
-          thread.archivedAt = Date.now();
-          yield* threadChanged(thread);
-          return ArchiveThreadResponse.make({ thread: threadInfo(thread) });
-        }),
-        unarchive_thread: Effect.fn("unarchive_thread")(function* (command) {
+        unarchive_thread: Effect.fn("unarchive_thread")(function* unarchive_thread(
+          command: S.Schema.Type<typeof UnarchiveThreadCommand>,
+        ) {
           const thread = findThread(command.threadId);
           if (thread === undefined) {
             return yield* Effect.fail(
@@ -263,104 +396,14 @@ export const startHubFixture = Effect.fn("startHubFixture")(function* () {
             );
           }
           thread.archivedAt = null;
-          yield* threadChanged(thread);
+          yield* threadChanged(core, thread);
           return UnarchiveThreadResponse.make({ thread: threadInfo(thread) });
         }),
-        delete_thread: Effect.fn("delete_thread")(function* (command) {
-          const thread = findThread(command.threadId);
-          if (thread === undefined) {
-            return yield* Effect.fail(
-              new FixtureError({
-                kind: "unknown_thread",
-                message: `unknown thread: ${command.threadId}`,
-              }),
-            );
-          }
-          threads.delete(thread.id);
-          yield* threadChanged(thread);
-          return DeleteThreadResponse.make({});
-        }),
-        list_skills: () =>
-          Effect.succeed(ListSkillsResponse.make({ skills: [...skills.values()] })),
-        import_skill: (command) =>
-          Effect.sync(() => {
-            const skill: SkillInfo = {
-              id: randomUUID().replaceAll("-", ""),
-              name:
-                command.source
-                  .split("/")
-                  .pop()
-                  ?.replace(/\.git$/u, "") ?? "skill",
-              scope: command.scope ?? "personal",
-              source: command.source,
-              version: null,
-            };
-            skills.set(skill.id, skill);
-            return ImportSkillResponse.make({ skill });
-          }),
-        delete_skill: Effect.fn("delete_skill")(function* (command) {
-          if (!skills.has(command.id)) {
-            return yield* Effect.fail(
-              new FixtureError({
-                kind: "unknown_skill",
-                message: `unknown skill: ${command.id}`,
-              }),
-            );
-          }
-          skills.delete(command.id);
-          return DeleteSkillResponse.make({});
-        }),
-        // The fixture is the hub's shape: pi sessions live on the user's
-        // machine, so only the local daemon serves these (mirror of the
-        // daemon rejecting hub-only skills commands).
-        list_pi_sessions: () =>
-          Effect.fail(
-            new FixtureError({
-              kind: "pi_sessions_not_served",
-              message: "pi sessions are served by the local daemon, not the hub",
-            }),
-          ),
-        import_pi_session: () =>
-          Effect.fail(
-            new FixtureError({
-              kind: "pi_sessions_not_served",
-              message: "pi sessions are served by the local daemon, not the hub",
-            }),
-          ),
-        // The fixture is the hub's shape: the project list scopes the local
-        // daemon's pi-session window, so the hub rejects it too.
-        list_projects: () =>
-          Effect.fail(
-            new FixtureError({
-              kind: "projects_not_served",
-              message: "projects are served by the local daemon, not the hub",
-            }),
-          ),
-        add_project: () =>
-          Effect.fail(
-            new FixtureError({
-              kind: "projects_not_served",
-              message: "projects are served by the local daemon, not the hub",
-            }),
-          ),
-        remove_project: () =>
-          Effect.fail(
-            new FixtureError({
-              kind: "projects_not_served",
-              message: "projects are served by the local daemon, not the hub",
-            }),
-          ),
-        browse_project_dirs: () =>
-          Effect.fail(
-            new FixtureError({
-              kind: "projects_not_served",
-              message: "projects are served by the local daemon, not the hub",
-            }),
-          ),
       }),
     );
 
-  const runSessionCommand = Effect.fn("runSessionCommand")(function* (
+  const runSessionCommand = Effect.fn("runSessionCommand")(function* runSessionCommand(
+    core: WireServerApi,
     threadId: string,
     command: SessionCommand,
   ) {
@@ -371,90 +414,20 @@ export const startHubFixture = Effect.fn("startHubFixture")(function* () {
       );
     }
     return yield* Match.value(command).pipe(
-      Match.withReturnType<Effect.Effect<ResponsePayload, FixtureError, never>>(),
+      Match.withReturnType<Effect.Effect<ResponsePayload, FixtureError>>(),
       Match.tagsExhaustive({
-        prompt: Effect.fn("prompt")(function* ({ text }) {
-          if (thread.state === "working") {
-            return yield* Effect.fail(
-              new FixtureError({ kind: "busy", message: "agent is already processing" }),
-            );
-          }
-          // A run is in flight from the moment the prompt is accepted.
-          thread.state = "working";
-          yield* threadChanged(thread);
-          if (text.includes(SLOW_MARKER)) yield* Effect.sleep("300 millis");
-          yield* settleRun(thread, text);
-          return PromptResponse.make({});
-        }),
-        steer: Effect.fn("steer")(function* ({ text }) {
-          if (thread.state === "working") return SteerResponse.make({});
-          thread.state = "working";
-          yield* threadChanged(thread);
-          yield* settleRun(thread, text);
-          return SteerResponse.make({});
-        }),
-        follow_up: Effect.fn("follow_up")(function* ({ text }) {
-          if (thread.state === "working") return FollowUpResponse.make({});
-          thread.state = "working";
-          yield* threadChanged(thread);
-          yield* settleRun(thread, text);
-          return FollowUpResponse.make({});
-        }),
-        abort: Effect.fn("abort")(function* () {
+        abort: Effect.fn("abort")(function* abort() {
           if (thread.state === "working") {
             thread.state = "idle";
             yield* core.broadcast(
-              EventFrame.make({ threadId: thread.id, event: { type: "settled" } }),
+              EventFrame.make({ event: { type: "settled" }, threadId: thread.id }),
             );
           }
           return AbortResponse.make({});
         }),
-        set_steering_mode: () => Effect.succeed(SetSteeringModeResponse.make({})),
-        set_follow_up_mode: () => Effect.succeed(SetFollowUpModeResponse.make({})),
-        compact: Effect.fn("compact")(function* () {
-          if (thread.state === "working") {
-            return yield* Effect.fail(
-              new FixtureError({
-                kind: "busy",
-                message: "cannot compact while the agent is working",
-              }),
-            );
-          }
-          return CompactResponse.make({
-            result: { summary: "mock", tokensBefore: 0, retainedTail: [] },
-          });
-        }),
-        set_auto_compaction: () => Effect.succeed(SetAutoCompactionResponse.make({})),
-        get_available_models: () =>
-          Effect.succeed(GetAvailableModelsResponse.make({ models: [MOCK_MODEL] })),
-        set_model: Effect.fn("set_model")(function* ({ provider, modelId }) {
-          if (provider !== MOCK_MODEL.provider || modelId !== MOCK_MODEL.id) {
-            return yield* Effect.fail(
-              new FixtureError({
-                kind: "unknown_model",
-                message: `unknown model: ${provider}/${modelId}`,
-              }),
-            );
-          }
-          return SetModelResponse.make({ model: MOCK_MODEL });
-        }),
-        get_available_thinking_levels: () =>
-          Effect.succeed(GetAvailableThinkingLevelsResponse.make({ levels: THINKING_LEVELS })),
-        set_thinking_level: ({ level }) =>
-          Effect.sync(() => {
-            thread.thinkingLevel = level;
-            return SetThinkingLevelResponse.make({ level });
-          }),
-        get_entries: ({ sinceSeq }) =>
-          Effect.succeed(
-            GetEntriesResponse.make({
-              entries: thread.entries.filter((e) => e.seq > (sinceSeq ?? 0)),
-              tailSeq: thread.nextSeq - 1,
-              leafId:
-                thread.entries.length === 0 ? null : thread.entries[thread.entries.length - 1]!.id,
-            }),
-          ),
-        branch: Effect.fn("branch")(function* ({ entryId }) {
+        branch: Effect.fn("branch")(function* branch({
+          entryId,
+        }: S.Schema.Type<typeof BranchCommand>) {
           const entry = thread.entries.find((e) => e.id === entryId);
           if (entry === undefined) {
             return yield* Effect.fail(
@@ -466,28 +439,122 @@ export const startHubFixture = Effect.fn("startHubFixture")(function* () {
           }
           return BranchResponse.make({ leafId: entry.id });
         }),
+        compact: Effect.fn("compact")(function* compact() {
+          if (thread.state === "working") {
+            return yield* Effect.fail(
+              new FixtureError({
+                kind: "busy",
+                message: "cannot compact while the agent is working",
+              }),
+            );
+          }
+          return CompactResponse.make({
+            result: { retainedTail: [], summary: "mock", tokensBefore: 0 },
+          });
+        }),
+        follow_up: Effect.fn("follow_up")(function* follow_up({
+          text,
+        }: S.Schema.Type<typeof FollowUpCommand>) {
+          if (thread.state === "working") {
+            return FollowUpResponse.make({});
+          }
+          thread.state = "working";
+          yield* threadChanged(core, thread);
+          yield* settleRun(core, thread, text);
+          return FollowUpResponse.make({});
+        }),
+        get_available_models: () =>
+          Effect.succeed(GetAvailableModelsResponse.make({ models: [MOCK_MODEL] })),
+        get_available_thinking_levels: () =>
+          Effect.succeed(GetAvailableThinkingLevelsResponse.make({ levels: THINKING_LEVELS })),
+        get_entries: ({ sinceSeq }: S.Schema.Type<typeof GetEntriesCommand>) =>
+          Effect.succeed(
+            GetEntriesResponse.make({
+              entries: thread.entries.filter((e) => e.seq > (sinceSeq ?? 0)),
+              leafId: thread.entries.at(-1)?.id ?? null,
+              tailSeq: thread.nextSeq - 1,
+            }),
+          ),
         get_session_stats: () =>
           Effect.succeed(GetSessionStatsResponse.make({ stats: { totalPromptTokens: 0 } })),
-        set_session_name: ({ name }) =>
-          Effect.sync(() => {
-            thread.nameSet = name;
-            return SetSessionNameResponse.make({});
-          }),
         get_state: () =>
           Effect.succeed(
             GetStateResponse.make({
               state: {
+                model: MOCK_MODEL,
                 sessionId: thread.sessionId,
-                ...(thread.nameSet === null ? {} : { name: thread.nameSet }),
                 state: thread.state,
                 tailSeq: thread.nextSeq - 1,
-                model: MOCK_MODEL,
                 thinkingLevel: thread.thinkingLevel,
+                ...sessionName(thread.nameSet),
               },
             }),
           ),
+        prompt: Effect.fn("prompt")(function* prompt({
+          text,
+        }: S.Schema.Type<typeof PromptCommand>) {
+          if (thread.state === "working") {
+            return yield* Effect.fail(
+              new FixtureError({ kind: "busy", message: "agent is already processing" }),
+            );
+          }
+          // A run is in flight from the moment the prompt is accepted.
+          thread.state = "working";
+          yield* threadChanged(core, thread);
+          if (text.includes(SLOW_MARKER)) {
+            yield* Effect.sleep("300 millis");
+          }
+          yield* settleRun(core, thread, text);
+          return PromptResponse.make({});
+        }),
+        set_auto_compaction: () => Effect.succeed(SetAutoCompactionResponse.make({})),
+        set_follow_up_mode: () => Effect.succeed(SetFollowUpModeResponse.make({})),
+        set_model: Effect.fn("set_model")(function* set_model({
+          modelId,
+          provider,
+        }: S.Schema.Type<typeof SetModelCommand>) {
+          if (provider !== MOCK_MODEL.provider || modelId !== MOCK_MODEL.id) {
+            return yield* Effect.fail(
+              new FixtureError({
+                kind: "unknown_model",
+                message: `unknown model: ${provider}/${modelId}`,
+              }),
+            );
+          }
+          return SetModelResponse.make({ model: MOCK_MODEL });
+        }),
+        set_session_name: ({ name }: S.Schema.Type<typeof SetSessionNameCommand>) =>
+          Effect.sync(() => {
+            thread.nameSet = name;
+            return SetSessionNameResponse.make({});
+          }),
+        set_steering_mode: () => Effect.succeed(SetSteeringModeResponse.make({})),
+        set_thinking_level: ({ level }: S.Schema.Type<typeof SetThinkingLevelCommand>) =>
+          Effect.sync(() => {
+            thread.thinkingLevel = level;
+            return SetThinkingLevelResponse.make({ level });
+          }),
+        steer: Effect.fn("steer")(function* steer({ text }: S.Schema.Type<typeof SteerCommand>) {
+          if (thread.state === "working") {
+            return SteerResponse.make({});
+          }
+          thread.state = "working";
+          yield* threadChanged(core, thread);
+          yield* settleRun(core, thread, text);
+          return SteerResponse.make({});
+        }),
       }),
     );
+  });
+
+  const core: WireServerApi = yield* WireServer.make({
+    handlers: {
+      runHubCommand: (command) =>
+        record(command._tag).pipe(Effect.flatMap(() => runHubCommand(core, command))),
+      runSessionCommand: (threadId, command) =>
+        record(command._tag).pipe(Effect.flatMap(() => runSessionCommand(core, threadId, command))),
+    },
+    token: () => Effect.succeed(TEST_TOKEN),
   });
 
   const server = yield* listenWs({
@@ -506,28 +573,34 @@ export const startHubFixture = Effect.fn("startHubFixture")(function* () {
   const sendRaw = (text: string) =>
     Effect.sync(() => {
       for (const socket of sockets) {
-        if (socket.readyState === socket.OPEN) socket.send(text);
+        if (socket.readyState === socket.OPEN) {
+          socket.send(text);
+        }
       }
     });
 
   const dropAll = () =>
     Effect.sync(() => {
-      for (const socket of sockets) socket.close();
+      for (const socket of sockets) {
+        socket.close();
+      }
     });
 
-  const close = Effect.fn("close")(function* () {
+  const close = Effect.fn("close")(function* close() {
     yield* dropAll();
-    yield* Effect.callback<void>((resume) => {
-      server.close(() => resume(Effect.void));
+    yield* Effect.callback<undefined>((resume) => {
+      server.close(() => {
+        resume(Effect.succeed(CLOSE_PAYLOAD));
+      });
       return Effect.void;
     });
   });
 
   return {
-    url: wsUrlOf(server),
     calls: () => [...calls],
+    close,
     dropAll,
     sendRaw,
-    close,
+    url: wsUrlOf(server),
   };
 });

@@ -10,6 +10,7 @@
 import { Schema as S } from "effect";
 import { Message } from "foldkit";
 import * as Dialog from "@foldkit/ui/dialog";
+import type { OpenedThread } from "../root/message.ts";
 import { PiSessionInfo, ProjectDirEntry, ProjectInfo, ThreadInfo, WireError } from "@saku/wire";
 
 /** A fresh list landed from the wire (a ListThreads result). */
@@ -56,8 +57,8 @@ export const ProjectSessionsListed = Message.m("ProjectSessionsListed", {
   sessions: S.Array(PiSessionInfo),
 });
 export const ProjectSessionsListFailed = Message.m("ProjectSessionsListFailed", {
-  path: S.String,
   error: WireError,
+  path: S.String,
 });
 
 export const ProjectExpanded = Message.m("ProjectExpanded", { path: S.String });
@@ -79,9 +80,9 @@ export const GotPickerDialogMessage = Message.m("GotPickerDialogMessage", {
 });
 /** One browse level landed (browse_project_dirs). */
 export const PickerBrowseListed = Message.m("PickerBrowseListed", {
-  path: S.String,
-  parent: S.NullOr(S.String),
   entries: S.Array(ProjectDirEntry),
+  parent: S.NullOr(S.String),
+  path: S.String,
 });
 export const PickerBrowseFailed = Message.m("PickerBrowseFailed", { error: WireError });
 /** A directory row was activated: descend into it. */
@@ -164,6 +165,6 @@ export type RailMessage = S.Schema.Type<typeof RailMessage>;
  * message now — both the rail (a row click) and the pane (a quick start)
  * surface the same fact.
  */
-import type { OpenedThread } from "../root/message.ts";
+
 export const DeletedThread = Message.m("DeletedThread", { id: S.String });
 export type RailOutMessage = typeof OpenedThread.Type | typeof DeletedThread.Type;

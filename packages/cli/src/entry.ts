@@ -16,20 +16,15 @@
 
 import { Effect, Logger, Match, Option, Result } from "effect";
 
-import {
-  WireClient,
-  WireError,
-  shortThreadId,
-  resolveThread,
-  type ThreadMode,
-  type WireClientShape,
-} from "@saku/wire";
+import { WireClient, WireError, shortThreadId, resolveThread } from "@saku/wire";
+import type { ThreadMode } from "@saku/wire";
 
 import { CliError } from "./cli-error.ts";
 import { workerLifecycle } from "./daemon.ts";
 import { ensureEnvConfig, envLifecycle } from "./env.ts";
 import { ensure, spawn, status, stop } from "./lifecycle.ts";
-import { PathsLive, type Paths } from "@saku/worker";
+import { PathsLive } from "@saku/worker";
+import type { Paths } from "@saku/worker";
 
 /**
  * The CLI's output logger: message-only lines. The CLI's stdout IS its
@@ -53,13 +48,13 @@ const CliLogger = Logger.withConsoleLog(
  * so connect uses that connection info — the storage layout stays in the
  * lifecycle module.
  */
-const connect = Effect.gen(function* () {
+const connect = Effect.gen(function* connect() {
   const lifecycle = yield* workerLifecycle();
   const connection = yield* ensure(lifecycle);
   const client = yield* WireClient.make({
-    url: connection.url,
-    token: connection.token,
     role: "cli",
+    token: connection.token,
+    url: connection.url,
   });
   yield* client.connect();
   return client;
@@ -69,15 +64,15 @@ const connect = Effect.gen(function* () {
  * Print the error and exit; the only imperative boundary of the CLI. The
  * failure is always a tagged error — the process edge prints its message.
  */
-const fail = (error: unknown) => {
-  const message = error instanceof Error ? error.message : String(error);
+const fail = (cause: unknown) => {
+  const message = cause instanceof Error ? cause.message : String(cause);
   Effect.runSync(Effect.provide(Logger.layer([CliLogger]))(Effect.logError(`saku: ${message}`)));
   process.exit(1);
 };
 
 const pad = (text: string, width: number) => text.padEnd(width).slice(0, width);
 
-const cmdList = Effect.fn("cmdList")(function* () {
+const cmdList = Effect.fn("cmdList")(function* cmdList() {
   const client = yield* connect;
   const threads = yield* client.listThreads().pipe(
     Effect.catchIf(
@@ -97,7 +92,7 @@ const cmdList = Effect.fn("cmdList")(function* () {
     return;
   }
   yield* Effect.logInfo(
-    pad("ID", 10) + pad("NAME", 28) + pad("MODE", 10) + pad("STATE", 12) + pad("ENV", 12) + "CWD",
+    `${pad("ID", 10) + pad("NAME", 28) + pad("MODE", 10) + pad("STATE", 12) + pad("ENV", 12)}CWD`,
   );
   for (const thread of threads) {
     yield* Effect.logInfo(
@@ -112,18 +107,19 @@ const cmdList = Effect.fn("cmdList")(function* () {
   yield* client.disconnect();
 });
 
-const cmdNew = Effect.fn("cmdNew")(function* (
+const cmdNew = Effect.fn("cmdNew")(function* cmdNew(
   name: string | undefined,
   cwd: string,
   mode: ThreadMode | undefined,
 ) {
   if (name === undefined || name.length === 0) {
-    return yield* Effect.fail(
+    yield* Effect.fail(
       new CliError({
         code: "usage",
         message: "saku new requires a name: saku new <name> [--cwd <dir>]",
       }),
     );
+    return;
   }
   const client = yield* connect;
   const thread = yield* (
@@ -146,11 +142,12 @@ const cmdNew = Effect.fn("cmdNew")(function* (
   yield* client.disconnect();
 });
 
-const cmdRm = Effect.fn("cmdRm")(function* (threadArg: string | undefined) {
+const cmdRm = Effect.fn("cmdRm")(function* cmdRm(threadArg: string | undefined) {
   if (threadArg === undefined) {
-    return yield* Effect.fail(
+    yield* Effect.fail(
       new CliError({ code: "usage", message: "saku rm requires a thread: saku rm <id-or-name>" }),
     );
+    return;
   }
   const client = yield* connect;
   const threads = yield* client.listThreads().pipe(
@@ -167,7 +164,8 @@ const cmdRm = Effect.fn("cmdRm")(function* (threadArg: string | undefined) {
   );
   const resolved = resolveThread(threads, threadArg);
   if (Result.isFailure(resolved)) {
-    return yield* Effect.fail(new CliError({ code: "resolution", message: resolved.failure }));
+    yield* Effect.fail(new CliError({ code: "resolution", message: resolved.failure }));
+    return;
   }
   yield* client.deleteThread(resolved.success.id).pipe(
     Effect.catchIf(
@@ -189,14 +187,18 @@ const fmtWhen = (ms: number) => {
   const date = new Date(ms);
   const now = Date.now();
   const days = Math.floor((now - ms) / 86_400_000);
-  if (days <= 0) return date.toLocaleTimeString();
-  if (days < 7) return `${days}d ago`;
+  if (days <= 0) {
+    return date.toLocaleTimeString();
+  }
+  if (days < 7) {
+    return `${days}d ago`;
+  }
   return date.toLocaleDateString();
 };
 
 /** saku pi list [project] — the added projects' pi sessions on this machine
  *  (CONTEXT.md: Project: the window is project-scoped, never a full scan). */
-const cmdPiList = Effect.fn("cmdPiList")(function* (project: string | undefined) {
+const cmdPiList = Effect.fn("cmdPiList")(function* cmdPiList(project: string | undefined) {
   const client = yield* connect;
   const sessions = yield* client.listPiSessions(project).pipe(
     Effect.catchIf(
@@ -220,7 +222,7 @@ const cmdPiList = Effect.fn("cmdPiList")(function* (project: string | undefined)
     return;
   }
   yield* Effect.logInfo(
-    pad("ID", 14) + pad("NAME", 28) + pad("MSGS", 7) + pad("MODIFIED", 14) + "CWD",
+    `${pad("ID", 14) + pad("NAME", 28) + pad("MSGS", 7) + pad("MODIFIED", 14)}CWD`,
   );
   for (const session of sessions) {
     yield* Effect.logInfo(
@@ -238,14 +240,15 @@ const cmdPiList = Effect.fn("cmdPiList")(function* (project: string | undefined)
 /** saku pi import <id-or-path> — adopt a pi session as a saku thread. A
  *  full `.jsonl` path imports directly (explicit gestures bypass the
  *  window); anything else resolves against the added projects' sessions. */
-const cmdPiImport = Effect.fn("cmdPiImport")(function* (arg: string | undefined) {
+const cmdPiImport = Effect.fn("cmdPiImport")(function* cmdPiImport(arg: string | undefined) {
   if (arg === undefined || arg.length === 0) {
-    return yield* Effect.fail(
+    yield* Effect.fail(
       new CliError({
         code: "usage",
         message: "saku pi import requires a session: saku pi import <id-or-path>",
       }),
     );
+    return;
   }
   const client = yield* connect;
   // An explicit path is an explicit gesture: no window lookup needed.
@@ -287,12 +290,13 @@ const cmdPiImport = Effect.fn("cmdPiImport")(function* (arg: string | undefined)
     sessions.find((session) => session.path === arg) ??
     sessions.find((session) => session.path.endsWith(`/${arg}`));
   if (match === undefined) {
-    return yield* Effect.fail(
+    yield* Effect.fail(
       new CliError({
         code: "resolution",
         message: `no pi session matches "${arg}" — try: saku pi list`,
       }),
     );
+    return;
   }
   const thread = yield* client.importPiSession(match.path).pipe(
     Effect.catchIf(
@@ -312,7 +316,7 @@ const cmdPiImport = Effect.fn("cmdPiImport")(function* (arg: string | undefined)
   yield* client.disconnect();
 });
 
-const cmdPi = Effect.fn("cmdPi")(function* (sub: string | undefined, arg: string | undefined) {
+const cmdPi = Effect.fn("cmdPi")(function* cmdPi(sub: string | undefined, arg: string | undefined) {
   yield* Match.value(sub).pipe(
     Match.withReturnType<Effect.Effect<void, WireError | CliError, Paths>>(),
     Match.when("list", () => cmdPiList(arg)),
@@ -324,18 +328,19 @@ const cmdPi = Effect.fn("cmdPi")(function* (sub: string | undefined, arg: string
 });
 
 /** saku project add|list|remove — the window's scope (CONTEXT.md: Project). */
-const cmdProject = Effect.fn("cmdProject")(function* (
+const cmdProject = Effect.fn("cmdProject")(function* cmdProject(
   sub: string | undefined,
   arg: string | undefined,
 ) {
   yield* Match.value(sub).pipe(
     Match.withReturnType<Effect.Effect<void, WireError | CliError, Paths>>(),
     Match.when("add", () =>
-      Effect.gen(function* () {
+      Effect.gen(function* cmdProjectAdd() {
         if (arg === undefined || arg.length === 0) {
-          return yield* Effect.fail(
+          yield* Effect.fail(
             new CliError({ code: "usage", message: "saku project add requires a path" }),
           );
+          return;
         }
         const client = yield* connect;
         const project = yield* client.addProject(arg).pipe(
@@ -355,7 +360,7 @@ const cmdProject = Effect.fn("cmdProject")(function* (
       }),
     ),
     Match.when("list", () =>
-      Effect.gen(function* () {
+      Effect.gen(function* cmdProjectList() {
         const client = yield* connect;
         const projects = yield* client.listProjects().pipe(
           Effect.catchIf(
@@ -380,11 +385,12 @@ const cmdProject = Effect.fn("cmdProject")(function* (
       }),
     ),
     Match.when("remove", () =>
-      Effect.gen(function* () {
+      Effect.gen(function* cmdProjectRemove() {
         if (arg === undefined || arg.length === 0) {
-          return yield* Effect.fail(
+          yield* Effect.fail(
             new CliError({ code: "usage", message: "saku project remove requires a path" }),
           );
+          return;
         }
         const client = yield* connect;
         yield* client.removeProject(arg).pipe(
@@ -410,17 +416,18 @@ const cmdProject = Effect.fn("cmdProject")(function* (
 });
 
 /** saku archive|unarchive <thread> — visibility-only (CONTEXT.md: Archive). */
-const cmdArchive = Effect.fn("cmdArchive")(function* (
+const cmdArchive = Effect.fn("cmdArchive")(function* cmdArchive(
   threadArg: string | undefined,
   unarchive: boolean,
 ) {
   if (threadArg === undefined) {
-    return yield* Effect.fail(
+    yield* Effect.fail(
       new CliError({
         code: "usage",
         message: `saku ${unarchive ? "unarchive" : "archive"} requires a thread: saku ${unarchive ? "unarchive" : "archive"} <id-or-name>`,
       }),
     );
+    return;
   }
   const client = yield* connect;
   const threads = yield* client.listThreads().pipe(
@@ -437,7 +444,8 @@ const cmdArchive = Effect.fn("cmdArchive")(function* (
   );
   const resolved = resolveThread(threads, threadArg);
   if (Result.isFailure(resolved)) {
-    return yield* Effect.fail(new CliError({ code: "resolution", message: resolved.failure }));
+    yield* Effect.fail(new CliError({ code: "resolution", message: resolved.failure }));
+    return;
   }
   const thread = unarchive
     ? yield* client.unarchiveThread(resolved.success.id).pipe(
@@ -470,11 +478,11 @@ const cmdArchive = Effect.fn("cmdArchive")(function* (
   yield* client.disconnect();
 });
 
-const cmdDaemon = Effect.fn("cmdDaemon")(function* (sub: string | undefined) {
+const cmdDaemon = Effect.fn("cmdDaemon")(function* cmdDaemon(sub: string | undefined) {
   yield* Match.value(sub).pipe(
     Match.withReturnType<Effect.Effect<void, CliError, Paths>>(),
     Match.when("start", () =>
-      Effect.gen(function* () {
+      Effect.gen(function* cmdDaemonStart() {
         const lifecycle = yield* workerLifecycle();
         const current = yield* status(lifecycle);
         if (current.running && current.pid !== undefined) {
@@ -486,7 +494,7 @@ const cmdDaemon = Effect.fn("cmdDaemon")(function* (sub: string | undefined) {
       }),
     ),
     Match.when("stop", () =>
-      Effect.gen(function* () {
+      Effect.gen(function* cmdDaemonStop() {
         const lifecycle = yield* workerLifecycle();
         const pid = yield* stop(lifecycle);
         yield* Effect.logInfo(
@@ -503,7 +511,7 @@ const cmdDaemon = Effect.fn("cmdDaemon")(function* (sub: string | undefined) {
     // waiting until it publishes a live socket (the same ensure the
     // on-demand commands use).
     Match.when("restart", () =>
-      Effect.gen(function* () {
+      Effect.gen(function* cmdDaemonRestart() {
         const lifecycle = yield* workerLifecycle();
         const stopped = yield* stop(lifecycle);
         yield* Effect.logInfo(
@@ -517,14 +525,12 @@ const cmdDaemon = Effect.fn("cmdDaemon")(function* (sub: string | undefined) {
       }),
     ),
     Match.when("status", () =>
-      Effect.gen(function* () {
+      Effect.gen(function* cmdDaemonStatus() {
         const lifecycle = yield* workerLifecycle();
         const current = yield* status(lifecycle);
-        if (current.running) {
-          yield* Effect.logInfo(`running (pid ${current.pid}, wire ${current.version})`);
-        } else {
-          yield* Effect.logInfo("not running");
-        }
+        yield* Effect.logInfo(
+          current.running ? `running (pid ${current.pid}, wire ${current.version})` : "not running",
+        );
       }),
     ),
     Match.orElse(() =>
@@ -535,18 +541,21 @@ const cmdDaemon = Effect.fn("cmdDaemon")(function* (sub: string | undefined) {
   );
 });
 
-const cmdEnv = Effect.fn("cmdEnv")(function* (sub: string | undefined, hubUrl: string | undefined) {
+const cmdEnv = Effect.fn("cmdEnv")(function* cmdEnv(
+  sub: string | undefined,
+  hubUrl: string | undefined,
+) {
   yield* Match.value(sub).pipe(
     Match.withReturnType<Effect.Effect<void, CliError, Paths>>(),
     Match.when("start", () =>
-      Effect.gen(function* () {
+      Effect.gen(function* cmdEnvStart() {
         const config = yield* ensureEnvConfig(hubUrl).pipe(
           Effect.mapError(
             (error) =>
               new CliError({
+                cause: error,
                 code: "env_config",
                 message: `failed to write the env config: ${error instanceof Error ? error.message : String(error)}`,
-                cause: error,
               }),
           ),
         );
@@ -557,13 +566,12 @@ const cmdEnv = Effect.fn("cmdEnv")(function* (sub: string | undefined, hubUrl: s
           return;
         }
         const connection = yield* ensure(lifecycle);
-        const relay = config.hubUrl !== undefined ? ` (relay to ${config.hubUrl})` : "";
+        const relay = config.hubUrl === undefined ? "" : ` (relay to ${config.hubUrl})`;
         yield* Effect.logInfo(`env started (pid ${connection.pid}, ${connection.url})${relay}`);
-        return;
       }),
     ),
     Match.when("stop", () =>
-      Effect.gen(function* () {
+      Effect.gen(function* cmdEnvStop() {
         const lifecycle = yield* envLifecycle();
         const pid = yield* stop(lifecycle);
         yield* Effect.logInfo(
@@ -575,16 +583,14 @@ const cmdEnv = Effect.fn("cmdEnv")(function* (sub: string | undefined, hubUrl: s
       }),
     ),
     Match.when("status", () =>
-      Effect.gen(function* () {
+      Effect.gen(function* cmdEnvStatus() {
         const lifecycle = yield* envLifecycle();
         const current = yield* status(lifecycle);
-        if (current.running) {
-          yield* Effect.logInfo(
-            `running (pid ${current.pid}, protocol ${current.version}, cwd ${current.cwd})`,
-          );
-        } else {
-          yield* Effect.logInfo("not running");
-        }
+        yield* Effect.logInfo(
+          current.running
+            ? `running (pid ${current.pid}, protocol ${current.version}, cwd ${current.cwd})`
+            : "not running",
+        );
       }),
     ),
     Match.orElse(() =>
@@ -610,14 +616,16 @@ usage:
   saku pi import <id-or-path>
 `;
 
-const main = Effect.fn("main")(function* () {
+const main = Effect.fn("main")(function* main() {
   const args = process.argv.slice(2);
-  const command = args[0];
+  const [command] = args;
   const rest = args.slice(1);
 
   const flagValue = (flags: string[], fallback: string) => {
     const index = rest.findIndex((arg) => flags.includes(arg));
-    if (index === -1) return fallback;
+    if (index === -1) {
+      return fallback;
+    }
     return rest[index + 1] ?? fallback;
   };
 
@@ -629,7 +637,7 @@ const main = Effect.fn("main")(function* () {
     ),
     Match.when("list", () => cmdList()),
     Match.when("new", () => {
-      const name = rest[0];
+      const [name] = rest;
       const cwd = flagValue(["--cwd", "-c"], process.cwd());
       const modeArg = flagValue(["--mode", "-m"], "local");
       const mode: ThreadMode = modeArg === "sandbox" || modeArg === "any" ? modeArg : "local";
@@ -641,12 +649,16 @@ const main = Effect.fn("main")(function* () {
     Match.when("unarchive", () => cmdArchive(rest[0], true)),
     Match.whenOr("rm", "remove", "delete", () => cmdRm(rest[0])),
     Match.whenOr("help", "--help", "-h", () => Effect.logInfo(usage())),
-    Match.orElse((command) =>
-      Effect.fail(new CliError({ code: "usage", message: `unknown command "${command}"` })),
+    Match.orElse((unmatched) =>
+      Effect.fail(new CliError({ code: "usage", message: `unknown command "${unmatched}"` })),
     ),
   );
 });
 
-Effect.runPromise(
-  Effect.provide(Logger.layer([CliLogger]))(Effect.provide(PathsLive)(main())),
-).catch(fail);
+try {
+  await Effect.runPromise(
+    Effect.provide(Logger.layer([CliLogger]))(Effect.provide(PathsLive)(main())),
+  );
+} catch (error) {
+  fail(error);
+}

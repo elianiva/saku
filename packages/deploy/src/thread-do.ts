@@ -23,22 +23,22 @@
  * - `/disarm-idle`     — `deleteAlarm()`
  */
 
-import { Effect, Match, Option } from "effect";
-import { RemoteEnv, workerdSocketFactory, type EnvHandle } from "@saku/env/remote";
+import { Effect, Option } from "effect";
+import { RemoteEnv, workerdSocketFactory } from "@saku/env/remote";
+import type { EnvHandle } from "@saku/env/remote";
 import {
   SessionHost,
   SessionHostError,
   RegistryError,
   runSessionCommand,
-  type HostRegistryShape,
-  type ModelCatalogShape,
-  type ThreadRecord,
 } from "@saku/worker/isolate";
-import { type ResponsePayload, type SessionCommand } from "@saku/wire";
+import type { HostRegistryApi, ModelCatalogApi, ThreadRecord } from "@saku/worker/isolate";
+import type { SessionCommand } from "@saku/wire";
 import type { WorkerReport } from "@saku/hub/core";
 import { KvStore } from "@saku/store";
 
-import { varOrDefault, type DeploymentEnv } from "./env.ts";
+import { varOrDefault } from "./env.ts";
+import type { DeploymentEnv } from "./env.ts";
 import { deploymentCatalog } from "./catalog.ts";
 import {
   decodeCommandPayload,
@@ -55,15 +55,16 @@ const RECORD_KEY = "record";
 const THREAD_ID_KEY = "thread-id";
 const ENV_HANDLE_KEY = "env-handle";
 
-const toSessionHostError = (message: string) => (error: unknown) =>
+const toSessionHostError = (message: string) => (cause: unknown) =>
   new SessionHostError({
+    cause,
     kind: "pi_seam",
-    message: `${message}: ${error instanceof Error ? error.message : String(error)}`,
-    cause: error,
+    message: `${message}: ${cause instanceof Error ? cause.message : String(cause)}`,
   });
 
-/** The failures a session command can produce (stringified at the fetch boundary). */
-type CommandError = SessionHostError | RegistryError;
+/** The env key of a handle: the identity a rebuilt env connection is keyed on. */
+const envKeyOf = (handle: EnvHandle | null) =>
+  handle === null ? "none" : `${handle.url}|${handle.token}|${handle.relay?.envId ?? ""}`;
 
 export class SakuThreadDO {
   private host: SessionHost | undefined;
@@ -73,38 +74,44 @@ export class SakuThreadDO {
   /** The handle the live env was built with (a changed handle rebuilds). */
   private envKey: string | undefined;
   private threadId: string | undefined;
-  private readonly catalog: ModelCatalogShape;
+  private readonly catalog: ModelCatalogApi;
+  private readonly deployment: DeploymentEnv;
+  private readonly state: DurableObjectState;
 
-  constructor(
-    private readonly state: DurableObjectState,
-    private readonly deployment: DeploymentEnv,
-  ) {
+  constructor(state: DurableObjectState, deployment: DeploymentEnv) {
+    this.state = state;
+    this.deployment = deployment;
     this.catalog = deploymentCatalog(this.deployment);
   }
 
   private idleStopMs() {
-    return Number.parseInt(
-      varOrDefault(this.deployment, "SAKU_IDLE_STOP_MS", String(IDLE_STOP_DEFAULT_MS)),
-      10,
+    return Math.trunc(
+      Number(varOrDefault(this.deployment, "SAKU_IDLE_STOP_MS", String(IDLE_STOP_DEFAULT_MS))),
     );
   }
 
   private async loadThreadId() {
-    if (this.threadId !== undefined) return this.threadId;
+    if (this.threadId !== undefined) {
+      return this.threadId;
+    }
     const stored = await this.state.storage.get<string>(THREAD_ID_KEY);
     this.threadId = stored ?? undefined;
     return this.threadId;
   }
 
   private async loadRecord() {
-    if (this.record !== undefined) return this.record;
+    if (this.record !== undefined) {
+      return this.record;
+    }
     const stored = await this.state.storage.get<ThreadRecord>(RECORD_KEY);
     this.record = stored ?? undefined;
     return this.record;
   }
 
   private async loadEnvHandle() {
-    if (this.envHandle !== undefined) return this.envHandle;
+    if (this.envHandle !== undefined) {
+      return this.envHandle;
+    }
     const stored = await this.state.storage.get<EnvHandle>(ENV_HANDLE_KEY);
     this.envHandle = stored ?? null;
     return this.envHandle;
@@ -113,22 +120,27 @@ export class SakuThreadDO {
   async fetch(request: Request) {
     const path = new URL(request.url).pathname;
     try {
-      return await Match.value(path).pipe(
-        Match.withReturnType<Promise<Response>>(),
-        Match.when("/create", () => this.handleCreate(request)),
-        Match.when("/delete", () => this.handleDelete()),
-        Match.when("/command", () => this.handleCommand(request)),
-        Match.when("/set-env-handle", () => this.handleSetEnvHandle(request)),
-        Match.when("/arm-idle", async () => {
-          await this.state.storage.setAlarm(Date.now() + this.idleStopMs());
-          return jsonOk({});
-        }),
-        Match.when("/disarm-idle", async () => {
-          await this.state.storage.deleteAlarm();
-          return jsonOk({});
-        }),
-        Match.orElse(() => Promise.resolve(jsonError("malformed", `unknown path: ${path}`))),
-      );
+      if (path === "/create") {
+        return await this.handleCreate(request);
+      }
+      if (path === "/delete") {
+        return await this.handleDelete();
+      }
+      if (path === "/command") {
+        return await this.handleCommand(request);
+      }
+      if (path === "/set-env-handle") {
+        return await this.handleSetEnvHandle(request);
+      }
+      if (path === "/arm-idle") {
+        await this.state.storage.setAlarm(Date.now() + this.idleStopMs());
+        return jsonOk({});
+      }
+      if (path === "/disarm-idle") {
+        await this.state.storage.deleteAlarm();
+        return jsonOk({});
+      }
+      return jsonError("malformed", `unknown path: ${path}`);
     } catch (error) {
       // The tagged `CommandError` (SessionHostError | RegistryError) rejects
       // through the boundary; the envelope keeps its kind, so the hub never
@@ -141,19 +153,23 @@ export class SakuThreadDO {
   /** The durable alarm: idle-stop fired — the hub pulls the trigger. */
   async alarm() {
     const threadId = await this.loadThreadId();
-    if (threadId === undefined) return;
-    pushToHub(this.deployment, { type: "idleStopFired", threadId });
+    if (threadId === undefined) {
+      return;
+    }
+    pushToHub(this.deployment, { threadId, type: "idleStopFired" });
   }
 
   private async handleCreate(request: Request) {
     const body = await Effect.runPromise(
       Effect.tryPromise({
-        try: () => request.json() as Promise<unknown>,
-        catch: () => undefined,
-      }).pipe(Effect.flatMap((body) => Effect.sync(() => decodeCreatePayload(body)))),
+        catch: () => null,
+        try: async () => await request.json(),
+      }).pipe(Effect.flatMap((raw) => Effect.sync(() => decodeCreatePayload(raw)))),
     );
-    if (Option.isNone(body)) return jsonError("malformed", "malformed /create payload");
-    const record = body.value.record;
+    if (Option.isNone(body)) {
+      return jsonError("malformed", "malformed /create payload");
+    }
+    const { record } = body.value;
     await this.state.storage.put(RECORD_KEY, record);
     await this.state.storage.put(THREAD_ID_KEY, record.id);
     this.record = record;
@@ -171,7 +187,9 @@ export class SakuThreadDO {
     this.envHandle = undefined;
     this.envConnection?.close();
     this.envConnection = undefined;
-    await this.state.storage.deleteAlarm().catch(() => undefined);
+    await this.state.storage.deleteAlarm().catch(() => {
+      /* the alarm may not be armed; deletion is best-effort */
+    });
     await this.state.storage.deleteAll();
     return jsonOk({});
   }
@@ -179,12 +197,14 @@ export class SakuThreadDO {
   private async handleSetEnvHandle(request: Request) {
     const body = await Effect.runPromise(
       Effect.tryPromise({
-        try: () => request.json() as Promise<unknown>,
-        catch: () => undefined,
-      }).pipe(Effect.flatMap((body) => Effect.sync(() => decodeSetEnvHandlePayload(body)))),
+        catch: () => null,
+        try: async () => await request.json(),
+      }).pipe(Effect.flatMap((raw) => Effect.sync(() => decodeSetEnvHandlePayload(raw)))),
     );
-    if (Option.isNone(body)) return jsonError("malformed", "malformed /set-env-handle payload");
-    const handle = body.value.handle;
+    if (Option.isNone(body)) {
+      return jsonError("malformed", "malformed /set-env-handle payload");
+    }
+    const { handle } = body.value;
     await this.state.storage.put(ENV_HANDLE_KEY, handle);
     this.envHandle = handle;
     // A different endpoint (a resumed Box gets a new host URL) means the
@@ -206,14 +226,18 @@ export class SakuThreadDO {
   private async handleCommand(request: Request) {
     const body = await Effect.runPromise(
       Effect.tryPromise({
-        try: () => request.json() as Promise<unknown>,
-        catch: () => undefined,
-      }).pipe(Effect.flatMap((body) => Effect.sync(() => decodeCommandPayload(body)))),
+        catch: () => null,
+        try: async () => await request.json(),
+      }).pipe(Effect.flatMap((raw) => Effect.sync(() => decodeCommandPayload(raw)))),
     );
-    if (Option.isNone(body)) return jsonError("malformed", "malformed /command payload");
-    const command = body.value.command;
+    if (Option.isNone(body)) {
+      return jsonError("malformed", "malformed /command payload");
+    }
+    const { command } = body.value;
     const record = await this.loadRecord();
-    if (record === undefined) return jsonError("malformed", "unknown thread");
+    if (record === undefined) {
+      return jsonError("malformed", "unknown thread");
+    }
     // The tagged `CommandError` (SessionHostError | RegistryError) rejects
     // through the boundary; the fetch catch above serializes its kind into
     // the envelope.
@@ -222,20 +246,19 @@ export class SakuThreadDO {
   }
 
   private runCommand(record: ThreadRecord, command: SessionCommand) {
-    const self = this;
-    return Effect.fn("runCommand")(function* () {
+    return Effect.fn("runCommand")({ self: this }, function* runCommand(this: SakuThreadDO) {
       // The shared dispatch serves the read-only commands without a host
       // (a thread whose session has never begun answers from the
       // record/catalog alone, ADR 0004) and starts the session on the
       // first mutating command.
       const payload = yield* runSessionCommand(
         {
-          hostFor: () => self.hostFor(record),
-          readOnlyHost: () => self.readOnlyHost(record),
           availableModels: () =>
-            self.catalog
+            this.catalog
               .available()
-              .pipe(Effect.map((models) => models.map((model) => self.catalog.toWireInfo(model)))),
+              .pipe(Effect.map((models) => models.map((model) => this.catalog.toWireInfo(model)))),
+          hostFor: () => this.hostFor(record),
+          readOnlyHost: () => this.readOnlyHost(record),
         },
         record.id,
         command,
@@ -243,8 +266,8 @@ export class SakuThreadDO {
       // Reads without a host report tailSeq 0; anything that touched a host
       // reports the live trail's tail.
       let tailSeq = 0;
-      if (self.host !== undefined) {
-        const { tailSeq: live } = yield* self.host
+      if (this.host !== undefined) {
+        const { tailSeq: live } = yield* this.host
           .getEntries()
           .pipe(Effect.mapError(toSessionHostError("tailSeq")));
         tailSeq = live;
@@ -255,32 +278,36 @@ export class SakuThreadDO {
 
   /** The live host only when the thread's session has already started; none otherwise. */
   private readOnlyHost(record: ThreadRecord) {
-    const self = this;
-    return Effect.fn("readOnlyHost")(function* () {
-      if (self.host !== undefined) return Option.some(self.host);
+    return Effect.fn("readOnlyHost")({ self: this }, function* readOnlyHost(this: SakuThreadDO) {
+      if (this.host !== undefined) {
+        return Option.some(this.host);
+      }
       // A session that has started (sessionId back-filled through the push
       // channel) rebuilds its host for reads; a never-started thread answers
       // from the record/catalog alone (ADR 0004).
-      if (record.sessionId === null) return Option.none();
-      return Option.some(yield* self.hostFor(record));
+      if (record.sessionId === null) {
+        return Option.none();
+      }
+      return Option.some(yield* this.hostFor(record));
     })();
   }
 
   /** The lazy host: built on the first mutating command; crashed hosts rebuild. */
   private hostFor(record: ThreadRecord) {
-    const self = this;
-    return Effect.fn("hostFor")(function* () {
-      const existing = self.host;
+    return Effect.fn("hostFor")({ self: this }, function* hostFor(this: SakuThreadDO) {
+      const existing = this.host;
       if (existing !== undefined) {
         // A crashed host rebuilds from its trail on the next touch.
-        if (existing.threadState !== "crashed") return existing;
+        if (existing.threadState !== "crashed") {
+          return existing;
+        }
         yield* existing.dispose().pipe(Effect.catch(() => Effect.void));
-        self.host = undefined;
+        this.host = undefined;
       }
       // The env: the persisted handle, connected before the host runs.
       const handle = yield* Effect.tryPromise({
-        try: () => self.loadEnvHandle(),
         catch: toSessionHostError("load env handle"),
+        try: async () => await this.loadEnvHandle(),
       });
       if (handle === null) {
         return yield* Effect.fail(
@@ -290,61 +317,67 @@ export class SakuThreadDO {
           }),
         );
       }
-      const env = yield* Effect.tryPromise({
-        try: () => self.envFor(handle),
+      const env = yield* Effect.try({
         catch: toSessionHostError("build env"),
+        try: () => this.envFor(handle),
       });
       yield* Effect.tryPromise({
-        try: () => env.connect(),
         catch: toSessionHostError("connect env"),
+        try: async () => await env.connect(),
       });
-      const registry = self.registryShape(record);
+      const registry = this.registry(record);
       const host = yield* SessionHost.create({
-        threadId: record.id,
-        record,
-        catalog: self.catalog,
-        registry,
+        catalog: this.catalog,
         env,
+        record,
+        registry,
         sink: (event) => {
           void Effect.runFork(
-            Effect.gen(function* () {
-              const live = self.host;
+            Effect.fn("sink")({ self: this }, function* sink(this: SakuThreadDO) {
+              const live = this.host;
               if (live !== undefined) {
                 const { tailSeq } = yield* live
                   .getEntries()
                   .pipe(Effect.catch(() => Effect.succeed({ tailSeq: 0 })));
-                pushToHub(self.deployment, {
-                  type: "sessionEvent",
-                  threadId: record.id,
+                pushToHub(this.deployment, {
                   event,
                   tailSeq,
+                  threadId: record.id,
+                  type: "sessionEvent",
                 });
               }
-            }),
+            })(),
           );
         },
+        threadId: record.id,
       }).pipe(
         // The thread's trail lives on this DO's storage (the platform
         // boundary, the `KvStore` service, doStorage backend).
-        Effect.provide(KvStore.doStorage(self.state.storage)),
+        Effect.provide(KvStore.doStorage(this.state.storage)),
         Effect.mapError(toSessionHostError("create host")),
       );
-      self.host = host;
+      this.host = host;
       return host;
     })();
   }
 
   /** The live env connection for a handle; reconnects when needed. */
-  private async envFor(handle: EnvHandle) {
+  private envFor(handle: EnvHandle) {
     const key = envKeyOf(handle);
-    if (this.envConnection !== undefined && key === this.envKey) return this.envConnection;
+    if (this.envConnection !== undefined && key === this.envKey) {
+      return this.envConnection;
+    }
     this.envConnection?.close();
-    this.envConnection = new RemoteEnv({
-      url: handle.url,
-      token: handle.token,
-      socket: workerdSocketFactory,
-      ...(handle.relay === undefined ? {} : { relay: handle.relay }),
-    });
+    this.envConnection = new RemoteEnv(
+      handle.relay === undefined
+        ? { socket: workerdSocketFactory, token: handle.token, url: handle.url }
+        : {
+            relay: handle.relay,
+            socket: workerdSocketFactory,
+            token: handle.token,
+            url: handle.url,
+          },
+    );
     this.envKey = key;
     return this.envConnection;
   }
@@ -356,39 +389,50 @@ export class SakuThreadDO {
    * thread creation and deletion; the host only ever reads its own
    * record, back-fills its sessionId, and pushes liveness states.
    */
-  private registryShape(record: ThreadRecord): HostRegistryShape {
-    const self = this;
+  private registry(record: ThreadRecord): HostRegistryApi {
     const push = (report: WorkerReport) => {
-      pushToHub(self.deployment, { type: "report", threadId: record.id, report });
+      pushToHub(this.deployment, { report, threadId: record.id, type: "report" });
     };
-    const current = () => self.record ?? record;
+    const current = () => this.record ?? record;
     return {
       get: (threadId) =>
         Effect.succeed(threadId === record.id ? Option.some(current()) : Option.none()),
-      update: Effect.fn("update")(function* (threadId, patch) {
-        if (threadId !== record.id) return Option.none();
-        const next: ThreadRecord = { ...current(), ...patch };
-        self.record = next;
-        yield* Effect.tryPromise({
-          try: () => self.state.storage.put(RECORD_KEY, next),
-          catch: (error) =>
-            new RegistryError({
-              op: "persist",
-              message: "persist thread record",
-              cause: error,
-            }),
-        });
-        if (patch.sessionId !== undefined) push({ sessionId: patch.sessionId });
-        if (patch.name !== undefined) push({ name: patch.name });
-        return Option.some(next);
-      }),
       setState: (threadId, state) =>
         Effect.sync(() => {
           push({ state });
         }),
+      update: Effect.fn("update")(
+        { self: this },
+        function* update(
+          this: SakuThreadDO,
+          threadId: string,
+          patch: Partial<Pick<ThreadRecord, "name" | "sessionId" | "nameAuto">>,
+        ) {
+          if (threadId !== record.id) {
+            return Option.none();
+          }
+          const next: ThreadRecord = { ...current(), ...patch };
+          this.record = next;
+          yield* Effect.tryPromise({
+            catch: (error) =>
+              new RegistryError({
+                cause: error,
+                message: "persist thread record",
+                op: "persist",
+              }),
+            try: async () => {
+              await this.state.storage.put(RECORD_KEY, next);
+            },
+          });
+          if (patch.sessionId !== undefined) {
+            push({ sessionId: patch.sessionId });
+          }
+          if (patch.name !== undefined) {
+            push({ name: patch.name });
+          }
+          return Option.some(next);
+        },
+      ),
     };
   }
 }
-
-const envKeyOf = (handle: EnvHandle | null) =>
-  handle === null ? "none" : `${handle.url}|${handle.token}|${handle.relay?.envId ?? ""}`;

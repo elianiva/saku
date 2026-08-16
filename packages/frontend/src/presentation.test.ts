@@ -8,8 +8,20 @@
 
 import { describe, expect, it } from "vitest";
 import type { PiSessionInfo, ThreadInfo, WireModelInfo } from "@saku/wire";
-import fc from "fast-check";
-
+import type { Arbitrary } from "fast-check";
+import {
+  array,
+  assert,
+  boolean,
+  constant,
+  constantFrom,
+  integer,
+  oneof,
+  option,
+  property,
+  record,
+  string,
+} from "fast-check";
 import type { EntryProjection } from "./thread/projection.ts";
 import {
   CONTEXT_CRITICAL_PERCENT,
@@ -23,61 +35,59 @@ import {
   usageStatus,
 } from "./presentation.ts";
 
-const modelArb: fc.Arbitrary<WireModelInfo> = fc.record({
-  provider: fc.string({ maxLength: 12 }),
-  id: fc.string({ maxLength: 24 }),
-  contextWindow: fc.integer({ min: 0 }),
-  reasoning: fc.boolean(),
+const modelArb: Arbitrary<WireModelInfo> = record({
+  contextWindow: integer({ min: 0 }),
+  id: string({ maxLength: 24 }),
+  provider: string({ maxLength: 12 }),
+  reasoning: boolean(),
 });
 
-const messageArb = fc.record({
-  role: fc.constantFrom("user", "assistant", "toolResult"),
-  usage: fc.option(
-    fc.record({
-      input: fc.integer({ min: 0 }),
-      cacheRead: fc.integer({ min: 0 }),
-      cacheWrite: fc.integer({ min: 0 }),
-      totalTokens: fc.option(fc.integer({ min: 0 })),
+const messageArb = record({
+  model: option(string({ maxLength: 24 }), { nil: undefined }),
+  provider: option(string({ maxLength: 12 }), { nil: undefined }),
+  role: constantFrom("user", "assistant", "toolResult"),
+  stopReason: option(constantFrom("end_turn", "aborted", "error", "tool_use"), {
+    nil: undefined,
+  }),
+  usage: option(
+    record({
+      cacheRead: integer({ min: 0 }),
+      cacheWrite: integer({ min: 0 }),
+      input: integer({ min: 0 }),
+      totalTokens: option(integer({ min: 0 })),
     }),
     { nil: undefined },
   ),
-  stopReason: fc.option(fc.constantFrom("end_turn", "aborted", "error", "tool_use"), {
-    nil: undefined,
-  }),
-  provider: fc.option(fc.string({ maxLength: 12 }), { nil: undefined }),
-  model: fc.option(fc.string({ maxLength: 24 }), { nil: undefined }),
 });
 
-const entryArb: fc.Arbitrary<EntryProjection> = fc.oneof(
-  fc
-    .record({
-      seq: fc.option(fc.integer({ min: 0 }), { nil: undefined }),
-      type: fc.constant("message"),
-      message: fc.option(messageArb, { nil: undefined }),
-    })
-    .map(({ message, ...rest }) => ({ ...rest, message })),
-  fc.record({
-    seq: fc.option(fc.integer({ min: 0 }), { nil: undefined }),
-    type: fc.constant("compaction"),
+const entryArb: Arbitrary<EntryProjection> = oneof(
+  record({
+    message: option(messageArb, { nil: undefined }),
+    seq: option(integer({ min: 0 }), { nil: undefined }),
+    type: constant("message"),
+  }).map(({ message, ...rest }) => ({ ...rest, message })),
+  record({
+    seq: option(integer({ min: 0 }), { nil: undefined }),
+    type: constant("compaction"),
   }),
-  fc.record({
-    seq: fc.option(fc.integer({ min: 0 }), { nil: undefined }),
-    type: fc.constant("model_change"),
-    provider: fc.option(fc.string({ maxLength: 12 }), { nil: undefined }),
-    modelId: fc.option(fc.string({ maxLength: 24 }), { nil: undefined }),
+  record({
+    modelId: option(string({ maxLength: 24 }), { nil: undefined }),
+    provider: option(string({ maxLength: 12 }), { nil: undefined }),
+    seq: option(integer({ min: 0 }), { nil: undefined }),
+    type: constant("model_change"),
   }),
-  fc.record({
-    seq: fc.option(fc.integer({ min: 0 }), { nil: undefined }),
-    type: fc.constant("thinking_level_change"),
-    thinkingLevel: fc.option(fc.string({ maxLength: 12 }), { nil: undefined }),
+  record({
+    seq: option(integer({ min: 0 }), { nil: undefined }),
+    thinkingLevel: option(string({ maxLength: 12 }), { nil: undefined }),
+    type: constant("thinking_level_change"),
   }),
 );
 
 describe("modelLabel", () => {
   it("keeps ids that already carry the provider prefix, else joins them", () => {
-    fc.assert(
-      fc.property(fc.string({ maxLength: 24 }), fc.string({ maxLength: 24 }), (provider, id) => {
-        const model = { provider, id, contextWindow: 1, reasoning: false };
+    assert(
+      property(string({ maxLength: 24 }), string({ maxLength: 24 }), (provider, id) => {
+        const model = { contextWindow: 1, id, provider, reasoning: false };
         expect(modelLabel(model)).toBe(id.includes("/") ? id : `${provider}/${id}`);
       }),
     );
@@ -86,20 +96,20 @@ describe("modelLabel", () => {
 
 describe("usageContextTokens", () => {
   it("prefers the native totalTokens, falls back to the component sum, and nulls on junk", () => {
-    fc.assert(
-      fc.property(
-        fc.integer({ min: 0 }),
-        fc.integer({ min: 0 }),
-        fc.integer({ min: 0 }),
+    assert(
+      property(
+        integer({ min: 0 }),
+        integer({ min: 0 }),
+        integer({ min: 0 }),
         (input, cacheRead, cacheWrite) => {
           const withTotal = {
-            input,
             cacheRead,
             cacheWrite,
+            input,
             totalTokens: input + cacheRead + cacheWrite + 7,
           };
           expect(usageContextTokens(withTotal)).toBe(withTotal.totalTokens);
-          const componentSum = { input, cacheRead, cacheWrite };
+          const componentSum = { cacheRead, cacheWrite, input };
           expect(usageContextTokens(componentSum)).toBe(input + cacheRead + cacheWrite);
         },
       ),
@@ -107,28 +117,26 @@ describe("usageContextTokens", () => {
     expect(usageContextTokens(null)).toBeNull();
     expect(usageContextTokens("nope")).toBeNull();
     expect(usageContextTokens({})).toBeNull();
-    expect(usageContextTokens({ input: 0, cacheRead: 0, cacheWrite: 0 })).toBeNull();
+    expect(usageContextTokens({ cacheRead: 0, cacheWrite: 0, input: 0 })).toBeNull();
   });
 });
 
 describe("contextUsage", () => {
   it("is null without a model window, without usage, or after a compaction", () => {
-    fc.assert(
-      fc.property(modelArb, fc.array(entryArb, { maxLength: 6 }), (model, entries) => {
+    assert(
+      property(modelArb, array(entryArb, { maxLength: 6 }), (model, entries) => {
         const usage = contextUsage(entries, model);
         const window = model.contextWindow;
-        const lastAssistant = entries
-          .filter(
-            (entry) =>
-              entry.type === "message" &&
-              entry.message !== undefined &&
-              entry.message.role === "assistant" &&
-              entry.message.stopReason !== "aborted" &&
-              entry.message.stopReason !== "error" &&
-              usageContextTokens(entry.message.usage) !== null,
-          )
-          .at(-1);
-        const lastCompaction = entries.filter((entry) => entry.type === "compaction").at(-1);
+        const lastAssistant = entries.findLast(
+          (entry) =>
+            entry.type === "message" &&
+            entry.message !== undefined &&
+            entry.message.role === "assistant" &&
+            entry.message.stopReason !== "aborted" &&
+            entry.message.stopReason !== "error" &&
+            usageContextTokens(entry.message.usage) !== null,
+        );
+        const lastCompaction = entries.findLast((entry) => entry.type === "compaction");
         const unknown =
           window <= 0 ||
           lastAssistant === undefined ||
@@ -137,9 +145,15 @@ describe("contextUsage", () => {
           expect(usage).toBeNull();
         } else {
           expect(usage).not.toBeNull();
-          expect(usage!.window).toBe(window);
-          expect(usage!.tokens).toBe(usageContextTokens(lastAssistant!.message!.usage));
-          expect(usage!.percent).toBe(Math.round((usage!.tokens / window) * 100));
+          if (usage === null) {
+            throw new Error("expected usage to be present");
+          }
+          if (lastAssistant === undefined || lastAssistant.message === undefined) {
+            throw new Error("expected a last assistant message");
+          }
+          expect(usage.window).toBe(window);
+          expect(usage.tokens).toBe(usageContextTokens(lastAssistant.message.usage));
+          expect(usage.percent).toBe(Math.round((usage.tokens / window) * 100));
         }
       }),
     );
@@ -148,14 +162,14 @@ describe("contextUsage", () => {
   it("compaction entries without any assistant usage leave the badge unknown", () => {
     expect(
       contextUsage([{ type: "compaction" }], {
-        provider: "p",
-        id: "m",
         contextWindow: 100,
+        id: "m",
+        provider: "p",
         reasoning: false,
       }),
     ).toBeNull();
     expect(
-      contextUsage([], { provider: "p", id: "m", contextWindow: 100, reasoning: false }),
+      contextUsage([], { contextWindow: 100, id: "m", provider: "p", reasoning: false }),
     ).toBeNull();
   });
 });
@@ -172,21 +186,21 @@ describe("contextTone", () => {
 
 describe("usageStatus", () => {
   const windowModel: WireModelInfo = {
-    provider: "thread-provider",
-    id: "thread-model",
     contextWindow: 1000,
+    id: "thread-model",
+    provider: "thread-provider",
     reasoning: false,
   };
-  const usage = { input: 100, output: 50, cacheRead: 200, cacheWrite: 10, totalTokens: 310 };
+  const usage = { cacheRead: 200, cacheWrite: 10, input: 100, output: 50, totalTokens: 310 };
 
   it("is unknown exactly when contextUsage is (the same trail rule)", () => {
-    fc.assert(
-      fc.property(modelArb, fc.array(entryArb, { maxLength: 6 }), (model, entries) => {
+    assert(
+      property(modelArb, array(entryArb, { maxLength: 6 }), (model, entries) => {
         const status = usageStatus(entries, model);
-        const usage = contextUsage(entries, model);
-        expect(status === null).toBe(usage === null);
-        if (status !== null && usage !== null) {
-          expect(status.context).toEqual(usage);
+        const expected = contextUsage(entries, model);
+        expect(status === null).toBe(expected === null);
+        if (status !== null && expected !== null) {
+          expect(status.context).toEqual(expected);
         }
       }),
     );
@@ -195,29 +209,29 @@ describe("usageStatus", () => {
   it("breaks the last response's usage into in/out/cached with a hit rate", () => {
     const status = usageStatus(
       [
-        { seq: 0, type: "model_change", provider: "p", modelId: "old" },
-        { seq: 1, type: "thinking_level_change", thinkingLevel: "low" },
+        { modelId: "old", provider: "p", seq: 0, type: "model_change" },
+        { seq: 1, thinkingLevel: "low", type: "thinking_level_change" },
         {
+          message: {
+            model: "new-model",
+            provider: "anthropic",
+            role: "assistant",
+            stopReason: "end_turn",
+            usage,
+          },
           seq: 2,
           type: "message",
-          message: {
-            role: "assistant",
-            usage,
-            provider: "anthropic",
-            model: "new-model",
-            stopReason: "end_turn",
-          },
         },
       ],
       windowModel,
     );
     expect(status).toEqual({
-      context: { tokens: 310, window: 1000, percent: 31 },
-      input: 100,
-      output: 50,
-      cacheRead: 200,
       cacheHitRate: 200 / 300,
-      model: { provider: "anthropic", id: "new-model" },
+      cacheRead: 200,
+      context: { percent: 31, tokens: 310, window: 1000 },
+      input: 100,
+      model: { id: "new-model", provider: "anthropic" },
+      output: 50,
       thinkingLevel: "low",
     });
   });
@@ -225,25 +239,25 @@ describe("usageStatus", () => {
   it("falls back to the last model_change for the model, then the thread's", () => {
     const fromChange = usageStatus(
       [
-        { seq: 0, type: "model_change", provider: "anthropic", modelId: "old-model" },
-        { seq: 1, type: "message", message: { role: "assistant", usage } },
+        { modelId: "old-model", provider: "anthropic", seq: 0, type: "model_change" },
+        { message: { role: "assistant", usage }, seq: 1, type: "message" },
       ],
       windowModel,
     );
-    expect(fromChange?.model).toEqual({ provider: "anthropic", id: "old-model" });
+    expect(fromChange?.model).toEqual({ id: "old-model", provider: "anthropic" });
     const fromThread = usageStatus(
-      [{ seq: 0, type: "message", message: { role: "assistant", usage } }],
+      [{ message: { role: "assistant", usage }, seq: 0, type: "message" }],
       windowModel,
     );
-    expect(fromThread?.model).toEqual({ provider: "thread-provider", id: "thread-model" });
+    expect(fromThread?.model).toEqual({ id: "thread-model", provider: "thread-provider" });
   });
 
   it("uses the thinking level in effect at the message, not a later change", () => {
     const status = usageStatus(
       [
-        { seq: 0, type: "thinking_level_change", thinkingLevel: "low" },
-        { seq: 1, type: "message", message: { role: "assistant", usage } },
-        { seq: 2, type: "thinking_level_change", thinkingLevel: "high" },
+        { seq: 0, thinkingLevel: "low", type: "thinking_level_change" },
+        { message: { role: "assistant", usage }, seq: 1, type: "message" },
+        { seq: 2, thinkingLevel: "high", type: "thinking_level_change" },
       ],
       windowModel,
     );
@@ -254,12 +268,12 @@ describe("usageStatus", () => {
     const status = usageStatus(
       [
         {
-          seq: 0,
-          type: "message",
           message: {
             role: "assistant",
-            usage: { input: 0, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 5 },
+            usage: { cacheRead: 0, cacheWrite: 0, input: 0, output: 5, totalTokens: 5 },
           },
+          seq: 0,
+          type: "message",
         },
       ],
       windowModel,
@@ -272,8 +286,8 @@ describe("usageStatus", () => {
     expect(
       usageStatus(
         [
-          { seq: 0, type: "message", message: { role: "assistant", usage } },
-          { seq: 1, type: "thinking_level_change", thinkingLevel: "max" },
+          { message: { role: "assistant", usage }, seq: 0, type: "message" },
+          { seq: 1, thinkingLevel: "max", type: "thinking_level_change" },
         ],
         windowModel,
       )?.thinkingLevel,
@@ -283,9 +297,9 @@ describe("usageStatus", () => {
 
 describe("filterModels", () => {
   const fixed = [
-    { provider: "openai", id: "gpt-4o", contextWindow: 128000, reasoning: false },
-    { provider: "anthropic", id: "claude-3-7-sonnet", contextWindow: 200000, reasoning: true },
-    { provider: "opencode-go", id: "gemini/2.5-pro", contextWindow: 1000000, reasoning: true },
+    { contextWindow: 128_000, id: "gpt-4o", provider: "openai", reasoning: false },
+    { contextWindow: 200_000, id: "claude-3-7-sonnet", provider: "anthropic", reasoning: true },
+    { contextWindow: 1_000_000, id: "gemini/2.5-pro", provider: "opencode-go", reasoning: true },
   ] as const satisfies readonly WireModelInfo[];
 
   it("returns everything, in catalog order, for an empty or blank query", () => {
@@ -307,50 +321,46 @@ describe("filterModels", () => {
   });
 
   it("is a subsequence of the input for any query (order preserved)", () => {
-    fc.assert(
-      fc.property(
-        fc.array(modelArb, { maxLength: 6 }),
-        fc.string({ maxLength: 12 }),
-        (models, query) => {
-          const kept = filterModels(models, query);
-          const positions = kept.map((keptModel) => models.indexOf(keptModel));
-          expect(positions).toEqual([...positions].sort((a, b) => a - b));
-          expect(positions).not.toContain(-1);
-        },
-      ),
+    assert(
+      property(array(modelArb, { maxLength: 6 }), string({ maxLength: 12 }), (models, query) => {
+        const kept = filterModels(models, query);
+        const positions = kept.map((keptModel) => models.indexOf(keptModel));
+        expect(positions).toEqual([...positions].toSorted((a, b) => a - b));
+        expect(positions).not.toContain(-1);
+      }),
     );
   });
 });
 
-const piSessionArb: fc.Arbitrary<PiSessionInfo> = fc.record({
-  id: fc.string({ maxLength: 24 }),
-  cwd: fc.string({ maxLength: 24 }),
-  name: fc.string({ maxLength: 24 }),
-  createdAt: fc.integer(),
-  modifiedAt: fc.integer(),
-  messageCount: fc.integer({ min: 0 }),
-  firstMessage: fc.string({ maxLength: 24 }),
-  path: fc.string({ maxLength: 24 }),
+const piSessionArb: Arbitrary<PiSessionInfo> = record({
+  createdAt: integer(),
+  cwd: string({ maxLength: 24 }),
+  firstMessage: string({ maxLength: 24 }),
+  id: string({ maxLength: 24 }),
+  messageCount: integer({ min: 0 }),
+  modifiedAt: integer(),
+  name: string({ maxLength: 24 }),
+  path: string({ maxLength: 24 }),
 });
 
-const threadArb: fc.Arbitrary<ThreadInfo> = fc.record({
-  id: fc.string({ maxLength: 24 }),
-  name: fc.string({ maxLength: 24 }),
-  cwd: fc.oneof(fc.constant(null), fc.string({ maxLength: 24 })),
-  mode: fc.constantFrom("local", "sandbox", "any"),
-  state: fc.constantFrom("idle", "working", "interrupted"),
-  env: fc.constantFrom("stopped", "provisioning", "ready", "error"),
-  sessionId: fc.oneof(fc.constant(null), fc.string({ maxLength: 24 })),
-  tailSeq: fc.integer({ min: 0 }),
-  archivedAt: fc.oneof(fc.constant(null), fc.integer()),
+const threadArb: Arbitrary<ThreadInfo> = record({
+  archivedAt: oneof(constant(null), integer()),
+  cwd: oneof(constant(null), string({ maxLength: 24 })),
+  env: constantFrom("stopped", "provisioning", "ready", "error"),
+  id: string({ maxLength: 24 }),
+  mode: constantFrom("local", "sandbox", "any"),
+  name: string({ maxLength: 24 }),
+  sessionId: oneof(constant(null), string({ maxLength: 24 })),
+  state: constantFrom("idle", "working", "interrupted"),
+  tailSeq: integer({ min: 0 }),
 });
 
 describe("unadoptedPiSessions", () => {
   it("keeps every session when no thread is adopted from pi", () => {
-    fc.assert(
-      fc.property(
-        fc.array(threadArb, { maxLength: 4 }),
-        fc.array(piSessionArb, { maxLength: 4 }),
+    assert(
+      property(
+        array(threadArb, { maxLength: 4 }),
+        array(piSessionArb, { maxLength: 4 }),
         (threads, sessions) => {
           const kept = unadoptedPiSessions(threads, sessions);
           // A session path can only be claimed by a thread whose source is pi.
@@ -364,22 +374,22 @@ describe("unadoptedPiSessions", () => {
   });
 
   it("drops exactly the sessions some adopted thread pins, keeping order", () => {
-    fc.assert(
-      fc.property(
-        fc.array(piSessionArb, { maxLength: 4 }),
-        fc.string({ maxLength: 24 }),
+    assert(
+      property(
+        array(piSessionArb, { maxLength: 4 }),
+        string({ maxLength: 24 }),
         (sessions, threadId) => {
           const threads: ThreadInfo[] = sessions.map((session, index) => ({
-            id: `${threadId}${index}`,
-            name: `adopted ${index}`,
-            cwd: session.cwd,
-            mode: "local" as const,
-            state: "idle" as const,
-            env: "stopped" as const,
-            sessionId: session.id,
-            tailSeq: 0,
             archivedAt: null,
-            source: { kind: "pi", sessionId: session.id, path: session.path },
+            cwd: session.cwd,
+            env: "stopped" as const,
+            id: `${threadId}${index}`,
+            mode: "local" as const,
+            name: `adopted ${index}`,
+            sessionId: session.id,
+            source: { kind: "pi", path: session.path, sessionId: session.id },
+            state: "idle" as const,
+            tailSeq: 0,
           }));
           const kept = unadoptedPiSessions(threads, sessions);
           expect(kept).toEqual([]);
@@ -389,19 +399,19 @@ describe("unadoptedPiSessions", () => {
   });
 
   it("a session adopted twice stays dropped once (the filter is a set membership)", () => {
-    fc.assert(
-      fc.property(piSessionArb, fc.string({ maxLength: 24 }), (session, threadId) => {
+    assert(
+      property(piSessionArb, string({ maxLength: 24 }), (session, threadId) => {
         const duplicate: ThreadInfo = {
-          id: threadId,
-          name: "dup",
-          cwd: null,
-          mode: "local",
-          state: "idle",
-          env: "stopped",
-          sessionId: null,
-          tailSeq: 0,
           archivedAt: null,
-          source: { kind: "pi", sessionId: session.id, path: session.path },
+          cwd: null,
+          env: "stopped",
+          id: threadId,
+          mode: "local",
+          name: "dup",
+          sessionId: null,
+          source: { kind: "pi", path: session.path, sessionId: session.id },
+          state: "idle",
+          tailSeq: 0,
         };
         expect(unadoptedPiSessions([duplicate, duplicate], [session])).toEqual([]);
       }),

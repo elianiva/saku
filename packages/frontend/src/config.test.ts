@@ -14,27 +14,39 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Effect, Option } from "effect";
-import fc from "fast-check";
-
+import { Effect, Option, Schema as S } from "effect";
+import type { JsonValue } from "fast-check";
+import {
+  assert,
+  asyncProperty,
+  boolean,
+  constant,
+  integer,
+  jsonValue,
+  oneof,
+  record,
+  string,
+} from "fast-check";
 import { fetchBootstrap, resolveConfig } from "./config.ts";
 
 /** Stub `fetch` to answer `/__saku` with the given body (null = network failure). */
-const stubFetch = (body: unknown) => {
+const stubFetch = (body: JsonValue) => {
   vi.stubGlobal(
     "fetch",
-    vi.fn(() =>
-      Promise.resolve(
-        body === null ? { ok: false } : { ok: true, json: () => Promise.resolve(body) },
-      ),
-    ),
+    vi.fn(async () => {
+      if (body === null) {
+        return { ok: false };
+      }
+      const response = { json: async () => await Promise.resolve(body), ok: true };
+      return await Promise.resolve(response);
+    }),
   );
 };
 
 const stubWindow = (saved: string | null) => {
   vi.stubGlobal("window", {
-    location: { host: "localhost:5173", protocol: "http:" },
     localStorage: { getItem: () => saved },
+    location: { host: "localhost:5173", protocol: "http:" },
   });
 };
 
@@ -42,41 +54,45 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+/** The bootstrap payload decode, re-derived from the module contract. */
+const BootstrapSchema = S.Struct({ token: S.NullOr(S.String), url: S.NullOr(S.String) });
+
 /**
  * The bootstrap oracle: a payload is a live daemon exactly when it is an
  * object with string url AND string token; it is the offline marker exactly
- * when it is an object whose url/token are each string-or-null (a
- * half-payload is offline, never a fallback trigger); anything else —
- * non-objects, wrong types — is no bootstrap at all.
+ * when its url/token are each string-or-null (a half-payload is offline,
+ * never a fallback trigger); anything else — non-objects, wrong types — is
+ * no bootstrap at all.
  */
-const bootstrapOracle = (payload: unknown) => {
-  if (typeof payload !== "object" || payload === null) return Option.none();
-  const { url, token } = payload as Record<string, unknown>;
-  const stringOrNull = (value: unknown) => typeof value === "string" || value === null;
-  if (typeof url === "string" && typeof token === "string") {
-    return Option.some({ _tag: "daemon", endpoint: { url, token } });
+const bootstrapOracle = (payload: JsonValue) => {
+  const decoded = S.decodeUnknownOption(BootstrapSchema)(payload);
+  if (Option.isNone(decoded)) {
+    return Option.none();
   }
-  if (stringOrNull(url) && stringOrNull(token)) return Option.some({ _tag: "offline" });
-  return Option.none();
+  const { token, url } = decoded.value;
+  if (url !== null && token !== null) {
+    return Option.some({ _tag: "daemon", endpoint: { token, url } });
+  }
+  return Option.some({ _tag: "offline" });
 };
 
 /** Any payload the bootstrap could publish: live, offline, half, or junk. */
-const payloadArb = fc.oneof(
-  fc.record({ url: fc.string(), token: fc.string() }),
-  fc.record({ url: fc.constant(null), token: fc.constant(null) }),
-  fc.record({ url: fc.constant(null), token: fc.string() }),
-  fc.record({ url: fc.string(), token: fc.constant(null) }),
-  fc.record({
-    url: fc.oneof(fc.integer(), fc.boolean(), fc.constant(null), fc.string()),
-    token: fc.oneof(fc.integer(), fc.boolean(), fc.constant(null), fc.string()),
+const payloadArb = oneof(
+  record({ token: string(), url: string() }),
+  record({ token: constant(null), url: constant(null) }),
+  record({ token: string(), url: constant(null) }),
+  record({ token: constant(null), url: string() }),
+  record({
+    token: oneof(integer(), boolean(), constant(null), string()),
+    url: oneof(integer(), boolean(), constant(null), string()),
   }),
-  fc.jsonValue(),
+  jsonValue(),
 );
 
 describe("fetchBootstrap", () => {
   it("yields daemon/offline/none exactly as the payload dictates", async () => {
-    await fc.assert(
-      fc.asyncProperty(fc.oneof(payloadArb, fc.constant(null)), async (payload) => {
+    await assert(
+      asyncProperty(oneof(payloadArb, constant(null)), async (payload) => {
         stubFetch(payload);
         const result = await Effect.runPromise(fetchBootstrap.pipe(Effect.timeout("2 seconds")));
         expect(result).toEqual(bootstrapOracle(payload));
@@ -87,9 +103,11 @@ describe("fetchBootstrap", () => {
 
 describe("resolveConfig", () => {
   it("resolves by priority: live daemon > saved override > same-origin default", async () => {
-    const resolveOracle = (payload: unknown, saved: string | null) => {
+    const resolveOracle = (payload: JsonValue, saved: string | null) => {
       const boot = bootstrapOracle(payload);
-      if (Option.isSome(boot)) return boot.value;
+      if (Option.isSome(boot)) {
+        return boot.value;
+      }
       if (saved !== null) {
         let parsed: unknown;
         try {
@@ -97,21 +115,22 @@ describe("resolveConfig", () => {
         } catch {
           parsed = undefined;
         }
-        if (typeof parsed === "object" && parsed !== null) {
-          const { url, token } = parsed as Record<string, unknown>;
-          if (typeof url === "string" && typeof token === "string") {
-            return { _tag: "fallback", endpoint: { url, token } };
-          }
+        const decoded = S.decodeUnknownOption(BootstrapSchema)(parsed);
+        if (Option.isSome(decoded) && decoded.value.url !== null && decoded.value.token !== null) {
+          return {
+            _tag: "fallback",
+            endpoint: { token: decoded.value.token, url: decoded.value.url },
+          };
         }
       }
       // The same-origin /ws default (the stub pins host and protocol).
-      return { _tag: "fallback", endpoint: { url: "ws://localhost:5173/ws", token: "" } };
+      return { _tag: "fallback", endpoint: { token: "", url: "ws://localhost:5173/ws" } };
     };
 
-    await fc.assert(
-      fc.asyncProperty(
-        fc.oneof(payloadArb, fc.constant(null)),
-        fc.oneof(fc.constant(null), fc.string({ maxLength: 60 })),
+    await assert(
+      asyncProperty(
+        oneof(payloadArb, constant(null)),
+        oneof(constant(null), string({ maxLength: 60 })),
         async (payload, saved) => {
           stubFetch(payload);
           stubWindow(saved);

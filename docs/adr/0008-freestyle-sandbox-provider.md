@@ -13,14 +13,14 @@ The budget is a hard **$20/month for everything** (control plane + sandbox), and
 usage is ~5–6 h/day of agent runtime (~165 active hours/month). A research pass
 (`docs/research/rivet-agentos-vs-cloudflare.md`) costed every candidate at that usage:
 
-| Sandbox | $/mo at ~165 h/mo | Notes |
-| --- | --- | --- |
-| **freestyle.sh Free** | **~$0–4** | full Linux VMs (root, Docker, nested KVM), suspend/resume (only storage billed while idle), sub-700 ms cold start, 20 vCPU-h + 40 GiB-h per day included, 10 concurrent VMs |
-| box (ascii.dev) | $20 flat | 555 h/mo of 4 vCPU/8 GB — fits but consumes the whole budget; integration incomplete |
-| VPS static daemon | ~$5–8 | saku's existing `SAKU_ENV_PROVISIONER=static` shape; you own ops, one shared sandbox |
-| E2B | ~$10–18 | worse per-hour than Freestyle's free allowance |
-| CF Sandbox | ~$18–32 | ~$0.36/h for 4 vCPU/8 GB — worst value |
-| Rivet Cloud + agentOS | $31–40 | metered compute ~$0.124/vCPU-h; agentOS is beta and lacks Docker/apt/native binaries |
+| Sandbox               | $/mo at ~165 h/mo | Notes                                                                                                                                                                       |
+| --------------------- | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **freestyle.sh Free** | **~$0–4**         | full Linux VMs (root, Docker, nested KVM), suspend/resume (only storage billed while idle), sub-700 ms cold start, 20 vCPU-h + 40 GiB-h per day included, 10 concurrent VMs |
+| box (ascii.dev)       | $20 flat          | 555 h/mo of 4 vCPU/8 GB — fits but consumes the whole budget; integration incomplete                                                                                        |
+| VPS static daemon     | ~$5–8             | saku's existing `SAKU_ENV_PROVISIONER=static` shape; you own ops, one shared sandbox                                                                                        |
+| E2B                   | ~$10–18           | worse per-hour than Freestyle's free allowance                                                                                                                              |
+| CF Sandbox            | ~$18–32           | ~$0.36/h for 4 vCPU/8 GB — worst value                                                                                                                                      |
+| Rivet Cloud + agentOS | $31–40            | metered compute ~$0.124/vCPU-h; agentOS is beta and lacks Docker/apt/native binaries                                                                                        |
 
 ## Decision
 

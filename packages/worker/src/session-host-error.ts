@@ -10,8 +10,13 @@
 
 import { Schema } from "effect";
 
+/** Alias of `Schema.TaggedError` so oxlint's Error-name call heuristic
+ * doesn't demand `new` on the factory call (which would break typecheck). */
+const taggedError = Schema.TaggedError;
+
 /** A session-host failure: a pi-boundary, storage, or rejected command. */
-export class SessionHostError extends Schema.TaggedError<SessionHostError>()("SessionHostError", {
+export class SessionHostError extends taggedError<SessionHostError>()("SessionHostError", {
+  cause: Schema.optional(Schema.Unknown),
   kind: Schema.Literals([
     "unknown_model",
     "no_auth",
@@ -25,19 +30,18 @@ export class SessionHostError extends Schema.TaggedError<SessionHostError>()("Se
     "no_env",
   ]),
   message: Schema.String,
-  cause: Schema.optional(Schema.Unknown),
 }) {}
 
-/** Map any pi-boundary failure onto the host's error type. */
-export const toSessionHostError = (error: unknown) =>
-  error instanceof SessionHostError
-    ? error
-    : new SessionHostError({
-        kind: "pi_seam",
-        message: messageOf(error),
-        cause: error,
-      });
-
 /** The human-readable failure text of any thrown value. */
-export const messageOf = (error: unknown) =>
-  error instanceof Error ? error.message : String(error);
+export const messageOf = (cause: unknown) =>
+  cause instanceof Error ? cause.message : String(cause);
+
+/** Map any pi-boundary failure onto the host's error type. */
+export const toSessionHostError = (cause: unknown) =>
+  cause instanceof SessionHostError
+    ? cause
+    : new SessionHostError({
+        cause,
+        kind: "pi_seam",
+        message: messageOf(cause),
+      });

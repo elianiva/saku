@@ -16,32 +16,37 @@
 
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import path from "node:path";
 
 import { Effect } from "effect";
 import { WireClient } from "@saku/wire";
 import { foldkit } from "@foldkit/vite-plugin";
 import tailwindcss from "@tailwindcss/vite";
-import { defineConfig, type Plugin } from "vite";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { defineConfig } from "vite";
 
-const readMaybe = (path: string) =>
-  readFile(path, "utf8")
-    .then((content) => content.trim())
-    .catch(() => null);
+const readMaybe = async (filePath: string) => {
+  try {
+    const content = await readFile(filePath, "utf-8");
+    return content.trim();
+  } catch {
+    return null;
+  }
+};
 
 /**
  * Whether the daemon answers the wire handshake at the endpoint (the same
  * probe the CLI's lifecycle uses: hello_ok proves the URL and token are
  * both current). Refused or timed out means offline.
  */
-const probeDaemon = (url: string, token: string) =>
-  Effect.runPromise(
-    Effect.gen(function* () {
+const probeDaemon = async (url: string, token: string) =>
+  await Effect.runPromise(
+    Effect.gen(function* probe() {
       const client = yield* WireClient.make({
-        url,
-        token,
-        role: "cli",
         requestTimeoutMs: 1500,
+        role: "cli",
+        token,
+        url,
       });
       const alive = yield* client
         .connect()
@@ -55,23 +60,26 @@ const probeDaemon = (url: string, token: string) =>
   );
 
 const sakuDevBootstrap = () => ({
-  name: "saku-dev-bootstrap",
-  configureServer(server) {
-    server.middlewares.use("/__saku", (_request, response) => {
-      const sakuHome = process.env.SAKU_HOME ?? join(homedir(), ".saku");
-      void Promise.all([
-        readMaybe(join(sakuHome, "worker.url")),
-        readMaybe(join(sakuHome, "auth")),
-      ]).then(([url, token]) => {
-        response.setHeader("content-type", "application/json");
-        const live =
-          url !== null && token !== null ? probeDaemon(url, token) : Promise.resolve(false);
-        void live.then((isLive) => {
-          response.end(JSON.stringify(isLive ? { url, token } : { url: null, token: null }));
-        });
-      });
+  configureServer(server: {
+    middlewares: {
+      use: (
+        path: string,
+        handler: (request: IncomingMessage, response: ServerResponse) => void | Promise<void>,
+      ) => void;
+    };
+  }) {
+    server.middlewares.use("/__saku", async (_request, response) => {
+      const sakuHome = process.env.SAKU_HOME ?? path.join(homedir(), ".saku");
+      const [url, token] = await Promise.all([
+        readMaybe(path.join(sakuHome, "worker.url")),
+        readMaybe(path.join(sakuHome, "auth")),
+      ]);
+      response.setHeader("content-type", "application/json");
+      const isLive = url !== null && token !== null ? await probeDaemon(url, token) : false;
+      response.end(JSON.stringify(isLive ? { token, url } : { token: null, url: null }));
     });
   },
+  name: "saku-dev-bootstrap",
 });
 
 export default defineConfig({

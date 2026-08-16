@@ -51,41 +51,41 @@ export type ThreadEnvState = S.Schema.Type<typeof ThreadEnvState>;
  */
 export const ThreadSource = S.Struct({
   kind: S.Literal("pi"),
-  /** The pi session id (the file header's id). */
-  sessionId: S.String,
   /** The pi session file this thread was adopted from. */
   path: S.String,
+  /** The pi session id (the file header's id). */
+  sessionId: S.String,
 });
 export type ThreadSource = S.Schema.Type<typeof ThreadSource>;
 
 /** Registry view of a thread, broadcast on every mutation. */
 export const ThreadInfo = S.Struct({
-  id: S.String,
-  name: S.String,
-  /** The working directory the thread was created with; null for sandbox threads. */
-  cwd: S.Union([S.Null, S.String]),
-  mode: ThreadMode,
-  state: ThreadState,
-  env: ThreadEnvState,
-  /** Pi session id (stable across restarts); null before first touch. */
-  sessionId: S.Union([S.Null, S.String]),
-  /** Highest durable-log sequence the thread has reached. */
-  tailSeq: S.Number,
-  /** Adopted-thread provenance; absent on threads created from scratch. */
-  source: S.optional(ThreadSource),
   /** Archive visibility lifecycle (CONTEXT.md: Archive); null when active. */
   archivedAt: S.Union([S.Null, S.Number]),
+  /** The working directory the thread was created with; null for sandbox threads. */
+  cwd: S.Union([S.Null, S.String]),
+  env: ThreadEnvState,
+  id: S.String,
+  mode: ThreadMode,
+  name: S.String,
+  /** Pi session id (stable across restarts); null before first touch. */
+  sessionId: S.Union([S.Null, S.String]),
+  /** Adopted-thread provenance; absent on threads created from scratch. */
+  source: S.optional(ThreadSource),
+  state: ThreadState,
+  /** Highest durable-log sequence the thread has reached. */
+  tailSeq: S.Number,
 });
 export type ThreadInfo = S.Schema.Type<typeof ThreadInfo>;
 
 export const ListThreadsCommand = S.TaggedStruct("list_threads", {});
 export const CreateThreadCommand = S.TaggedStruct("create_thread", {
-  name: S.String,
+  /** The name is an auto-generated prompt snippet, not a user choice (CONTEXT.md: Quick start). */
+  autoName: S.optional(S.Boolean),
   /** Local-only: the working directory on the local machine (ADR 0003). */
   cwd: S.optional(S.String),
   mode: S.optional(ThreadMode),
-  /** The name is an auto-generated prompt snippet, not a user choice (CONTEXT.md: Quick start). */
-  autoName: S.optional(S.Boolean),
+  name: S.String,
 });
 export const GetThreadCommand = S.TaggedStruct("get_thread", {
   threadId: S.String,
@@ -95,8 +95,8 @@ export const DeleteThreadCommand = S.TaggedStruct("delete_thread", {
 });
 /** Rename the registry record — the visible thread name (CONTEXT.md: Auto-title). */
 export const RenameThreadCommand = S.TaggedStruct("rename_thread", {
-  threadId: S.String,
   name: S.String,
+  threadId: S.String,
 });
 /** Archive a thread: visibility-only, the trail is untouched (CONTEXT.md: Archive). */
 export const ArchiveThreadCommand = S.TaggedStruct("archive_thread", {
@@ -136,7 +136,9 @@ export const resolveThread = <T extends { readonly id: string; readonly name: st
   input: string,
 ) => {
   const exactName = threads.find((t) => t.name === input);
-  if (exactName !== undefined) return Result.succeed(exactName);
+  if (exactName !== undefined) {
+    return Result.succeed(exactName);
+  }
   const matches = threads.filter((t) => t.id.startsWith(input));
   if (matches.length === 1 && matches[0] !== undefined) {
     return Result.succeed(matches[0]);

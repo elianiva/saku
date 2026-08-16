@@ -15,7 +15,8 @@
  * selection: `/thread/:id` pins a thread; the route change drives the pane.
  */
 
-import { Runtime, Url } from "foldkit";
+import type { Url } from "foldkit";
+import { Runtime } from "foldkit";
 import type { UrlRequest } from "foldkit/navigation";
 
 import { init } from "./root/init.ts";
@@ -29,17 +30,18 @@ import { WireLive } from "./wire.ts";
 
 export const application = Runtime.makeApplication({
   Model,
+  container: document.querySelector("#root"),
+  devTools: { Message: RootMessage },
   init: (url: Url.Url) => init(url),
+  resources: WireLive,
+  routing: {
+    onUrlChange: (url: Url.Url) => ChangedRoute({ route: parseRoute(url) }),
+    onUrlRequest: (request: UrlRequest) => Navigated({ request }),
+  },
+  subscriptions,
   update,
   view,
-  container: document.getElementById("root"),
-  resources: WireLive,
-  subscriptions,
-  routing: {
-    onUrlRequest: (request: UrlRequest) => Navigated({ request }),
-    onUrlChange: (url: Url.Url) => ChangedRoute({ route: parseRoute(url) }),
-  },
-  devTools: { Message: RootMessage },
 });
 
-export type { Model, RootMessage };
+export type { Model } from "./root/model.ts";
+export type { RootMessage } from "./root/message.ts";

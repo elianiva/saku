@@ -1,5 +1,5 @@
 /**
- * @saku/hub — the control plane of the managed-agents spine (ADR 0001):
+ * saku/hub — the control plane of the managed-agents spine (ADR 0001):
  * the durable thread registry, the worker seam (per-thread workers), the
  * env provisioner seam, the hub-hosted skills store, and the wire server
  * (WebSocket JSONL, hello/version auth, stateless routing, fan-out).
@@ -14,12 +14,12 @@
 export { HubError, messageOf } from "./hub-error.ts";
 export {
   IdleStop,
-  type IdleStopShape,
+  type IdleStopApi,
   type IdleStopController,
   type IdleStopDeps,
 } from "./idle-stop.ts";
-export { HubRegistry, type HubRecord, type HubRegistryShape } from "./registry.ts";
-export { SkillsStore, skillNameFromSource, type SkillsStoreShape } from "./skills.ts";
+export { HubRegistry, type HubRecord, type HubRegistryApi } from "./registry.ts";
+export { SkillsStore, skillNameFromSource, type SkillsStoreApi } from "./skills.ts";
 export {
   Provisioner,
   boxSystemdUnit,
@@ -36,14 +36,14 @@ export {
   BoxApi,
   pollUntilReady,
   BoxError,
-  type BoxApiShape,
+  type BoxApiContract,
   type BoxInfo,
   type BoxApiDeps,
   type CommandResult,
 } from "./box.ts";
-export { HubRelay, type HubRelayShape, type RelayServerOptions } from "./relay.ts";
-export { HubRelayCore, type HubRelayCoreShape } from "./relay-core.ts";
-export { WireCore, type WireCoreOptions, type WireCoreShape } from "./wire-core.ts";
+export { HubRelay, type HubRelayApi, type RelayServerOptions } from "./relay.ts";
+export { HubRelayCore, type HubRelayCoreApi } from "./relay-core.ts";
+export { WireCore, type WireCoreOptions, type WireCoreApi } from "./wire-core.ts";
 export { workerdSocket, type SocketLike, type WorkerdWebSocketLike } from "./socket.ts";
 export {
   type HubEventSink,
@@ -51,5 +51,5 @@ export {
   type WorkerCommandResult,
   type WorkerReport,
 } from "./worker-ref.ts";
-export { Hub, type HubDeps, type HubEvent, type HubListener, type HubShape } from "./hub.ts";
-export { HubServer, type HubServerOptions, type HubServerShape } from "./server.ts";
+export { Hub, type HubDeps, type HubEvent, type HubListener, type HubApi } from "./hub.ts";
+export { HubServer, type HubServerOptions, type HubServerApi } from "./server.ts";

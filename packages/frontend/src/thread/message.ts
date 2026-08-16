@@ -35,8 +35,8 @@ export const ComposerChanged = Message.m("ComposerChanged", { text: S.String });
 /** Lexical found a trigger immediately before the caret. The suggestion
  *  surface is Foldkit-owned; Lexical only reports the cursor context. */
 export const ComposerTriggerChanged = Message.m("ComposerTriggerChanged", {
-  trigger: S.Literals(["file", "command"]),
   query: S.String,
+  trigger: S.Literals(["file", "command"]),
 });
 export const ComposerMenuClosed = Message.m("ComposerMenuClosed");
 export const ComposerMenuMoved = Message.m("ComposerMenuMoved", { delta: S.Number });
@@ -67,8 +67,8 @@ export const ComposerBlurred = Message.m("ComposerBlurred");
  *  header's info (a thread opened mid-run must show its state and the stop
  *  control immediately, not after the next broadcast). */
 export const StateLoaded = Message.m("StateLoaded", {
-  model: S.NullOr(WireModelInfo),
   info: ThreadInfo,
+  model: S.NullOr(WireModelInfo),
 });
 export const StateFailed = Message.m("StateFailed");
 
@@ -84,8 +84,8 @@ export const PickerMove = Message.m("PickerMove", { delta: S.Number });
 /** A picker row was clicked (or Enter on the highlighted one): switch the
  *  thread's model. */
 export const ModelPicked = Message.m("ModelPicked", {
-  provider: S.String,
   modelId: S.String,
+  provider: S.String,
 });
 /** The switch landed (null: the model did not resolve). */
 export const ModelSet = Message.m("ModelSet", { model: S.NullOr(WireModelInfo) });
@@ -112,14 +112,14 @@ export const NewThreadRequested = Message.m("NewThreadRequested");
 
 /** A thinking block was toggled (the `<details>`'s native toggle event). */
 export const ThinkingToggled = Message.m("ThinkingToggled", {
-  messageId: S.String,
   expanded: S.Boolean,
+  messageId: S.String,
 });
 
 /** A tool row was toggled (the `<details>`'s native toggle event). */
 export const ToolToggled = Message.m("ToolToggled", {
-  id: S.String,
   expanded: S.Boolean,
+  id: S.String,
 });
 
 export const ThreadMessage = S.Union([
@@ -173,6 +173,4 @@ export type ThreadMessage = S.Schema.Type<typeof ThreadMessage>;
  * as if the user had clicked the rail row — and the header's new-thread
  * button asked for the welcome — the root pushes "/". The root owns URLs.
  */
-export type ThreadOutMessage =
-  | typeof OpenedThread.Type
-  | typeof NewThreadRequested.Type;
+export type ThreadOutMessage = typeof OpenedThread.Type | typeof NewThreadRequested.Type;

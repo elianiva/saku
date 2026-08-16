@@ -9,67 +9,78 @@
  * integration seam, exactly like the wire's tests.
  */
 
+import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import path from "node:path";
 import { WebSocket } from "ws";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect, Exit, FileSystem, Scope } from "effect";
 import { FileError } from "@earendil-works/pi-agent-core";
-import { EnvDaemon, nodeSocket, RemoteEnv, type EnvDaemonShape } from "../src/index.ts";
+import { EnvDaemon, nodeSocket, RemoteEnv } from "../src/index.ts";
+import type { EnvDaemonApi } from "../src/index.ts";
 
 const TOKEN = "test-token";
 
+/** Pause the test (a promise boundary helper; avoids raw `new Promise`). */
+const sleep = async (ms: number) => {
+  await Effect.runPromise(Effect.sleep(`${ms} millis`));
+};
+
 describe("env daemon", () => {
   let workdir: string;
-  let daemon: EnvDaemonShape;
+  let daemon: EnvDaemonApi;
   let env: RemoteEnv;
   let scope: Scope.Scope;
 
   beforeEach(async () => {
-    workdir = await mkdtemp(join(tmpdir(), "saku-env-"));
+    workdir = await mkdtemp(path.join(tmpdir(), "saku-env-"));
     daemon = await Effect.runPromise(
-      Effect.gen(function* () {
+      Effect.gen(function* setup() {
         scope = yield* Scope.make();
         const fs = yield* FileSystem.FileSystem;
-        return yield* EnvDaemon.make({ token: TOKEN, fs, cwd: workdir }).pipe(
+        return yield* EnvDaemon.make({ cwd: workdir, fs, token: TOKEN }).pipe(
           Effect.provideService(Scope.Scope, scope),
         );
       }).pipe(Effect.provide(NodeFileSystem.layer)),
     );
-    env = new RemoteEnv({ url: daemon.url, token: TOKEN, socket: nodeSocket, cwd: workdir });
+    env = new RemoteEnv({ cwd: workdir, socket: nodeSocket, token: TOKEN, url: daemon.url });
     await env.connect();
   });
 
   afterEach(async () => {
     env.close();
     await Effect.runPromise(Scope.close(scope, Exit.void));
-    await rm(workdir, { recursive: true, force: true });
+    await rm(workdir, { force: true, recursive: true });
   });
 
   it("answers hello with the workspace, pid and version", async () => {
     // connect() already consumed the hello; the payload is verifiable via health.
     const health = await env.health();
     expect(health.ok).toBe(true);
-    if (!health.ok) return;
+    if (!health.ok) {
+      return;
+    }
     expect(health.value.cwd).toBe(workdir);
     expect(health.value.pid).toBeGreaterThan(0);
     expect(health.value.version).toBe("1");
   });
 
   it("rejects a wrong token and a wrong version", async () => {
-    const bad = new RemoteEnv({ url: daemon.url, token: "nope", socket: nodeSocket });
+    const bad = new RemoteEnv({ socket: nodeSocket, token: "nope", url: daemon.url });
     await expect(bad.connect()).rejects.toThrow("invalid token");
 
     const raw = new WebSocket(daemon.url);
-    await new Promise<void>((resolve) => raw.on("open", () => resolve()));
+    await once(raw, "open");
     const frames: string[] = [];
-    raw.on("message", (data: Buffer) => frames.push(data.toString("utf8")));
+    raw.on("message", (data: Buffer) => {
+      frames.push(data.toString("utf-8"));
+    });
     raw.send(
-      JSON.stringify({ _tag: "env_hello", token: TOKEN, version: "0", cwd: workdir }) + "\n",
+      `${JSON.stringify({ _tag: "env_hello", cwd: workdir, token: TOKEN, version: "0" })}\n`,
     );
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await sleep(100);
     raw.close();
     expect(frames.some((f) => f.includes("version mismatch"))).toBe(true);
   });
@@ -106,13 +117,13 @@ describe("env daemon", () => {
 
   it("resolves relative paths against the connection workspace, not the daemon cwd", async () => {
     // The daemon's own cwd is `workdir`, but the connection pins `workdir/sub`.
-    const sub = join(workdir, "sub");
+    const sub = path.join(workdir, "sub");
     const dir = await env.createDir("sub");
     expect(dir.ok).toBe(true);
-    const inside = new RemoteEnv({ url: daemon.url, token: TOKEN, socket: nodeSocket, cwd: sub });
+    const inside = new RemoteEnv({ cwd: sub, socket: nodeSocket, token: TOKEN, url: daemon.url });
     await inside.connect();
     const abs = await inside.absolutePath("file.txt");
-    expect(abs.ok && abs.value).toBe(join(sub, "file.txt"));
+    expect(abs.ok && abs.value).toBe(path.join(sub, "file.txt"));
     inside.close();
   });
 
@@ -120,11 +131,17 @@ describe("env daemon", () => {
     const stdout: string[] = [];
     const stderr: string[] = [];
     const exec = await env.exec("echo out; echo err >&2; exit 3", {
-      onStdout: (text) => stdout.push(text),
-      onStderr: (text) => stderr.push(text),
+      onStderr: (text) => {
+        stderr.push(text);
+      },
+      onStdout: (text) => {
+        stdout.push(text);
+      },
     });
     expect(exec.ok).toBe(true);
-    if (!exec.ok) return;
+    if (!exec.ok) {
+      return;
+    }
     expect(exec.value.exitCode).toBe(3);
     expect(exec.value.stdout).toContain("out");
     expect(exec.value.stderr).toContain("err");
@@ -135,18 +152,22 @@ describe("env daemon", () => {
   it("enforces the exec timeout", async () => {
     const exec = await env.exec("sleep 5", { timeout: 1 });
     expect(exec.ok).toBe(false);
-    if (exec.ok) return;
+    if (exec.ok) {
+      return;
+    }
     expect(exec.error.code).toBe("timeout");
   });
 
   it("kills a running exec on abort", async () => {
     const aborter = new AbortController();
     const promise = env.exec("sleep 30", { abortSignal: aborter.signal });
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    await sleep(200);
     aborter.abort();
     const exec = await promise;
     expect(exec.ok).toBe(false);
-    if (exec.ok) return;
+    if (exec.ok) {
+      return;
+    }
     expect(exec.error.code).toBe("aborted");
   });
 
@@ -159,12 +180,14 @@ describe("env daemon", () => {
     const aborter = new AbortController();
     const started = Date.now();
     const promise = env.exec("sleep 30 && echo unreachable", { abortSignal: aborter.signal });
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    await sleep(300);
     aborter.abort();
     const exec = await promise;
     const elapsed = Date.now() - started;
     expect(exec.ok).toBe(false);
-    if (exec.ok) return;
+    if (exec.ok) {
+      return;
+    }
     expect(exec.error.code).toBe("aborted");
     expect(elapsed).toBeLessThan(5000);
   });
@@ -172,10 +195,12 @@ describe("env daemon", () => {
   it("maps file failures back into pi's FileError classes", async () => {
     const missing = await env.readTextFile("nope.txt");
     expect(missing.ok).toBe(false);
-    if (missing.ok) return;
+    if (missing.ok) {
+      return;
+    }
     expect(missing.error).toBeInstanceOf(FileError);
     expect(missing.error.code).toBe("not_found");
-    expect((missing.error as FileError).path).toBe("nope.txt");
+    expect(missing.error.path).toBe("nope.txt");
   });
 
   it("round-trips binary content", async () => {
@@ -183,7 +208,7 @@ describe("env daemon", () => {
     const write = await env.writeFile("bin.dat", bytes);
     expect(write.ok).toBe(true);
     const read = await env.readBinaryFile("bin.dat");
-    expect(read.ok && Array.from(read.value)).toEqual([0, 1, 2, 250, 251, 252]);
+    expect(read.ok && [...read.value]).toEqual([0, 1, 2, 250, 251, 252]);
   });
 
   it("creates temp dirs and files", async () => {

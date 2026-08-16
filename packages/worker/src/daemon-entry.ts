@@ -16,7 +16,7 @@ import { Effect } from "effect";
 
 import { SakuDaemon, SakuDaemonLayer } from "./daemon.ts";
 
-const program: Effect.Effect<never, Error, SakuDaemon> = Effect.gen(function* () {
+const program: Effect.Effect<never, Error, SakuDaemon> = Effect.gen(function* program() {
   yield* SakuDaemon;
   return yield* Effect.never;
 });

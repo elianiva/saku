@@ -10,25 +10,18 @@
 import { Schema as S } from "effect";
 
 import { HelloOk } from "./hello.ts";
-import { ThreadChanged } from "./thread.ts";
+import { ThreadChanged, ThreadCommand } from "./thread.ts";
 import { PiSessionCommand } from "./pi-sessions.ts";
 import { ProjectCommand } from "./projects.ts";
 import { ResponsePayload, SessionCommand } from "./session.ts";
 import { SkillCommand } from "./skills.ts";
-import { ThreadCommand } from "./thread.ts";
 
 /** One JSON frame from console to server. */
 export const WireCommand = S.TaggedStruct("command", {
+  command: S.Union([SessionCommand, ThreadCommand, SkillCommand, PiSessionCommand, ProjectCommand]),
   id: S.String,
   /** Present on session commands; hub-level commands (threads, skills, pi sessions) omit it. */
   threadId: S.optional(S.String),
-  command: S.Union([
-    SessionCommand,
-    ThreadCommand,
-    SkillCommand,
-    PiSessionCommand,
-    ProjectCommand,
-  ]),
 });
 export type WireCommand = S.Schema.Type<typeof WireCommand>;
 
@@ -40,16 +33,16 @@ export const ResponseOk = S.TaggedStruct("response", {
 export type ResponseOk = S.Schema.Type<typeof ResponseOk>;
 
 export const ResponseError = S.TaggedStruct("response", {
+  error: S.String,
   id: S.String,
   ok: S.Literal(false),
-  error: S.String,
 });
 export type ResponseError = S.Schema.Type<typeof ResponseError>;
 
 /** A streamed session event, fanned out to every connected console. */
 export const EventFrame = S.TaggedStruct("event", {
-  threadId: S.String,
   event: S.Unknown,
+  threadId: S.String,
 });
 export type EventFrame = S.Schema.Type<typeof EventFrame>;
 

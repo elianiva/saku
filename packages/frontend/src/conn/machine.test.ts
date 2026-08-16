@@ -12,50 +12,67 @@
  */
 
 import { describe, expect, it } from "vitest";
-import fc from "fast-check";
+import type { Arbitrary } from "fast-check";
+import { assert, constant, integer, oneof, option, property, record, string } from "fast-check";
 import { HelloOk } from "@saku/wire";
 
-import { connMachine, Connecting, Offline, Online, type Conn } from "./machine.ts";
+import { connMachine, Connecting, Offline, Online } from "./machine.ts";
+import type { Conn } from "./machine.ts";
 import { Connected, ConnectFailed, ConnectionClosed, RetryRequested } from "./message.ts";
 
 /** The message spec: the discriminant plus the payload the oracle reads. */
 type MessageSpec =
-  | { readonly kind: "Connected"; readonly hello: { readonly pid: number; readonly version: string } }
+  | {
+      readonly kind: "Connected";
+      readonly hello: { readonly pid: number; readonly version: string };
+    }
   | { readonly kind: "ConnectFailed"; readonly message: string }
   | { readonly kind: "ConnectionClosed" }
   | { readonly kind: "RetryRequested" };
 
-const helloArb = fc.record({ pid: fc.integer(), version: fc.string({ maxLength: 20 }) });
+const helloArb = record({ pid: integer(), version: string({ maxLength: 20 }) });
 
-const messageSpecArb: fc.Arbitrary<MessageSpec> = fc.oneof(
-  fc.record({ kind: fc.constant("Connected" as const), hello: helloArb }),
-  fc.record({ kind: fc.constant("ConnectFailed" as const), message: fc.string({ maxLength: 20 }) }),
-  fc.record({ kind: fc.constant("ConnectionClosed" as const) }),
-  fc.record({ kind: fc.constant("RetryRequested" as const) }),
+const messageSpecArb: Arbitrary<MessageSpec> = oneof(
+  record({ hello: helloArb, kind: constant("Connected" as const) }),
+  record({ kind: constant("ConnectFailed" as const), message: string({ maxLength: 20 }) }),
+  record({ kind: constant("ConnectionClosed" as const) }),
+  record({ kind: constant("RetryRequested" as const) }),
 );
 
 const toMessage = (spec: MessageSpec) => {
   switch (spec.kind) {
-    case "Connected":
+    case "Connected": {
       return Connected({ hello: HelloOk.make(spec.hello) });
-    case "ConnectFailed":
+    }
+    case "ConnectFailed": {
       return ConnectFailed({ message: spec.message });
-    case "ConnectionClosed":
+    }
+    case "ConnectionClosed": {
       return ConnectionClosed();
-    case "RetryRequested":
+    }
+    case "RetryRequested": {
       return RetryRequested();
+    }
+    // Exhaustive: every MessageSpec kind returns above.
+    default: {
+      return spec;
+    }
   }
 };
 
-const stateArb: fc.Arbitrary<Conn> = fc.oneof(
-  fc.constant(Connecting()),
-  fc.record({ pid: fc.integer(), version: fc.string({ maxLength: 20 }) }).map(({ pid, version }) =>
+const stateArb: Arbitrary<Conn> = oneof(
+  constant(Connecting()),
+  record({ pid: integer(), version: string({ maxLength: 20 }) }).map(({ pid, version }) =>
     Online({ pid, version }),
   ),
-  fc.record({ error: fc.option(fc.string({ maxLength: 20 }), { nil: undefined }) }).map(({ error }) =>
+  record({ error: option(string({ maxLength: 20 }), { nil: undefined }) }).map(({ error }) =>
     Offline({ error }),
   ),
 );
+
+/** The online state a Connected message leads to. */
+const onlineFrom = (hello: MessageSpec & { kind: "Connected" }) =>
+  Online({ pid: hello.hello.pid, version: hello.hello.version });
 
 /**
  * The machine's spec, from the module contract: Connecting dials (a
@@ -65,44 +82,57 @@ const stateArb: fc.Arbitrary<Conn> = fc.oneof(
  * RetryRequested (dial again).
  */
 const stepOracle = (state: Conn, spec: MessageSpec) => {
-  const onlineFrom = (hello: MessageSpec & { kind: "Connected" }) =>
-    Online({ pid: hello.hello.pid, version: hello.hello.version });
   switch (state._tag) {
-    case "Connecting":
+    case "Connecting": {
       if (spec.kind === "Connected") {
-        return { _tag: "Transitioned" as const, state: onlineFrom(spec), commands: 1 };
+        return { _tag: "Transitioned" as const, commands: 1, state: onlineFrom(spec) };
       }
       if (spec.kind === "ConnectFailed") {
-        return { _tag: "Transitioned" as const, state: Offline({ error: spec.message }), commands: 0 };
-      }
-      return { _tag: "Ignored" as const };
-    case "Online":
-      if (spec.kind === "ConnectionClosed") {
         return {
           _tag: "Transitioned" as const,
-          state: Offline({ error: "connection closed" }),
           commands: 0,
+          state: Offline({ error: spec.message }),
         };
       }
       return { _tag: "Ignored" as const };
-    case "Offline":
+    }
+    case "Online": {
+      if (spec.kind === "ConnectionClosed") {
+        return {
+          _tag: "Transitioned" as const,
+          commands: 0,
+          state: Offline({ error: "connection closed" }),
+        };
+      }
+      return { _tag: "Ignored" as const };
+    }
+    case "Offline": {
       if (spec.kind === "RetryRequested") {
-        return { _tag: "Transitioned" as const, state: Connecting(), commands: 1 };
+        return { _tag: "Transitioned" as const, commands: 1, state: Connecting() };
       }
       if (spec.kind === "Connected") {
-        return { _tag: "Transitioned" as const, state: onlineFrom(spec), commands: 1 };
+        return { _tag: "Transitioned" as const, commands: 1, state: onlineFrom(spec) };
       }
       if (spec.kind === "ConnectFailed") {
-        return { _tag: "Transitioned" as const, state: Offline({ error: spec.message }), commands: 0 };
+        return {
+          _tag: "Transitioned" as const,
+          commands: 0,
+          state: Offline({ error: spec.message }),
+        };
       }
       if (spec.kind === "ConnectionClosed") {
         return {
           _tag: "Transitioned" as const,
-          state: Offline({ error: "connection closed" }),
           commands: 0,
+          state: Offline({ error: "connection closed" }),
         };
       }
       return { _tag: "Ignored" as const };
+    }
+    // Exhaustive: every Conn state returns above.
+    default: {
+      return state;
+    }
   }
 };
 
@@ -112,8 +142,8 @@ describe("conn machine", () => {
   });
 
   it("transitions exactly as the spec dictates for any state and message", () => {
-    fc.assert(
-      fc.property(stateArb, messageSpecArb, (state, spec) => {
+    assert(
+      property(stateArb, messageSpecArb, (state, spec) => {
         const result = connMachine.step(state, toMessage(spec));
         const expected = stepOracle(state, spec);
         if (expected._tag === "Ignored") {

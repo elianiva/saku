@@ -26,8 +26,10 @@ type TemplatePart = Data.TaggedEnum<{
 const TemplatePart = Data.taggedEnum<TemplatePart>();
 
 const appendLiteral = (parts: TemplatePart[], value: string) => {
-  if (value.length === 0) return;
-  const previous = parts[parts.length - 1];
+  if (value.length === 0) {
+    return;
+  }
+  const previous = parts.at(-1);
   if (previous !== undefined && previous._tag === "literal") {
     parts[parts.length - 1] = TemplatePart.literal({ value: previous.value + value });
     return;
@@ -41,7 +43,7 @@ const parseTemplate = (config: string) => {
   let index = 0;
   while (index < config.length) {
     const dollarIndex = config.indexOf("$", index);
-    if (dollarIndex < 0) {
+    if (dollarIndex === -1) {
       appendLiteral(parts, config.slice(index));
       break;
     }
@@ -54,7 +56,7 @@ const parseTemplate = (config: string) => {
     }
     if (next === "{") {
       const endIndex = config.indexOf("}", dollarIndex + 2);
-      if (endIndex < 0 || !ENV_VAR_NAME_RE.test(config.slice(dollarIndex + 2, endIndex))) {
+      if (endIndex === -1 || !ENV_VAR_NAME_RE.test(config.slice(dollarIndex + 2, endIndex))) {
         appendLiteral(parts, "$");
         index = dollarIndex + 1;
         continue;
@@ -63,7 +65,7 @@ const parseTemplate = (config: string) => {
       index = endIndex + 1;
       continue;
     }
-    const match = config.slice(dollarIndex + 1).match(ENV_VAR_NAME_PREFIX_RE);
+    const match = ENV_VAR_NAME_PREFIX_RE.exec(config.slice(dollarIndex + 1));
     if (match !== null) {
       parts.push(TemplatePart.env({ name: match[0] }));
       index = dollarIndex + 1 + match[0].length;
@@ -78,14 +80,16 @@ const parseTemplate = (config: string) => {
 const resolveTemplate = (
   parts: readonly TemplatePart[],
   env: Record<string, string>,
-) => {
+): string | undefined => {
   let resolved = "";
   for (const part of parts) {
     if (part._tag === "literal") {
       resolved += part.value;
     } else {
       const value = env[part.name];
-      if (value === undefined) return undefined;
+      if (value === undefined) {
+        return undefined;
+      }
       resolved += value;
     }
   }
@@ -96,12 +100,14 @@ const resolveTemplate = (
 const commandCache = new Map<string, string | undefined>();
 
 const executeCommand = (config: string) => {
-  if (commandCache.has(config)) return commandCache.get(config);
+  if (commandCache.has(config)) {
+    return commandCache.get(config);
+  }
   const output = Result.try(() =>
     execSync(config.slice(1), {
-      encoding: "utf8",
-      timeout: 10_000,
+      encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
+      timeout: 10_000,
     }),
   );
   const result = Result.isSuccess(output) ? output.success.trim() || undefined : undefined;
@@ -114,25 +120,24 @@ export const isCommandConfigValue = (config: string) => config.startsWith("!");
 
 /** The environment variables a template value references, in order. */
 export const getConfigValueEnvVarNames = (config: string) => {
-  if (isCommandConfigValue(config)) return [];
+  if (isCommandConfigValue(config)) {
+    return [];
+  }
   const names: string[] = [];
   for (const part of parseTemplate(config)) {
-    if (part._tag === "env" && !names.includes(part.name)) names.push(part.name);
+    if (part._tag === "env" && !names.includes(part.name)) {
+      names.push(part.name);
+    }
   }
   return names;
 };
 
 /** Env var names referenced by the value that are not set in `env`. */
-export const getMissingConfigValueEnvVarNames = (
-  config: string,
-  env: Record<string, string>,
-) => getConfigValueEnvVarNames(config).filter((name) => env[name] === undefined);
+export const getMissingConfigValueEnvVarNames = (config: string, env: Record<string, string>) =>
+  getConfigValueEnvVarNames(config).filter((name) => env[name] === undefined);
 
 /** Resolve a config value to its actual value; undefined when a reference cannot be resolved. */
-export const resolveConfigValue = (
-  config: string,
-  env: Record<string, string>,
-) =>
+export const resolveConfigValue = (config: string, env: Record<string, string>) =>
   isCommandConfigValue(config)
     ? executeCommand(config)
     : resolveTemplate(parseTemplate(config), env);
@@ -142,11 +147,14 @@ export const resolveHeaders = (
   headers: Record<string, string> | undefined,
   env: Record<string, string>,
 ) => {
-  if (headers === undefined) return undefined;
   const resolved: Record<string, string> = {};
-  for (const [key, value] of Object.entries(headers)) {
-    const resolvedValue = resolveConfigValue(value, env);
-    if (resolvedValue !== undefined) resolved[key] = resolvedValue;
+  if (headers !== undefined) {
+    for (const [key, value] of Object.entries(headers)) {
+      const resolvedValue = resolveConfigValue(value, env);
+      if (resolvedValue !== undefined) {
+        resolved[key] = resolvedValue;
+      }
+    }
   }
   return Object.keys(resolved).length > 0 ? resolved : undefined;
 };

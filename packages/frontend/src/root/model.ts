@@ -16,12 +16,12 @@ import { AppRoute } from "../route.ts";
 import * as Thread from "../thread/model.ts";
 
 export const Model = S.Struct({
-  route: AppRoute,
-  /** The wire connection lifecycle (conn/machine.ts). */
-  conn: Conn,
   /** A dismissible top-level notice (wire errors); null when clean. */
   banner: S.NullOr(S.String),
+  /** The wire connection lifecycle (conn/machine.ts). */
+  conn: Conn,
   rail: Rail.Model,
+  route: AppRoute,
   thread: Thread.Model,
 });
 export type Model = S.Schema.Type<typeof Model>;

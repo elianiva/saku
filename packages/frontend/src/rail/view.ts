@@ -19,7 +19,7 @@
 import { AsyncData, Submodel } from "foldkit";
 import { Option } from "effect";
 import * as Dialog from "@foldkit/ui/dialog";
-import type { ChildAttribute, Html, HtmlBuilder, KeyboardModifiers } from "foldkit/html";
+import type { ChildAttribute, HtmlBuilder, KeyboardModifiers } from "foldkit/html";
 import type { PiSessionInfo, ProjectDirEntry, ProjectInfo, ThreadInfo } from "@saku/wire";
 
 import { icon } from "../icon.ts";
@@ -35,8 +35,8 @@ import {
   relativeTime,
   statePresentation,
   unadoptedPiSessions,
-  type PickerRow,
 } from "../presentation.ts";
+import type { PickerRow } from "../presentation.ts";
 import {
   ActiveViewRequested,
   AddProjectRequested,
@@ -64,16 +64,9 @@ import {
   ThreadShowLess,
   ThreadShowMore,
   UnarchiveRequested,
-  type RailMessage,
 } from "./message.ts";
+import type { RailMessage } from "./message.ts";
 import type { Model } from "./model.ts";
-
-export const view = Submodel.defineView<Model, RailMessage>((model, h) =>
-  h.aside(
-    [h.Class("w-80 shrink-0 border-r border-line bg-surface flex flex-col min-h-0")],
-    [railHeader(model, h), notice(model, h), railList(model, h), pickerDialog(model, h)],
-  ),
-);
 
 /** A transient failure notice (failed gestures), null when clean. */
 const notice = (model: Model, h: HtmlBuilder<RailMessage>) =>
@@ -132,22 +125,6 @@ const railHeader = (model: Model, h: HtmlBuilder<RailMessage>) => {
   );
 };
 
-const railList = (model: Model, h: HtmlBuilder<RailMessage>) =>
-  AsyncData.match(model.list, {
-    onIdle: () => railStatus(h, "loading…"),
-    onLoading: () => railStatus(h, "loading…"),
-    onRefreshing: () => railStatus(h, "loading…"),
-    onStale: () => railStatus(h, "loading…"),
-    onFailure: (error) => railStatus(h, `threads unavailable — ${error.message}`),
-    onSuccess: (threads) =>
-      h.div(
-        [h.Class("flex-1 overflow-y-auto min-h-0")],
-        model.view === "archived"
-          ? [archivedList(model, threads, h)]
-          : [threadSection(model, threads, h), projectsSection(model, threads, h)],
-      ),
-  });
-
 const railStatus = (h: HtmlBuilder<RailMessage>, text: string) =>
   h.div([h.Class("p-4 text-muted text-[12px]")], [text]);
 
@@ -172,25 +149,56 @@ const showMoreRow = (
       )
     : null;
 
-const threadSection = (
-  model: Model,
-  threads: readonly ThreadInfo[],
-  h: HtmlBuilder<RailMessage>,
-) => {
-  const active = activeThreads(threads);
-  const visible = previewSlice(active, model.threadShowMore);
+/** A thread row's tone: muted when archived, highlighted when selected. */
+const rowTone = (archived: boolean, selected: boolean) => {
+  if (archived) {
+    return "text-muted";
+  }
+  if (selected) {
+    return "bg-overlay";
+  }
+  return "hover:bg-overlay/60";
+};
+
+/** The inline rename input: Enter commits, Escape cancels, blur cancels. */
+const renameKey = (key: string): Option.Option<RailMessage> => {
+  if (key === "Enter") {
+    return Option.some(ThreadRenameCommitted());
+  }
+  if (key === "Escape") {
+    return Option.some(ThreadRenameCancelled());
+  }
+  return Option.none();
+};
+
+const renameInput = (model: Model, h: HtmlBuilder<RailMessage>) => {
+  const { renaming } = model;
+  if (renaming === null) {
+    return null;
+  }
+  return h.input([
+    h.Class(
+      "w-full border border-line bg-base px-1 text-[13px] text-text outline-none focus:border-subtle",
+    ),
+    h.Value(renaming.value),
+    h.OnInput((text) => ThreadRenameDraftChanged({ text })),
+    h.OnKeyDownPreventDefault(renameKey),
+    h.OnBlur(ThreadRenameCancelled()),
+  ]);
+};
+
+const stateIcon = (thread: ThreadInfo, h: HtmlBuilder<RailMessage>) => {
+  const { icon: iconName, tone, title } = statePresentation(thread.state);
+  return h.span([h.Class(tone), h.Title(title)], [icon(h, iconName)]);
+};
+
+const threadMeta = (thread: ThreadInfo, h: HtmlBuilder<RailMessage>) => {
+  const env = envPresentation(thread.env);
   return h.div(
-    [h.Class("border-b border-line")],
+    [h.Class("flex items-center gap-1 text-[11px] text-muted truncate")],
     [
-      ...visible.map((thread) => threadRow(model, thread, h)),
-      showMoreRow(
-        visible.length,
-        active.length,
-        model.threadShowMore,
-        ThreadShowMore(),
-        ThreadShowLess(),
-        h,
-      ),
+      h.span([h.Class("shrink-0"), h.Title(thread.mode)], [icon(h, modeIcon(thread.mode))]),
+      h.span([h.Class("shrink-0")], [icon(h, env.icon, { className: env.tone })]),
     ],
   );
 };
@@ -205,9 +213,7 @@ const threadRow = (model: Model, thread: ThreadInfo, h: HtmlBuilder<RailMessage>
   return h.div(
     [
       h.Class(
-        `group flex items-center gap-2 px-3 py-2 border-b border-line cursor-pointer text-[13px] ${
-          archived ? "text-muted" : selected ? "bg-overlay" : "hover:bg-overlay/60"
-        }`,
+        `group flex items-center gap-2 px-3 py-2 border-b border-line cursor-pointer text-[13px] ${rowTone(archived, selected)}`,
       ),
       h.OnClick(ClickedThread({ id: thread.id })),
     ],
@@ -264,138 +270,28 @@ const threadRow = (model: Model, thread: ThreadInfo, h: HtmlBuilder<RailMessage>
   );
 };
 
-/** The inline rename input: Enter commits, Escape cancels, blur cancels. */
-const renameInput = (model: Model, h: HtmlBuilder<RailMessage>) => {
-  const renaming = model.renaming;
-  if (renaming === null) return null;
-  return h.input([
-    h.Class(
-      "w-full border border-line bg-base px-1 text-[13px] text-text outline-none focus:border-subtle",
-    ),
-    h.Value(renaming.value),
-    h.OnInput((text) => ThreadRenameDraftChanged({ text })),
-    h.OnKeyDownPreventDefault((key) =>
-      key === "Enter"
-        ? Option.some(ThreadRenameCommitted())
-        : key === "Escape"
-          ? Option.some(ThreadRenameCancelled())
-          : Option.none(),
-    ),
-    h.OnBlur(ThreadRenameCancelled()),
-  ]);
-};
-
-const stateIcon = (thread: ThreadInfo, h: HtmlBuilder<RailMessage>) => {
-  const { icon: iconName, tone, title } = statePresentation(thread.state);
-  return h.span([h.Class(tone), h.Title(title)], [icon(h, iconName)]);
-};
-
-const threadMeta = (thread: ThreadInfo, h: HtmlBuilder<RailMessage>) => {
-  const env = envPresentation(thread.env);
-  return h.div(
-    [h.Class("flex items-center gap-1 text-[11px] text-muted truncate")],
-    [
-      h.span([h.Class("shrink-0"), h.Title(thread.mode)], [icon(h, modeIcon(thread.mode))]),
-      h.span([h.Class("shrink-0")], [icon(h, env.icon, { className: env.tone })]),
-    ],
-  );
-};
-
-/** The projects window: the added projects and their lazy session lists
- *  (CONTEXT.md: Project, Pi sessions). Hidden on a failed list (a remote
- *  hub has no projects — same story as the sessions themselves). */
-const projectsSection = (
+const threadSection = (
   model: Model,
   threads: readonly ThreadInfo[],
   h: HtmlBuilder<RailMessage>,
-) =>
-  AsyncData.match(model.projects, {
-    onIdle: () => null,
-    onLoading: () => null,
-    onRefreshing: () => null,
-    onStale: () => null,
-    onFailure: () => null,
-    onSuccess: (listed) =>
-      h.div(
-        [h.Class("border-b border-line")],
-        [
-          h.div(
-            [h.Class("flex items-center gap-2 px-3 pt-2 pb-1")],
-            [
-              h.span(
-                [h.Class("flex-1 text-[10px] uppercase tracking-[0.18em] text-subtle")],
-                [`projects · ${listed.length}`],
-              ),
-              h.button(
-                [
-                  h.Class("border border-line px-1.5 text-subtle hover:border-subtle"),
-                  h.OnClick(AddProjectRequested()),
-                  h.AriaLabel("add a project"),
-                  h.Title("add a project (CONTEXT.md: Add project)"),
-                ],
-                [icon(h, "plus")],
-              ),
-            ],
-          ),
-          ...listed.map((project) => projectRow(model, project, threads, h)),
-          listed.length === 0
-            ? h.div(
-                [h.Class("px-3 pb-2 text-[11px] text-muted")],
-                ["no projects — add one to see its pi sessions"],
-              )
-            : null,
-        ],
+) => {
+  const active = activeThreads(threads);
+  const visible = previewSlice(active, model.threadShowMore);
+  return h.div(
+    [h.Class("border-b border-line")],
+    [
+      ...visible.map((thread) => threadRow(model, thread, h)),
+      showMoreRow(
+        visible.length,
+        active.length,
+        model.threadShowMore,
+        ThreadShowMore(),
+        ThreadShowLess(),
+        h,
       ),
-  });
-
-/** The add-project picker (CONTEXT.md: Add project): a modal dialog — the
- *  foldkit Dialog submodel (focus trap, Esc, backdrop click, ARIA) — over
- *  a traversable directory tree. The tree is one level at a time: the
- *  current directory's subdirectories, the pi-session candidates marked,
- *  traversed by descending (click/Enter), ascending (up row / ⌫), and
- *  filtering (t3code's local-folder browse, the same shape). */
-const pickerDialog = (model: Model, h: HtmlBuilder<RailMessage>) =>
-  h.submodel({
-    slotId: "project-picker",
-    model: model.dialog,
-    view: Dialog.view,
-    viewInputs: {
-      toView: ({
-        dialog,
-        backdrop,
-        panel,
-        title,
-        description,
-        closeButton,
-        initialFocus,
-        isVisible,
-      }) =>
-        h.dialog(
-          [...dialog, h.Class("bg-transparent p-0 m-auto open:flex items-center justify-center")],
-          isVisible
-            ? [
-                h.div([...backdrop, h.Class("fixed inset-0 bg-base/75")], []),
-                h.div(
-                  [
-                    ...panel,
-                    h.Class(
-                      "relative w-[560px] max-w-[calc(100vw-3rem)] max-h-[min(80vh,36rem)] bg-surface border border-line shadow-xl flex flex-col",
-                    ),
-                  ],
-                  [
-                    pickerHeader(model, h, title, description, closeButton),
-                    pickerPath(model, h),
-                    pickerFilter(model, h, initialFocus),
-                    pickerList(model, h),
-                    pickerFooter(model, h),
-                  ],
-                ),
-              ]
-            : [],
-        ),
-    },
-    toParentMessage: (message) => GotPickerDialogMessage({ message }),
-  });
+    ],
+  );
+};
 
 const pickerHeader = (
   model: Model,
@@ -451,6 +347,43 @@ const pickerPath = (model: Model, h: HtmlBuilder<RailMessage>) =>
     ],
   );
 
+/** The keyboard map of the picker's filter input (pseudo-TUI: keys, not
+ *  clicks, drive the tree). Enter acts on the highlighted row; ⌘/Ctrl+Enter
+ *  adds it directly (t3code's browse); Backspace on an empty filter goes
+ *  up a level. Committing the current folder is the footer button's
+ *  gesture — Enter never adds anything implicitly. */
+const pickerKey = (
+  key: string,
+  modifiers: KeyboardModifiers,
+  model: Model,
+): Option.Option<RailMessage> => {
+  const rows = pickerRows(model.picker);
+  const highlighted = rows[model.picker.highlight];
+  if (key === "ArrowDown") {
+    return Option.some(PickerHighlightMoved({ delta: 1 }));
+  }
+  if (key === "ArrowUp") {
+    return Option.some(PickerHighlightMoved({ delta: -1 }));
+  }
+  if (key === "Backspace" && model.picker.filter === "") {
+    return Option.some(PickerUpRequested());
+  }
+  if (key !== "Enter") {
+    return Option.none();
+  }
+  if (highlighted === undefined) {
+    return Option.none();
+  }
+  if (modifiers.metaKey || modifiers.ctrlKey) {
+    return highlighted.kind === "dir"
+      ? Option.some(PickerAddRequested({ path: highlighted.entry.path }))
+      : Option.some(PickerUpRequested());
+  }
+  return highlighted.kind === "dir"
+    ? Option.some(PickerDirChosen({ path: highlighted.entry.path }))
+    : Option.some(PickerUpRequested());
+};
+
 /** The filter input: narrows the current level by basename; the keyboard
  *  drives the tree (↑↓ highlight, Enter descend / ⌘Enter add, ⌫ up). */
 const pickerFilter = (
@@ -475,62 +408,33 @@ const pickerFilter = (
     ],
   );
 
-/** The keyboard map of the picker's filter input (pseudo-TUI: keys, not
- *  clicks, drive the tree). Enter acts on the highlighted row; ⌘/Ctrl+Enter
- *  adds it directly (t3code's browse); Backspace on an empty filter goes
- *  up a level. Committing the current folder is the footer button's
- *  gesture — Enter never adds anything implicitly. */
-const pickerKey = (
-  key: string,
-  modifiers: KeyboardModifiers,
-  model: Model,
-): Option.Option<RailMessage> => {
-  const rows = pickerRows(model.picker);
-  const highlighted = rows[model.picker.highlight];
-  if (key === "ArrowDown") return Option.some(PickerHighlightMoved({ delta: 1 }));
-  if (key === "ArrowUp") return Option.some(PickerHighlightMoved({ delta: -1 }));
-  if (key === "Backspace" && model.picker.filter === "") return Option.some(PickerUpRequested());
-  if (key !== "Enter") return Option.none();
-  if (highlighted === undefined) return Option.none();
-  if (modifiers.metaKey || modifiers.ctrlKey) {
-    return highlighted.kind === "dir"
-      ? Option.some(PickerAddRequested({ path: highlighted.entry.path }))
-      : Option.some(PickerUpRequested());
-  }
-  return highlighted.kind === "dir"
-    ? Option.some(PickerDirChosen({ path: highlighted.entry.path }))
-    : Option.some(PickerUpRequested());
-};
-
-/** The tree's current level: the up row, then the filtered subdirectories. */
-const pickerList = (model: Model, h: HtmlBuilder<RailMessage>) =>
-  h.div(
-    [h.Class("flex-1 min-h-0 overflow-y-auto border-t border-line")],
-    [
-      AsyncData.match(model.picker.entries, {
-        onIdle: () => pickerStatus(h, "loading…"),
-        onLoading: () => pickerStatus(h, "loading…"),
-        onRefreshing: () => pickerStatus(h, "loading…"),
-        onStale: () => pickerStatus(h, "loading…"),
-        onFailure: (error) => pickerStatus(h, `cannot list — ${error.message}`),
-        onSuccess: () => {
-          const rows = pickerRows(model.picker);
-          if (rows.length === 0)
-            return pickerStatus(
-              h,
-              model.picker.filter.trim() === "" ? "empty folder" : "no matches",
-            );
-          return h.div(
-            [],
-            rows.map((row, index) => pickerRow(model, row, index, h)),
-          );
-        },
-      }),
-    ],
-  );
-
 const pickerStatus = (h: HtmlBuilder<RailMessage>, text: string) =>
   h.div([h.Class("px-4 py-3 text-[11px] text-muted")], [text]);
+
+/** The row badges: a pi marker when pi has sessions for this exact cwd
+ *  (the picker's candidates), an added marker when the project is already
+ *  in the window. */
+const pickerBadges = (model: Model, entry: ProjectDirEntry, h: HtmlBuilder<RailMessage>) => {
+  const added =
+    model.projects._tag === "Success" &&
+    model.projects.data.some((project) => project.path === entry.path);
+  if (added) {
+    return h.span(
+      [h.Class("shrink-0 text-foam flex items-center gap-1 text-[10px]"), h.Title("already added")],
+      [icon(h, "check"), "added"],
+    );
+  }
+  if (entry.hasPiSessions) {
+    return h.span(
+      [
+        h.Class("shrink-0 text-subtle flex items-center gap-1 text-[10px]"),
+        h.Title("pi has sessions here"),
+      ],
+      [icon(h, "pi"), "pi"],
+    );
+  }
+  return null;
+};
 
 /** One row: the up row (navigate to the parent level) or a subdirectory
  *  with its badges (pi has sessions here / already added). */
@@ -560,30 +464,33 @@ const pickerRow = (model: Model, row: PickerRow, index: number, h: HtmlBuilder<R
   );
 };
 
-/** The row badges: a pi marker when pi has sessions for this exact cwd
- *  (the picker's candidates), an added marker when the project is already
- *  in the window. */
-const pickerBadges = (model: Model, entry: ProjectDirEntry, h: HtmlBuilder<RailMessage>) => {
-  const added =
-    model.projects._tag === "Success" &&
-    model.projects.data.some((project) => project.path === entry.path);
-  if (added) {
-    return h.span(
-      [h.Class("shrink-0 text-foam flex items-center gap-1 text-[10px]"), h.Title("already added")],
-      [icon(h, "check"), "added"],
-    );
-  }
-  if (entry.hasPiSessions) {
-    return h.span(
-      [
-        h.Class("shrink-0 text-subtle flex items-center gap-1 text-[10px]"),
-        h.Title("pi has sessions here"),
-      ],
-      [icon(h, "pi"), "pi"],
-    );
-  }
-  return null;
-};
+/** The tree's current level: the up row, then the filtered subdirectories. */
+const pickerList = (model: Model, h: HtmlBuilder<RailMessage>) =>
+  h.div(
+    [h.Class("flex-1 min-h-0 overflow-y-auto border-t border-line")],
+    [
+      AsyncData.match(model.picker.entries, {
+        onFailure: (error) => pickerStatus(h, `cannot list — ${error.message}`),
+        onIdle: () => pickerStatus(h, "loading…"),
+        onLoading: () => pickerStatus(h, "loading…"),
+        onRefreshing: () => pickerStatus(h, "loading…"),
+        onStale: () => pickerStatus(h, "loading…"),
+        onSuccess: () => {
+          const rows = pickerRows(model.picker);
+          if (rows.length === 0) {
+            return pickerStatus(
+              h,
+              model.picker.filter.trim() === "" ? "empty folder" : "no matches",
+            );
+          }
+          return h.div(
+            [],
+            rows.map((row, index) => pickerRow(model, row, index, h)),
+          );
+        },
+      }),
+    ],
+  );
 
 /** The footer: the key hints and the commit gesture — add the directory
  *  currently listed (an empty new folder is a project too). */
@@ -608,6 +515,138 @@ const pickerFooter = (model: Model, h: HtmlBuilder<RailMessage>) =>
       ),
     ],
   );
+
+/** The add-project picker (CONTEXT.md: Add project): a modal dialog — the
+ *  foldkit Dialog submodel (focus trap, Esc, backdrop click, ARIA) — over
+ *  a traversable directory tree. The tree is one level at a time: the
+ *  current directory's subdirectories, the pi-session candidates marked,
+ *  traversed by descending (click/Enter), ascending (up row / ⌫), and
+ *  filtering (t3code's local-folder browse, the same shape). */
+const pickerDialog = (model: Model, h: HtmlBuilder<RailMessage>) =>
+  h.submodel({
+    model: model.dialog,
+    slotId: "project-picker",
+    toParentMessage: (message) => GotPickerDialogMessage({ message }),
+    view: Dialog.view,
+    viewInputs: {
+      toView: ({
+        dialog,
+        backdrop,
+        panel,
+        title,
+        description,
+        closeButton,
+        initialFocus,
+        isVisible,
+      }) =>
+        h.dialog(
+          [...dialog, h.Class("bg-transparent p-0 m-auto open:flex items-center justify-center")],
+          isVisible
+            ? [
+                h.div([...backdrop, h.Class("fixed inset-0 bg-base/75")], []),
+                h.div(
+                  [
+                    ...panel,
+                    h.Class(
+                      "relative w-[560px] max-w-[calc(100vw-3rem)] max-h-[min(80vh,36rem)] bg-surface border border-line shadow-xl flex flex-col",
+                    ),
+                  ],
+                  [
+                    pickerHeader(model, h, title, description, closeButton),
+                    pickerPath(model, h),
+                    pickerFilter(model, h, initialFocus),
+                    pickerList(model, h),
+                    pickerFooter(model, h),
+                  ],
+                ),
+              ]
+            : [],
+        ),
+    },
+  });
+
+const sessionsStatus = (h: HtmlBuilder<RailMessage>, text: string) =>
+  h.div([h.Class("px-6 py-1 text-[11px] text-muted border-t border-line/60")], [text]);
+
+/** One pi session: click to adopt and open — the import is not an event the
+ *  user performs, it is what opening a session means (CONTEXT.md: Pi
+ *  sessions). Two lines: title + relative time and message count. */
+const piSessionRow = (
+  session: PiSessionInfo,
+  adopting: string | null,
+  h: HtmlBuilder<RailMessage>,
+) => {
+  const busy = adopting === session.path;
+  const title =
+    session.name ?? (session.firstMessage === "(no messages)" ? session.id : session.firstMessage);
+  return h.button(
+    [
+      h.Class(
+        `w-full flex items-center gap-2 px-6 py-1.5 text-left text-[12px] ${busy ? "text-muted" : "hover:bg-overlay/60"}`,
+      ),
+      h.OnClick(PiSessionClicked({ path: session.path })),
+      h.Disabled(busy),
+      h.Title(session.path),
+    ],
+    [
+      h.span([h.Class("text-subtle shrink-0"), h.Title("pi session")], [icon(h, "pi")]),
+      h.div(
+        [h.Class("flex-1 min-w-0")],
+        [
+          h.div([h.Class("truncate")], [busy ? "opening…" : title]),
+          h.div(
+            [h.Class("text-[10px] text-muted")],
+            [`${relativeTime(session.modifiedAt)} · ${session.messageCount} msgs`],
+          ),
+        ],
+      ),
+    ],
+  );
+};
+
+/** One project's session list: AsyncData with loading/failure states, the
+ *  unadopted filter, and the same preview mechanic as the threads. */
+const projectSessions = (
+  model: Model,
+  project: ProjectInfo,
+  threads: readonly ThreadInfo[],
+  h: HtmlBuilder<RailMessage>,
+) => {
+  const state = model.projectSessions[project.path];
+  // The expand arm issues the fetch; nothing renders until it lands.
+  if (state === undefined) {
+    return null;
+  }
+  return AsyncData.match(state, {
+    onFailure: (error) => sessionsStatus(h, `unavailable — ${error.message}`),
+    onIdle: () => sessionsStatus(h, "loading…"),
+    onLoading: () => sessionsStatus(h, "loading…"),
+    onRefreshing: () => sessionsStatus(h, "loading…"),
+    onStale: () => sessionsStatus(h, "loading…"),
+    onSuccess: (sessions) => {
+      const unadopted = unadoptedPiSessions(threads, sessions);
+      const showMore = model.sessionShowMore[project.path] === true;
+      const visible = previewSlice(unadopted, showMore);
+      if (unadopted.length === 0) {
+        return sessionsStatus(h, "no pi sessions for this project yet");
+      }
+      return h.div(
+        [h.Class("border-t border-line/60")],
+        [
+          ...visible.map((session) => piSessionRow(session, model.adopting, h)),
+          showMoreRow(
+            visible.length,
+            unadopted.length,
+            showMore,
+            ProjectShowMore({ path: project.path }),
+            ProjectShowLess({ path: project.path }),
+            h,
+          ),
+        ],
+      );
+    },
+  });
+};
 
 /** One project row: name + muted path, expand/collapse, remove. The
  *  session list is lazy — fetched on first expand and cached. */
@@ -661,83 +700,52 @@ const projectRow = (
   );
 };
 
-/** One project's session list: AsyncData with loading/failure states, the
- *  unadopted filter, and the same preview mechanic as the threads. */
-const projectSessions = (
+/** The projects window: the added projects and their lazy session lists
+ *  (CONTEXT.md: Project, Pi sessions). Hidden on a failed list (a remote
+ *  hub has no projects — same story as the sessions themselves). */
+const projectsSection = (
   model: Model,
-  project: ProjectInfo,
   threads: readonly ThreadInfo[],
   h: HtmlBuilder<RailMessage>,
-) => {
-  const state = model.projectSessions[project.path];
-  if (state === undefined) return null; // the expand arm issues the fetch
-  return AsyncData.match(state, {
-    onIdle: () => sessionsStatus(h, "loading…"),
-    onLoading: () => sessionsStatus(h, "loading…"),
-    onRefreshing: () => sessionsStatus(h, "loading…"),
-    onStale: () => sessionsStatus(h, "loading…"),
-    onFailure: (error) => sessionsStatus(h, `unavailable — ${error.message}`),
-    onSuccess: (sessions) => {
-      const unadopted = unadoptedPiSessions(threads, sessions);
-      const showMore = model.sessionShowMore[project.path] === true;
-      const visible = previewSlice(unadopted, showMore);
-      if (unadopted.length === 0) return sessionsStatus(h, "no pi sessions for this project yet");
-      return h.div(
-        [h.Class("border-t border-line/60")],
-        [
-          ...visible.map((session) => piSessionRow(session, model.adopting, h)),
-          showMoreRow(
-            visible.length,
-            unadopted.length,
-            showMore,
-            ProjectShowMore({ path: project.path }),
-            ProjectShowLess({ path: project.path }),
-            h,
-          ),
-        ],
-      );
-    },
-  });
-};
-
-const sessionsStatus = (h: HtmlBuilder<RailMessage>, text: string) =>
-  h.div([h.Class("px-6 py-1 text-[11px] text-muted border-t border-line/60")], [text]);
-
-/** One pi session: click to adopt and open — the import is not an event the
- *  user performs, it is what opening a session means (CONTEXT.md: Pi
- *  sessions). Two lines: title + relative time and message count. */
-const piSessionRow = (
-  session: PiSessionInfo,
-  adopting: string | null,
-  h: HtmlBuilder<RailMessage>,
-) => {
-  const busy = adopting === session.path;
-  const title =
-    session.name ?? (session.firstMessage === "(no messages)" ? session.id : session.firstMessage);
-  return h.button(
-    [
-      h.Class(
-        `w-full flex items-center gap-2 px-6 py-1.5 text-left text-[12px] ${busy ? "text-muted" : "hover:bg-overlay/60"}`,
-      ),
-      h.OnClick(PiSessionClicked({ path: session.path })),
-      h.Disabled(busy),
-      h.Title(session.path),
-    ],
-    [
-      h.span([h.Class("text-subtle shrink-0"), h.Title("pi session")], [icon(h, "pi")]),
+) =>
+  AsyncData.match(model.projects, {
+    onFailure: () => null,
+    onIdle: () => null,
+    onLoading: () => null,
+    onRefreshing: () => null,
+    onStale: () => null,
+    onSuccess: (listed) =>
       h.div(
-        [h.Class("flex-1 min-w-0")],
+        [h.Class("border-b border-line")],
         [
-          h.div([h.Class("truncate")], [busy ? "opening…" : title]),
           h.div(
-            [h.Class("text-[10px] text-muted")],
-            [`${relativeTime(session.modifiedAt)} · ${session.messageCount} msgs`],
+            [h.Class("flex items-center gap-2 px-3 pt-2 pb-1")],
+            [
+              h.span(
+                [h.Class("flex-1 text-[10px] uppercase tracking-[0.18em] text-subtle")],
+                [`projects · ${listed.length}`],
+              ),
+              h.button(
+                [
+                  h.Class("border border-line px-1.5 text-subtle hover:border-subtle"),
+                  h.OnClick(AddProjectRequested()),
+                  h.AriaLabel("add a project"),
+                  h.Title("add a project (CONTEXT.md: Add project)"),
+                ],
+                [icon(h, "plus")],
+              ),
+            ],
           ),
+          ...listed.map((project) => projectRow(model, project, threads, h)),
+          listed.length === 0
+            ? h.div(
+                [h.Class("px-3 pb-2 text-[11px] text-muted")],
+                ["no projects — add one to see its pi sessions"],
+              )
+            : null,
         ],
       ),
-    ],
-  );
-};
+  });
 
 /** The archived view: every settled thread, muted, with unarchive + delete. */
 const archivedList = (model: Model, threads: readonly ThreadInfo[], h: HtmlBuilder<RailMessage>) =>
@@ -745,3 +753,25 @@ const archivedList = (model: Model, threads: readonly ThreadInfo[], h: HtmlBuild
     [h.Class("border-b border-line")],
     archivedThreads(threads).map((thread) => threadRow(model, thread, h)),
   );
+
+const railList = (model: Model, h: HtmlBuilder<RailMessage>) =>
+  AsyncData.match(model.list, {
+    onFailure: (error) => railStatus(h, `threads unavailable — ${error.message}`),
+    onIdle: () => railStatus(h, "loading…"),
+    onLoading: () => railStatus(h, "loading…"),
+    onRefreshing: () => railStatus(h, "loading…"),
+    onStale: () => railStatus(h, "loading…"),
+    onSuccess: (threads) =>
+      h.div(
+        [h.Class("flex-1 overflow-y-auto min-h-0")],
+        model.view === "archived"
+          ? [archivedList(model, threads, h)]
+          : [threadSection(model, threads, h), projectsSection(model, threads, h)],
+      ),
+  });
+export const view = Submodel.defineView<Model, RailMessage>((model, h) =>
+  h.aside(
+    [h.Class("w-80 shrink-0 border-r border-line bg-surface flex flex-col min-h-0")],
+    [railHeader(model, h), notice(model, h), railList(model, h), pickerDialog(model, h)],
+  ),
+);

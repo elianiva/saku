@@ -8,42 +8,39 @@
  * tests).
  *
  * Every operation is a pure function over an explicit `FileSystem` and
- * `PathsShape` (the same "explicit dependency" style as config-value's
+ * `PathsLayout` (the same "explicit dependency" style as config-value's
  * `env`); the daemon's layer yields the services once and passes them down,
  * so nothing here touches node:fs or a `*Sync` variant.
  */
 
 import { randomBytes } from "node:crypto";
-import { Effect, FileSystem, PlatformError } from "effect";
-import type { PathsShape } from "./paths.ts";
+import type { FileSystem } from "effect";
+import { Effect } from "effect";
+import type { PathsLayout } from "./paths.ts";
 
 /** Ensure the saku home directory exists. */
-export const ensureSakuDirs = (
-  fs: FileSystem.FileSystem,
-  paths: PathsShape,
-) =>
-  fs.makeDirectory(paths.sakuDir, { recursive: true, mode: 0o700 });
+export const ensureSakuDirs = (fs: FileSystem.FileSystem, paths: PathsLayout) =>
+  fs.makeDirectory(paths.sakuDir, { mode: 0o700, recursive: true });
 
 /** Read the token without creating anything. Absent/unreadable/empty → undefined. */
-export const readAuthToken = (
-  fs: FileSystem.FileSystem,
-  paths: PathsShape,
-) =>
+export const readAuthToken = (fs: FileSystem.FileSystem, paths: PathsLayout) =>
   fs.readFileString(paths.authPath).pipe(
     Effect.map((content) => {
       const token = content.trim();
       return token.length > 0 ? token : undefined;
     }),
-    Effect.catchEager(() => Effect.succeed(undefined)),
+    Effect.catchEager(() => Effect.succeed(undefined satisfies undefined)),
   );
 
 /** Read the token, creating it (and its directory) when absent. */
-export const ensureAuthToken = Effect.fn("ensureAuthToken")(function* (
+export const ensureAuthToken = Effect.fn("ensureAuthToken")(function* ensureAuthToken(
   fs: FileSystem.FileSystem,
-  paths: PathsShape,
+  paths: PathsLayout,
 ) {
   const existing = yield* readAuthToken(fs, paths);
-  if (existing !== undefined) return existing;
+  if (existing !== undefined) {
+    return existing;
+  }
   yield* ensureSakuDirs(fs, paths);
   const token = randomBytes(32).toString("hex");
   yield* fs.writeFileString(paths.authPath, `${token}\n`, { mode: 0o600 });

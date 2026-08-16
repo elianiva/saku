@@ -12,34 +12,68 @@
 
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import path from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect, Exit, FileSystem, Schema, Scope } from "effect";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import type { StreamFn } from "@earendil-works/pi-agent-core";
-import { EnvDaemon, nodeSocket, RemoteEnv, type EnvDaemonShape } from "@saku/env";
+import { EnvDaemon, nodeSocket, RemoteEnv } from "@saku/env";
+import type { EnvDaemonApi } from "@saku/env";
 import { KvStore } from "@saku/store";
 
-import { SessionHost, type HostEventSink } from "../src/session-host.ts";
+import { SessionHost } from "../src/session-host.ts";
+import type { HostEventSink } from "../src/session-host.ts";
 import { assistantMessage, fakeCatalog, FakeRegistry } from "./fakes.ts";
 
 const THREAD_ID = "0123456789abcdef0123456789abcdef";
 const ENV_TOKEN = "remote-host-token";
 
+/** Alias of `Schema.TaggedError` so oxlint's Error-name call heuristic
+ * doesn't demand `new` on the factory call (which would break typecheck). */
+const taggedError = Schema.TaggedError;
+
+/** A polling assertion that gave up (the host machine hadn't moved in time). */
+class TestError extends taggedError<TestError>()("TestError", {
+  message: Schema.String,
+}) {}
+
+/** Wait for the host's lifecycle tag (the machine moves asynchronously). */
+const waitForState = async (host: SessionHost, state: string, timeoutMs = 5000) => {
+  const deadline = Date.now() + timeoutMs;
+  const poll = async (): Promise<void> => {
+    if (host.threadState === state) {
+      return;
+    }
+    if (Date.now() >= deadline) {
+      throw new TestError({
+        message: `host state ${state} not reached; last: ${host.threadState}`,
+      });
+    }
+    await sleep(10);
+    await poll();
+  };
+  await poll();
+};
+
+/** Events are not asserted in these tests. */
+const sink: HostEventSink = (_event) => {
+  // scripted: the remote host's events are covered by the host tests
+};
+
 // The per-test trail/workspace dir (set in beforeEach, before record()).
 let workdir: string;
 
 const record = () => ({
-  id: THREAD_ID,
-  name: "remote thread",
+  createdAt: Date.now(),
   // The trail/workspace cwd: the RemoteEnv is built per-test with the
   // fresh workdir, and the record's cwd mirrors it.
   cwd: workdir,
+  id: THREAD_ID,
   mode: "sandbox" as const,
-  createdAt: Date.now(),
-  sessionId: null,
+  name: "remote thread",
   nameAuto: true,
+  sessionId: null,
 });
 
 /**
@@ -58,10 +92,10 @@ const toolThenDoneStream = (doneText: string) => {
         ...message,
         content: [
           {
-            type: "toolCall",
+            arguments: { command: "echo hello-from-env && printf 'world' > made.txt" },
             id: "tc-1",
             name: "bash",
-            arguments: { command: "echo hello-from-env && printf 'world' > made.txt" },
+            type: "toolCall",
           },
         ],
       });
@@ -73,42 +107,43 @@ const toolThenDoneStream = (doneText: string) => {
 };
 
 describe("SessionHost over RemoteEnv", () => {
-  let daemon: EnvDaemonShape;
+  let daemon: EnvDaemonApi;
   let env: RemoteEnv;
   let scope: Scope.Scope;
   let host: SessionHost;
-  const sink: HostEventSink = (event) => {
-    void event;
-  };
   const registry = new FakeRegistry(record());
 
   beforeEach(async () => {
-    workdir = await mkdtemp(join(tmpdir(), "saku-remote-host-"));
+    workdir = await mkdtemp(path.join(tmpdir(), "saku-remote-host-"));
     const built = await Effect.runPromise(
-      Effect.gen(function* () {
-        scope = yield* Scope.make();
+      Effect.gen(function* built() {
+        const genScope = yield* Scope.make();
         const fs = yield* FileSystem.FileSystem;
-        const daemon = yield* EnvDaemon.make({ token: ENV_TOKEN, fs, cwd: workdir }).pipe(
-          Effect.provideService(Scope.Scope, scope),
-        );
-        return { daemon, fs };
+        const builtDaemon: EnvDaemonApi = yield* EnvDaemon.make({
+          cwd: workdir,
+          fs,
+          token: ENV_TOKEN,
+        }).pipe(Effect.provideService(Scope.Scope, genScope));
+        return { daemon: builtDaemon, fs, scope: genScope };
       }).pipe(Effect.provide(NodeFileSystem.layer)),
     );
-    daemon = built.daemon;
-    env = new RemoteEnv({ url: daemon.url, token: ENV_TOKEN, cwd: workdir, socket: nodeSocket });
+    const { daemon: builtDaemon, fs, scope: daemonScope } = built;
+    scope = daemonScope;
+    daemon = builtDaemon;
+    env = new RemoteEnv({ cwd: workdir, socket: nodeSocket, token: ENV_TOKEN, url: daemon.url });
     await env.connect();
     host = await Effect.runPromise(
       SessionHost.create({
-        threadId: THREAD_ID,
-        record: record(),
         catalog: fakeCatalog(),
+        env,
+        record: record(),
         registry,
         sink,
-        env,
         streamFn: toolThenDoneStream("Done, the command ran."),
+        threadId: THREAD_ID,
       }).pipe(
         // The trail lives under the workdir (the remote env's workspace).
-        Effect.provide(KvStore.file(built.fs, join(workdir, "trail"))),
+        Effect.provide(KvStore.file(fs, path.join(workdir, "trail"))),
       ),
     );
   });
@@ -117,7 +152,7 @@ describe("SessionHost over RemoteEnv", () => {
     await Effect.runPromise(host.dispose());
     env.close();
     await Effect.runPromise(Scope.close(scope, Exit.void));
-    await rm(workdir, { recursive: true, force: true });
+    await rm(workdir, { force: true, recursive: true });
   });
 
   it("runs a prompt whose bash tool executes on the daemon and records the call", async () => {
@@ -142,18 +177,3 @@ describe("SessionHost over RemoteEnv", () => {
     expect(read.ok && read.value).toContain("world");
   });
 });
-
-/** A polling assertion that gave up (the host machine hadn't moved in time). */
-class TestError extends Schema.TaggedError<TestError>()("TestError", {
-  message: Schema.String,
-}) {}
-
-/** Wait for the host's lifecycle tag (the machine moves asynchronously). */
-const waitForState = async (host: SessionHost, state: string, timeoutMs = 5000) => {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (host.threadState === state) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  throw new TestError({ message: `host state ${state} not reached; last: ${host.threadState}` });
-};

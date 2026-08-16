@@ -18,14 +18,29 @@
 
 import { describe, expect, it } from "vitest";
 import { Option } from "effect";
-import { WireError, type ThreadInfo, type WireModelInfo } from "@saku/wire";
-import fc from "fast-check";
-
+import { WireError } from "@saku/wire";
+import type { ThreadInfo, WireModelInfo } from "@saku/wire";
+import type { Arbitrary } from "fast-check";
+import {
+  array,
+  assert,
+  boolean,
+  constant,
+  constantFrom,
+  integer,
+  oneof,
+  option,
+  property,
+  record,
+  string,
+} from "fast-check";
 import { ThreadsRoute, ThreadRoute } from "../route.ts";
 import { filterModels } from "../presentation.ts";
 import { informRouteChanged, update } from "./update.ts";
-import { ModelPicker, type Model } from "./model.ts";
-import { Trail, type Live } from "./live.ts";
+import { ModelPicker } from "./model.ts";
+import type { Model } from "./model.ts";
+import { Trail } from "./live.ts";
+import type { Live } from "./live.ts";
 import {
   AbortDone,
   AbortRequested,
@@ -57,105 +72,102 @@ import {
   UsagePanelRequested,
 } from "./message.ts";
 
-const threadArb: fc.Arbitrary<ThreadInfo> = fc.record({
-  id: fc.string({ maxLength: 24 }),
-  name: fc.string({ maxLength: 24 }),
-  cwd: fc.oneof(fc.constant(null), fc.string({ maxLength: 24 })),
-  mode: fc.constantFrom("local", "sandbox", "any"),
-  state: fc.constantFrom("idle", "working", "interrupted"),
-  env: fc.constantFrom("stopped", "provisioning", "ready", "error"),
-  sessionId: fc.oneof(fc.constant(null), fc.string({ maxLength: 24 })),
-  tailSeq: fc.integer({ min: 0 }),
-  archivedAt: fc.oneof(fc.constant(null), fc.integer()),
+const threadArb: Arbitrary<ThreadInfo> = record({
+  archivedAt: oneof(constant(null), integer()),
+  cwd: oneof(constant(null), string({ maxLength: 24 })),
+  env: constantFrom("stopped", "provisioning", "ready", "error"),
+  id: string({ maxLength: 24 }),
+  mode: constantFrom("local", "sandbox", "any"),
+  name: string({ maxLength: 24 }),
+  sessionId: oneof(constant(null), string({ maxLength: 24 })),
+  state: constantFrom("idle", "working", "interrupted"),
+  tailSeq: integer({ min: 0 }),
 });
 
-const wireErrorArb = fc
-  .string({ maxLength: 24 })
-  .map((message) => new WireError({ code: "command_failed", message }));
-
-const trailArb: fc.Arbitrary<Model["trail"]> = fc.oneof(
-  fc.constant(Trail.Idle()),
-  fc
-    .record({
-      entries: fc.array(
-        fc.record({
-          id: fc.option(fc.string({ maxLength: 12 }), { nil: undefined }),
-          seq: fc.option(fc.integer(), { nil: undefined }),
-        }),
-        { maxLength: 4 },
-      ),
-      tailSeq: fc.integer({ min: 0 }),
-    })
-    .map((data) => Trail.Success({ data })),
-  fc.constant(Trail.Failure({ error: "boom" })),
+const wireErrorArb = string({ maxLength: 24 }).map(
+  (message) => new WireError({ code: "command_failed", message }),
 );
 
-const liveArb: fc.Arbitrary<Live["live"]> = fc.record({
-  message: fc.option(fc.string({ maxLength: 24 }), { nil: undefined }),
-  thinking: fc.option(fc.string({ maxLength: 24 }), { nil: undefined }),
-  tools: fc.array(
-    fc.record({
-      callId: fc.string({ maxLength: 12 }),
-      name: fc.string({ maxLength: 12 }),
-      state: fc.constantFrom("running", "done", "failed"),
+const trailArb: Arbitrary<Model["trail"]> = oneof(
+  constant(Trail.Idle()),
+  record({
+    entries: array(
+      record({
+        id: option(string({ maxLength: 12 }), { nil: undefined }),
+        seq: option(integer(), { nil: undefined }),
+      }),
+      { maxLength: 4 },
+    ),
+    tailSeq: integer({ min: 0 }),
+  }).map((data) => Trail.Success({ data })),
+  constant(Trail.Failure({ error: "boom" })),
+);
+
+const liveArb: Arbitrary<Live["live"]> = record({
+  message: option(string({ maxLength: 24 }), { nil: undefined }),
+  notice: option(string({ maxLength: 24 }), { nil: undefined }),
+  thinking: option(string({ maxLength: 24 }), { nil: undefined }),
+  tools: array(
+    record({
+      callId: string({ maxLength: 12 }),
+      name: string({ maxLength: 12 }),
+      state: constantFrom("running", "done", "failed"),
     }),
     { maxLength: 3 },
   ),
-  notice: fc.option(fc.string({ maxLength: 24 }), { nil: undefined }),
 });
 
-const wireModelArb: fc.Arbitrary<WireModelInfo> = fc.record({
-  provider: fc.string({ maxLength: 12 }),
-  id: fc.string({ maxLength: 24 }),
-  contextWindow: fc.integer({ min: 0 }),
-  reasoning: fc.boolean(),
+const wireModelArb: Arbitrary<WireModelInfo> = record({
+  contextWindow: integer({ min: 0 }),
+  id: string({ maxLength: 24 }),
+  provider: string({ maxLength: 12 }),
+  reasoning: boolean(),
 });
 
-const modelPickerArb: fc.Arbitrary<Model["modelPicker"]> = fc.oneof(
-  fc.constant(ModelPicker.Idle()),
-  fc.constant(ModelPicker.Loading()),
-  fc
-    .record({ data: fc.array(wireModelArb, { maxLength: 3 }) })
-    .map(({ data }) => ModelPicker.Success({ data })),
+const modelPickerArb: Arbitrary<Model["modelPicker"]> = oneof(
+  constant(ModelPicker.Idle()),
+  constant(ModelPicker.Loading()),
+  record({ data: array(wireModelArb, { maxLength: 3 }) }).map(({ data }) =>
+    ModelPicker.Success({ data }),
+  ),
   wireErrorArb.map((error) => ModelPicker.Failure({ error })),
 );
 
 /** Any pane model the update loop could hold. */
-const modelArb: fc.Arbitrary<Model> = fc.record({
-  id: fc.oneof(fc.constant(null), fc.string({ maxLength: 24 })),
-  info: fc.oneof(fc.constant(null), threadArb),
-  trail: trailArb,
+const modelArb: Arbitrary<Model> = record({
+  composer: string({ maxLength: 24 }),
+  composerMenu: constant(null),
+  focused: boolean(),
+  id: oneof(constant(null), string({ maxLength: 24 })),
+  info: oneof(constant(null), threadArb),
   live: liveArb,
-  thinkingOpen: fc.array(fc.string({ maxLength: 12 }), { maxLength: 4 }),
-  toolsOpen: fc.array(fc.string({ maxLength: 12 }), { maxLength: 4 }),
-  model: fc.oneof(fc.constant(null), wireModelArb),
+  model: oneof(constant(null), wireModelArb),
+  modelBusy: boolean(),
   modelPicker: modelPickerArb,
-  usageOpen: fc.boolean(),
-  pickerQuery: fc.string({ maxLength: 12 }),
-  pickerActive: fc.integer({ min: -1, max: 3 }),
-  modelBusy: fc.boolean(),
-  composer: fc.string({ maxLength: 24 }),
-  composerMenu: fc.constant(null),
-  starting: fc.boolean(),
-  focused: fc.boolean(),
-  notice: fc.oneof(fc.constant(null), fc.string({ maxLength: 24 })),
+  notice: oneof(constant(null), string({ maxLength: 24 })),
+  pickerActive: integer({ max: 3, min: -1 }),
+  pickerQuery: string({ maxLength: 12 }),
+  starting: boolean(),
+  thinkingOpen: array(string({ maxLength: 12 }), { maxLength: 4 }),
+  toolsOpen: array(string({ maxLength: 12 }), { maxLength: 4 }),
+  trail: trailArb,
+  usageOpen: boolean(),
 });
 
 describe("thread update", () => {
   it("send prompts or quick-starts exactly when the draft is non-blank", () => {
-    fc.assert(
-      fc.property(modelArb, (model) => {
+    assert(
+      property(modelArb, (model) => {
         const [next, commands] = update(model, SendRequested());
         const text = model.composer.trim();
         if (text === "") {
           expect(next).toEqual(model);
           expect(commands).toHaveLength(0);
         } else if (model.id !== null) {
+          expect(next).toEqual(model);
           if (model.info?.state === "working") {
-            expect(next).toEqual(model);
             expect(commands).toHaveLength(0);
           } else {
-            expect(next).toEqual(model);
             expect(commands).toHaveLength(1);
           }
         } else if (model.starting) {
@@ -170,15 +182,15 @@ describe("thread update", () => {
   });
 
   it("a created thread clears the draft and guard, and surfaces OpenedThread", () => {
-    fc.assert(
-      fc.property(modelArb, threadArb, (model, thread) => {
+    assert(
+      property(modelArb, threadArb, (model, thread) => {
         const [next, commands, out] = update(model, ThreadCreated({ thread }));
         expect(next).toEqual({
           ...model,
-          starting: false,
           composer: "",
           composerMenu: null,
           focused: false,
+          starting: false,
         });
         expect(commands).toHaveLength(1);
         expect(out).toEqual(Option.some({ _tag: "OpenedThread", id: thread.id }));
@@ -187,17 +199,17 @@ describe("thread update", () => {
   });
 
   it("a failed create releases the guard, keeps the draft, and shows the notice", () => {
-    fc.assert(
-      fc.property(modelArb, fc.string({ maxLength: 24 }), (model, message) => {
+    assert(
+      property(modelArb, string({ maxLength: 24 }), (model, message) => {
         const [next] = update(model, CreateFailed({ message }));
-        expect(next).toEqual({ ...model, starting: false, notice: message });
+        expect(next).toEqual({ ...model, notice: message, starting: false });
       }),
     );
   });
 
   it("the new-thread button surfaces NewThreadRequested on a pinned thread only", () => {
-    fc.assert(
-      fc.property(modelArb, (model) => {
+    assert(
+      property(modelArb, (model) => {
         const [next, commands, out] = update(model, NewThreadRequested());
         expect(next).toEqual(model);
         expect(commands).toHaveLength(0);
@@ -209,8 +221,8 @@ describe("thread update", () => {
   });
 
   it("keeps the header current from a broadcast for the pinned thread only", () => {
-    fc.assert(
-      fc.property(modelArb, threadArb, (model, thread) => {
+    assert(
+      property(modelArb, threadArb, (model, thread) => {
         const [next, commands] = update(model, ThreadChanged({ thread }));
         expect(commands).toHaveLength(model.id === thread.id ? 1 : 0);
         expect(next).toEqual(model.id === thread.id ? { ...model, info: thread } : model);
@@ -219,18 +231,18 @@ describe("thread update", () => {
   });
 
   it("the trail lands as Success, and failures land as Failure", () => {
-    fc.assert(
-      fc.property(
+    assert(
+      property(
         modelArb,
-        fc.array(
-          fc.record({
-            id: fc.option(fc.string({ maxLength: 12 }), { nil: undefined }),
-            seq: fc.option(fc.integer(), { nil: undefined }),
+        array(
+          record({
+            id: option(string({ maxLength: 12 }), { nil: undefined }),
+            seq: option(integer(), { nil: undefined }),
           }),
           { maxLength: 4 },
         ),
-        fc.integer({ min: 0 }),
-        fc.string({ maxLength: 24 }),
+        integer({ min: 0 }),
+        string({ maxLength: 24 }),
         (model, entries, tailSeq, error) => {
           const [loaded] = update(model, TrailLoaded({ entries, tailSeq }));
           expect(loaded.trail).toEqual(Trail.Success({ data: { entries, tailSeq } }));
@@ -242,8 +254,8 @@ describe("thread update", () => {
   });
 
   it("focus, blur, prompt-ack, and send-failure drive their one field", () => {
-    fc.assert(
-      fc.property(modelArb, fc.string({ maxLength: 24 }), (model, message) => {
+    assert(
+      property(modelArb, string({ maxLength: 24 }), (model, message) => {
         expect(update(model, ComposerFocused())[0]).toEqual({ ...model, focused: true });
         expect(update(model, ComposerBlurred())[0]).toEqual({ ...model, focused: false });
         expect(update(model, PromptAcked())[0]).toEqual({ ...model, composer: "" });
@@ -253,10 +265,10 @@ describe("thread update", () => {
   });
 
   it("the state read lands the model and the header's info; a failed read keeps both", () => {
-    fc.assert(
-      fc.property(modelArb, wireModelArb, threadArb, (model, next, info) => {
-        const [loaded] = update(model, StateLoaded({ model: next, info }));
-        expect(loaded).toEqual({ ...model, model: next, info });
+    assert(
+      property(modelArb, wireModelArb, threadArb, (model, next, info) => {
+        const [loaded] = update(model, StateLoaded({ info, model: next }));
+        expect(loaded).toEqual({ ...model, info, model: next });
         const [failed] = update(model, StateFailed());
         expect(failed).toEqual(model);
       }),
@@ -264,8 +276,8 @@ describe("thread update", () => {
   });
 
   it("the model picker opens only on a pinned, non-working thread when closed", () => {
-    fc.assert(
-      fc.property(modelArb, (model) => {
+    assert(
+      property(modelArb, (model) => {
         const [next, commands] = update(model, ModelPickerRequested());
         const opens =
           model.id !== null && model.info?.state !== "working" && model.modelPicker._tag === "Idle";
@@ -274,8 +286,8 @@ describe("thread update", () => {
             ? {
                 ...model,
                 modelPicker: ModelPicker.Loading(),
-                pickerQuery: "",
                 pickerActive: 0,
+                pickerQuery: "",
                 // The picker and the usage panel float over the same card
                 // edge — opening one closes the other.
                 usageOpen: false,
@@ -288,10 +300,10 @@ describe("thread update", () => {
   });
 
   it("the model list lands as Success and a failed list lands as Failure", () => {
-    fc.assert(
-      fc.property(
+    assert(
+      property(
         modelArb,
-        fc.array(wireModelArb, { maxLength: 3 }),
+        array(wireModelArb, { maxLength: 3 }),
         wireErrorArb,
         (model, models, error) => {
           const [listed] = update(model, ModelsListed({ models }));
@@ -304,17 +316,17 @@ describe("thread update", () => {
   });
 
   it("typing in the picker sets the filter and restarts the highlight at the top", () => {
-    fc.assert(
-      fc.property(modelArb, fc.string({ maxLength: 12 }), (model, text) => {
+    assert(
+      property(modelArb, string({ maxLength: 12 }), (model, text) => {
         const [next] = update(model, PickerQueryChanged({ text }));
-        expect(next).toEqual({ ...model, pickerQuery: text, pickerActive: 0 });
+        expect(next).toEqual({ ...model, pickerActive: 0, pickerQuery: text });
       }),
     );
   });
 
   it("arrows move the highlight, clamped to the filtered list, and no-op without one", () => {
-    fc.assert(
-      fc.property(modelArb, fc.integer({ min: -3, max: 3 }), (model, delta) => {
+    assert(
+      property(modelArb, integer({ max: 3, min: -3 }), (model, delta) => {
         const [next] = update(model, PickerMove({ delta }));
         if (model.modelPicker._tag !== "Success") {
           expect(next).toEqual(model);
@@ -332,11 +344,11 @@ describe("thread update", () => {
   });
 
   it("a model pick is guarded: one in flight, then no-ops", () => {
-    fc.assert(
-      fc.property(modelArb, wireModelArb, (model, candidate) => {
+    assert(
+      property(modelArb, wireModelArb, (model, candidate) => {
         const [next, commands] = update(
           model,
-          ModelPicked({ provider: candidate.provider, modelId: candidate.id }),
+          ModelPicked({ modelId: candidate.id, provider: candidate.provider }),
         );
         if (model.id === null || model.modelBusy) {
           expect(next).toEqual(model);
@@ -350,8 +362,8 @@ describe("thread update", () => {
   });
 
   it("a set model lands the model and closes the picker; an unresolvable one shows the notice", () => {
-    fc.assert(
-      fc.property(modelArb, wireModelArb, (model, next) => {
+    assert(
+      property(modelArb, wireModelArb, (model, next) => {
         const [set] = update(model, ModelSet({ model: next }));
         expect(set).toEqual({
           ...model,
@@ -372,8 +384,8 @@ describe("thread update", () => {
   });
 
   it("closing the model picker returns it to Idle", () => {
-    fc.assert(
-      fc.property(modelArb, (model) => {
+    assert(
+      property(modelArb, (model) => {
         const [next] = update(model, ModelPickerClosed());
         expect(next).toEqual({ ...model, modelPicker: ModelPicker.Idle() });
       }),
@@ -381,8 +393,8 @@ describe("thread update", () => {
   });
 
   it("the usage badge toggles the floating usage panel; the close message closes it", () => {
-    fc.assert(
-      fc.property(modelArb, (model) => {
+    assert(
+      property(modelArb, (model) => {
         const [opened] = update(model, UsagePanelRequested());
         expect(opened).toEqual({ ...model, usageOpen: !model.usageOpen });
         const [closed] = update(opened, UsagePanelClosed());
@@ -392,40 +404,37 @@ describe("thread update", () => {
   });
 
   it("opening the model picker closes the usage panel (both float over the card)", () => {
-    fc.assert(
-      fc.property(modelArb, (model) => {
-        const [next, commands] = update(
-          { ...model, usageOpen: true },
-          ModelPickerRequested(),
-        );
+    assert(
+      property(modelArb, (model) => {
+        const [next, commands] = update({ ...model, usageOpen: true }, ModelPickerRequested());
         // The picker still opens exactly as before (guards unchanged).
         const opens =
           model.id !== null && model.info?.state !== "working" && model.modelPicker._tag === "Idle";
-        if (!opens) {
-          // The guard returns the model it was handed, untouched.
-          expect(next).toEqual({ ...model, usageOpen: true });
-          expect(commands).toHaveLength(0);
-        } else {
+        if (opens) {
           expect(next.usageOpen).toBe(false);
           expect(next.modelPicker._tag).toBe("Loading");
           expect(commands).toHaveLength(1);
+        } else {
+          // The guard returns the model it was handed, untouched.
+          expect(next).toEqual({ ...model, usageOpen: true });
+          expect(commands).toHaveLength(0);
         }
       }),
     );
   });
 
   it("a thinking toggle expands once per id and collapses by id", () => {
-    fc.assert(
-      fc.property(modelArb, fc.string({ maxLength: 12 }), (model, messageId) => {
-        const [expanded] = update(model, ThinkingToggled({ messageId, expanded: true }));
+    assert(
+      property(modelArb, string({ maxLength: 12 }), (model, messageId) => {
+        const [expanded] = update(model, ThinkingToggled({ expanded: true, messageId }));
         expect(expanded.thinkingOpen).toEqual(
           model.thinkingOpen.includes(messageId)
             ? model.thinkingOpen
             : [...model.thinkingOpen, messageId],
         );
-        const [again] = update(expanded, ThinkingToggled({ messageId, expanded: true }));
+        const [again] = update(expanded, ThinkingToggled({ expanded: true, messageId }));
         expect(again.thinkingOpen).toEqual(expanded.thinkingOpen);
-        const [collapsed] = update(expanded, ThinkingToggled({ messageId, expanded: false }));
+        const [collapsed] = update(expanded, ThinkingToggled({ expanded: false, messageId }));
         expect(collapsed.thinkingOpen).toEqual(
           expanded.thinkingOpen.filter((id) => id !== messageId),
         );
@@ -434,23 +443,23 @@ describe("thread update", () => {
   });
 
   it("a tool toggle expands once per id and collapses by id", () => {
-    fc.assert(
-      fc.property(modelArb, fc.string({ maxLength: 12 }), (model, id) => {
-        const [expanded] = update(model, ToolToggled({ id, expanded: true }));
+    assert(
+      property(modelArb, string({ maxLength: 12 }), (model, id) => {
+        const [expanded] = update(model, ToolToggled({ expanded: true, id }));
         expect(expanded.toolsOpen).toEqual(
           model.toolsOpen.includes(id) ? model.toolsOpen : [...model.toolsOpen, id],
         );
-        const [again] = update(expanded, ToolToggled({ id, expanded: true }));
+        const [again] = update(expanded, ToolToggled({ expanded: true, id }));
         expect(again.toolsOpen).toEqual(expanded.toolsOpen);
-        const [collapsed] = update(expanded, ToolToggled({ id, expanded: false }));
+        const [collapsed] = update(expanded, ToolToggled({ expanded: false, id }));
         expect(collapsed.toolsOpen).toEqual(expanded.toolsOpen.filter((x) => x !== id));
       }),
     );
   });
 
   it("AbortRequested is a no-op when no thread is pinned, and fires AbortCmd with the pinned id otherwise", () => {
-    fc.assert(
-      fc.property(modelArb, (model) => {
+    assert(
+      property(modelArb, (model) => {
         const [next, commands, out] = update(model, AbortRequested());
         expect(next).toEqual(model);
         expect(out).toEqual(Option.none());
@@ -466,8 +475,8 @@ describe("thread update", () => {
   });
 
   it("AbortDone is a pure no-op (state, commands, and out are unchanged)", () => {
-    fc.assert(
-      fc.property(modelArb, (model) => {
+    assert(
+      property(modelArb, (model) => {
         const [next, commands, out] = update(model, AbortDone());
         expect(next).toEqual(model);
         expect(commands).toHaveLength(0);
@@ -477,22 +486,22 @@ describe("thread update", () => {
   });
 
   it("informRouteChanged pins the thread, resets the view, preserves the composer, and reads the trail and state", () => {
-    fc.assert(
-      fc.property(modelArb, fc.string({ maxLength: 24 }), (model, id) => {
+    assert(
+      property(modelArb, string({ maxLength: 24 }), (model, id) => {
         const reset = {
-          info: null,
-          trail: Trail.Idle(),
-          live: { tools: [] },
-          focused: false,
-          model: null,
-          modelPicker: ModelPicker.Idle(),
-          pickerQuery: "",
-          pickerActive: 0,
-          modelBusy: false,
-          usageOpen: false,
           composerMenu: null,
+          focused: false,
+          info: null,
+          live: { tools: [] },
+          model: null,
+          modelBusy: false,
+          modelPicker: ModelPicker.Idle(),
+          pickerActive: 0,
+          pickerQuery: "",
           thinkingOpen: [],
           toolsOpen: [],
+          trail: Trail.Idle(),
+          usageOpen: false,
         };
         const [pinned, pinnedCommands] = informRouteChanged(model, ThreadRoute({ id }));
         expect(pinned).toEqual({ ...model, id, ...reset });

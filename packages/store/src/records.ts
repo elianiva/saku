@@ -34,59 +34,85 @@
 
 import { Effect, Option } from "effect";
 
-import type { KvStoreShape } from "./kv.ts";
+import type { KvStoreApi } from "./kv.ts";
 
 /** A typed JSON record collection scoped to one key prefix of a KvStore. */
 export interface RecordCollection<A> {
-  readonly get: (key: string) => Effect.Effect<Option.Option<A>, never>;
-  readonly put: (key: string, record: A) => Effect.Effect<void, never>;
-  readonly delete: (key: string) => Effect.Effect<void, never>;
-  readonly list: () => Effect.Effect<readonly { key: string; value: A }[], never>;
+  readonly get: (key: string) => Effect.Effect<Option.Option<A>>;
+  readonly put: (key: string, record: A) => Effect.Effect<void>;
+  readonly delete: (key: string) => Effect.Effect<void>;
+  readonly list: () => Effect.Effect<readonly { key: string; value: A }[]>;
 }
-
-/** The record encoding: `JSON.stringify(record) + "\n"` (the hub's encoding). */
-const encodeRecord = <A>(record: A) => new TextEncoder().encode(`${JSON.stringify(record)}\n`);
-
-const decodeRecord = <A>(value: Uint8Array) => JSON.parse(new TextDecoder().decode(value)) as A;
 
 /**
  * A typed JSON record collection over one key prefix of `kv`. The
  * collection keeps the shape of the seam (same error channel, same
- * atomicity), so it is interchangeable with a raw `KvStoreShape`.
+ * atomicity), so it is interchangeable with a raw `KvStoreApi`.
  */
-export const jsonRecords = <A>(kv: KvStoreShape, prefix: string): RecordCollection<A> => ({
-  get: (key) =>
-    kv.get(`${prefix}${key}`).pipe(
-      Effect.flatMap((value) =>
-        Option.match(value, {
-          // Missing and corrupt both read as "no record".
-          onNone: () => Effect.succeed(Option.none<A>()),
-          onSome: (bytes) =>
-            Effect.try(() => Option.some(decodeRecord<A>(bytes))).pipe(
-              Effect.catch(() => Effect.succeed(Option.none<A>())),
-            ),
-        }),
-      ),
-    ),
-  put: (key, record) => kv.put(`${prefix}${key}`, encodeRecord(record)),
-  delete: (key) => kv.delete(`${prefix}${key}`),
-  list: () =>
-    kv.list({ prefix }).pipe(
-      Effect.flatMap((entries) =>
-        Effect.forEach(entries, (entry) =>
-          Effect.try(() => ({
-            key: entry.key.slice(prefix.length),
-            value: decodeRecord<A>(entry.value),
-          })).pipe(
-            Effect.catch((error) =>
-              // Corrupt record: skip (the key stays on disk for inspection).
-              Effect.logWarning(
-                `[store] skipping corrupt record at ${entry.key}: ${String(error)}`,
-              ).pipe(Effect.as(undefined)),
-            ),
-          ),
+export const jsonRecords = <A>(kv: KvStoreApi, prefix: string): RecordCollection<A> => {
+  /**
+   * Whether the parsed value has the object shape every record has.
+   * Generic in `B` so the caller's `unknown` parse result narrows to `A & B`
+   * (i.e. `A`) without an assertion: the object check is the whole shape
+   * contract the stored bytes cross.
+   */
+  const isRecordObject = <B>(value: B): value is A & B => {
+    // The boolean result of the object check; the `A` in the annotation is
+    // the record type this guard hands back to decodeRecord.
+    const isObject: A | boolean = typeof value === "object" && value !== null;
+    return isObject;
+  };
+
+  const decodeRecord = (value: Uint8Array): A => {
+    const parsed: unknown = JSON.parse(new TextDecoder().decode(value));
+    // Records are written by `put` from values of type A, and every caller
+    // instantiates A with a JSON-object type — so the object check above is
+    // the whole boundary the bytes cross; the `Effect.try` at the call sites
+    // below turns any parse failure or shape mismatch into absence.
+    if (!isRecordObject(parsed)) {
+      throw new Error("[store] corrupt record: expected a JSON object");
+    }
+    return parsed;
+  };
+
+  return {
+    delete: (key) => kv.delete(`${prefix}${key}`),
+    get: (key) =>
+      kv.get(`${prefix}${key}`).pipe(
+        Effect.flatMap((value) =>
+          Option.match(value, {
+            // Missing and corrupt both read as "no record".
+            onNone: () => Effect.succeed(Option.none<A>()),
+            onSome: (bytes) =>
+              Effect.try(() => Option.some(decodeRecord(bytes))).pipe(
+                Effect.catchEager(() => Effect.succeed(Option.none<A>())),
+              ),
+          }),
         ),
       ),
-      Effect.map((records) => records.filter((record) => record !== undefined)),
-    ),
-});
+    list: () =>
+      kv.list({ prefix }).pipe(
+        Effect.flatMap((entries) =>
+          Effect.forEach(
+            entries,
+            (entry) =>
+              Effect.try(() => ({
+                key: entry.key.slice(prefix.length),
+                value: decodeRecord(entry.value),
+              })).pipe(
+                Effect.catchEager((failure) =>
+                  // Corrupt record: skip (the key stays on disk for inspection).
+                  Effect.logWarning(
+                    `[store] skipping corrupt record at ${entry.key}: ${String(failure)}`,
+                  ).pipe(Effect.as(undefined satisfies undefined)),
+                ),
+              ),
+            { concurrency: 1 },
+          ),
+        ),
+        Effect.map((records) => records.filter((record) => record !== undefined)),
+      ),
+    put: (key, record) =>
+      kv.put(`${prefix}${key}`, new TextEncoder().encode(`${JSON.stringify(record)}\n`)),
+  };
+};

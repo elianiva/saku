@@ -13,11 +13,18 @@
 
 import { Effect, Result, Schedule, Schema } from "effect";
 
+/**
+ * Aliased so the TaggedError class declarations below stay plain calls
+ * (oxlint's throw-new-error would demand `new`, which breaks the schema
+ * typecheck — `TaggedError` is a function returning a class, not a class).
+ */
+const taggedError = Schema.TaggedError;
+
 /** A failure of the Box API (auth, limits, provisioning, transport). */
-export class BoxError extends Schema.TaggedError<BoxError>()("BoxError", {
+export class BoxError extends taggedError<BoxError>()("BoxError", {
+  body: Schema.optional(Schema.Unknown),
   message: Schema.String,
   status: Schema.optional(Schema.Number),
-  body: Schema.optional(Schema.Unknown),
 }) {}
 
 export interface BoxInfo {
@@ -32,7 +39,7 @@ export interface CommandResult {
   readonly success: boolean;
 }
 
-export interface BoxApiShape {
+export interface BoxApiContract {
   /** Create a box; the returned id is stable for the box's life. */
   readonly createBox: (input: {
     type?: string;
@@ -40,22 +47,22 @@ export interface BoxApiShape {
     ttlSeconds?: number | null;
     /** Per-box env vars; the thread id tags the box for identification. */
     env?: Record<string, string>;
-  }) => Effect.Effect<BoxInfo, BoxError, never>;
-  readonly getBox: (boxId: string) => Effect.Effect<BoxInfo, BoxError, never>;
+  }) => Effect.Effect<BoxInfo, BoxError>;
+  readonly getBox: (boxId: string) => Effect.Effect<BoxInfo, BoxError>;
   readonly runCommand: (
     boxId: string,
     command: string,
     options?: { timeoutSeconds?: number; cwd?: string },
-  ) => Effect.Effect<CommandResult, BoxError, never>;
+  ) => Effect.Effect<CommandResult, BoxError>;
   readonly writeFile: (
     boxId: string,
     path: string,
     content: string,
-  ) => Effect.Effect<void, BoxError, never>;
-  readonly readFile: (boxId: string, path: string) => Effect.Effect<string, BoxError, never>;
+  ) => Effect.Effect<void, BoxError>;
+  readonly readFile: (boxId: string, path: string) => Effect.Effect<string, BoxError>;
   /** Stop and archive (snapshot; billing paused). */
-  readonly stop: (boxId: string) => Effect.Effect<void, BoxError, never>;
-  readonly resume: (boxId: string) => Effect.Effect<void, BoxError, never>;
+  readonly stop: (boxId: string) => Effect.Effect<void, BoxError>;
+  readonly resume: (boxId: string) => Effect.Effect<void, BoxError>;
 }
 
 export interface BoxApiDeps {
@@ -65,35 +72,76 @@ export interface BoxApiDeps {
   readonly baseUrl?: string;
 }
 
-interface Envelope {
-  readonly ok: boolean;
-  readonly type: string;
-  readonly [key: string]: unknown;
+/**
+ * Response envelope schema: `{ok, type, ...}` per the platform guide, plus
+ * the payload fields the v1 endpoints return (parsed at the I/O boundary
+ * before they are read). Every field is optional so an unparseable body
+ * degrades to an empty envelope instead of failing the request.
+ */
+const EnvelopeSchema = Schema.Struct({
+  box: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        id: Schema.optional(Schema.String),
+        status: Schema.optional(Schema.String),
+      }),
+    ),
+  ),
+  content: Schema.optional(Schema.String),
+  error: Schema.optional(Schema.String),
+  exitCode: Schema.optional(Schema.NullOr(Schema.Number)),
+  id: Schema.optional(Schema.String),
+  ok: Schema.optional(Schema.Boolean),
+  status: Schema.optional(Schema.String),
+  stderr: Schema.optional(Schema.String),
+  stdout: Schema.optional(Schema.String),
+  success: Schema.optional(Schema.Boolean),
+  type: Schema.optional(Schema.String),
+});
+
+type Envelope = Schema.Schema.Type<typeof EnvelopeSchema>;
+
+/** Degenerate envelope: every field is optional, so `{}` stands in. */
+const EMPTY_ENVELOPE: Envelope = {};
+
+/**
+ * A JSON-serializable request payload for the Box v1 endpoints (built
+ * inline at each call site).
+ */
+interface RequestBody {
+  [key: string]: string | number | boolean | null | RequestBody | readonly RequestBody[];
 }
 
 /**
  * Internal poll failure: the box answered but is not ready yet (the poll
  * retries this; `while` keeps API failures from being retried).
  */
-class PollNotReady extends Schema.TaggedError<PollNotReady>()("PollNotReady", {
+interface PollNotReady {
+  readonly _tag: "PollNotReady";
+  readonly status: string;
+}
+
+const PollNotReady = taggedError<PollNotReady>()("PollNotReady", {
   status: Schema.String,
-}) {}
+});
 
 /** Poll a box until it reaches `ready`/`idle` (provisioning is async). */
 export const pollUntilReady = (
-  api: BoxApiShape,
+  api: BoxApiContract,
   boxId: string,
   options: {
     intervalMs?: number;
     timeoutMs?: number;
-    log?: (message: string) => Effect.Effect<void, never, never>;
+    log?: (message: string) => Effect.Effect<void>;
   } = {},
 ) => {
   const intervalMs = options.intervalMs ?? 1000;
   const timeoutMs = options.timeoutMs ?? 5 * 60 * 1000;
-  const attempt = Effect.gen(function* () {
+  const attempt = Effect.gen(function* attempt() {
     const box = yield* api.getBox(boxId);
-    if (box.status === "ready" || box.status === "idle") return box;
+    if (box.status === "ready" || box.status === "idle") {
+      return box;
+    }
     return yield* Effect.fail(new PollNotReady({ status: box.status }));
   });
   return attempt.pipe(
@@ -107,130 +155,142 @@ export const pollUntilReady = (
       while: (error) => error._tag === "PollNotReady",
     }),
     // The schedule gave up: the deadline passed. Today's message, kept.
-    Effect.catchTag("PollNotReady", (error) =>
+    Effect.catchTag("PollNotReady", (notReady) =>
       Effect.fail(
         new BoxError({
-          message: `box ${boxId} not ready after ${timeoutMs}ms (status ${error.status})`,
+          message: `box ${boxId} not ready after ${timeoutMs}ms (status ${notReady.status})`,
         }),
       ),
     ),
   );
 };
 
-/** The client: one request function, thin typed wrappers over it. */
 /** The Box HTTP client: `BoxApi.make(deps)` builds one. */
-export class BoxApi {
-  static readonly make = (deps: BoxApiDeps) => {
+export const BoxApi = {
+  make: (deps: BoxApiDeps) => {
     const baseUrl = deps.baseUrl ?? "https://ascii.dev/api/box/v1";
-    const fetchImpl = deps.fetch ?? ((...args: Parameters<typeof fetch>) => fetch(...args));
+    const fetchImpl =
+      deps.fetch ?? (async (...args: Parameters<typeof fetch>) => await fetch(...args));
 
-    const request = Effect.fn("request")(function* (method: string, path: string, body?: unknown) {
+    const request = Effect.fn("request")(function* request(
+      method: string,
+      path: string,
+      body?: RequestBody,
+    ) {
+      const headers = new Headers({ authorization: `Bearer ${deps.apiKey}` });
+      if (body !== undefined) {
+        headers.set("content-type", "application/json");
+      }
+      const init: RequestInit = { headers, method };
+      if (body !== undefined) {
+        init.body = JSON.stringify(body);
+      }
       const response = yield* Effect.tryPromise({
-        try: () =>
-          fetchImpl(`${baseUrl}${path}`, {
-            method,
-            headers: {
-              authorization: `Bearer ${deps.apiKey}`,
-              ...(body === undefined ? {} : { "content-type": "application/json" }),
-            },
-            ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-          }),
         catch: (error) =>
-          new BoxError({ message: `box api unreachable: ${String(error)}`, body: error }),
+          new BoxError({ body: error, message: `box api unreachable: ${String(error)}` }),
+        try: async () => await fetchImpl(`${baseUrl}${path}`, init),
       });
       const text = yield* Effect.tryPromise({
-        try: () => response.text(),
         catch: (error) =>
-          new BoxError({ message: `box api read failed: ${String(error)}`, body: error }),
+          new BoxError({ body: error, message: `box api read failed: ${String(error)}` }),
+        try: async () => await response.text(),
       });
-      const parsed = Result.try(() => JSON.parse(text) as Envelope);
+      const parsed = Result.try(() => Schema.decodeUnknownSync(EnvelopeSchema)(JSON.parse(text)));
       const envelope = Result.isSuccess(parsed) ? parsed.success : undefined;
       if (!response.ok) {
         return yield* Effect.fail(
           new BoxError({
+            body: envelope ?? text,
             message:
-              envelope?.ok === false && typeof envelope?.error === "string"
-                ? (envelope.error as string)
+              envelope?.ok === false && envelope.error !== undefined
+                ? envelope.error
                 : `box api ${method} ${path} failed: HTTP ${response.status}`,
             status: response.status,
-            body: envelope ?? text,
           }),
         );
       }
-      return envelope ?? {};
+      return envelope ?? EMPTY_ENVELOPE;
     });
 
     return {
-      createBox: Effect.fn("createBox")(function* (input) {
-        const envelope = yield* request("POST", "/boxes", {
-          type: input.type ?? "default",
-          ttlSeconds: input.ttlSeconds ?? null,
-          ...(input.env === undefined ? {} : { env: input.env }),
-        });
-        const box = (envelope as { box?: { id?: string; status?: string } }).box;
-        const id = box?.id ?? (envelope as { id?: string }).id;
+      createBox: Effect.fn("createBox")(function* createBox(input: {
+        type?: string;
+        ttlSeconds?: number | null;
+        env?: Record<string, string>;
+      }) {
+        const payload: RequestBody = {};
+        payload.ttlSeconds = input.ttlSeconds ?? null;
+        payload.type = input.type ?? "default";
+        if (input.env !== undefined) {
+          payload.env = input.env;
+        }
+        const envelope = yield* request("POST", "/boxes", payload);
+        const id = envelope.box?.id ?? envelope.id;
         if (id === undefined) {
           return yield* Effect.fail(
-            new BoxError({ message: "box created without an id", body: envelope }),
+            new BoxError({ body: envelope, message: "box created without an id" }),
           );
         }
-        return { id, status: box?.status ?? "provisioning" };
+        return { id, status: envelope.box?.status ?? "provisioning" };
       }),
-      getBox: Effect.fn("getBox")(function* (boxId) {
+      getBox: Effect.fn("getBox")(function* getBox(boxId: string) {
         const envelope = yield* request("GET", `/boxes/${boxId}`);
-        const box = (envelope as { box?: { id?: string; status?: string } }).box;
-        const id = box?.id ?? boxId;
-        const status = box?.status ?? (envelope as { status?: string }).status;
+        const id = envelope.box?.id ?? boxId;
+        const status = envelope.box?.status ?? envelope.status;
         if (status === undefined) {
           return yield* Effect.fail(
-            new BoxError({ message: `box ${boxId} without a status`, body: envelope }),
+            new BoxError({ body: envelope, message: `box ${boxId} without a status` }),
           );
         }
         return { id, status };
       }),
-      runCommand: Effect.fn("runCommand")(function* (boxId, command, options) {
-        const envelope = yield* request("POST", `/boxes/${boxId}/commands`, {
-          command,
-          ...(options?.timeoutSeconds === undefined
-            ? {}
-            : { timeoutSeconds: options.timeoutSeconds }),
-          ...(options?.cwd === undefined ? {} : { cwd: options.cwd }),
-        });
-        const result = envelope as {
-          success?: boolean;
-          exitCode?: number | null;
-          stdout?: string;
-          stderr?: string;
-        };
-        return {
-          stdout: result.stdout ?? "",
-          stderr: result.stderr ?? "",
-          exitCode: result.exitCode ?? -1,
-          success: result.success ?? false,
-        };
-      }),
-      writeFile: Effect.fn("writeFile")(function* (boxId, path, content) {
-        yield* request("PUT", `/boxes/${boxId}/files`, { path, content, encoding: "utf8" });
-      }),
-      readFile: Effect.fn("readFile")(function* (boxId, path) {
+      readFile: Effect.fn("readFile")(function* readFile(boxId: string, path: string) {
         const envelope = yield* request(
           "GET",
           `/boxes/${boxId}/files?path=${encodeURIComponent(path)}`,
         );
-        const content = (envelope as { content?: string }).content;
+        const { content } = envelope;
         if (content === undefined) {
           return yield* Effect.fail(
-            new BoxError({ message: `box file ${path} without content`, body: envelope }),
+            new BoxError({ body: envelope, message: `box file ${path} without content` }),
           );
         }
         return content;
       }),
-      stop: Effect.fn("stop")(function* (boxId) {
-        yield* request("POST", `/boxes/${boxId}/stop`);
-      }),
-      resume: Effect.fn("resume")(function* (boxId) {
+      resume: Effect.fn("resume")(function* resume(boxId: string) {
         yield* request("POST", `/boxes/${boxId}/resume`);
       }),
+      runCommand: Effect.fn("runCommand")(function* runCommand(
+        boxId: string,
+        command: string,
+        options?: { timeoutSeconds?: number; cwd?: string },
+      ) {
+        const payload: RequestBody = {};
+        payload.command = command;
+        if (options?.timeoutSeconds !== undefined) {
+          payload.timeoutSeconds = options.timeoutSeconds;
+        }
+        if (options?.cwd !== undefined) {
+          payload.cwd = options.cwd;
+        }
+        const envelope = yield* request("POST", `/boxes/${boxId}/commands`, payload);
+        return {
+          exitCode: envelope.exitCode ?? -1,
+          stderr: envelope.stderr ?? "",
+          stdout: envelope.stdout ?? "",
+          success: envelope.success ?? false,
+        };
+      }),
+      stop: Effect.fn("stop")(function* stop(boxId: string) {
+        yield* request("POST", `/boxes/${boxId}/stop`);
+      }),
+      writeFile: Effect.fn("writeFile")(function* writeFile(
+        boxId: string,
+        path: string,
+        content: string,
+      ) {
+        yield* request("PUT", `/boxes/${boxId}/files`, { content, encoding: "utf-8", path });
+      }),
     };
-  };
-}
+  },
+};

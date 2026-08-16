@@ -20,15 +20,16 @@ import { Match, Stream, Schema as S } from "effect";
 import { Subscription } from "foldkit";
 
 import { decodeSessionEvent } from "../thread/projection.ts";
-import { Wire, type BridgeEvent } from "../wire.ts";
+import { Wire } from "../wire.ts";
+import type { BridgeEvent } from "../wire.ts";
 import {
   ConnectionClosed,
   RetryRequested,
   ServerErrorNotice,
   ThreadChanged,
   WireEvent,
-  type RootMessage,
 } from "./message.ts";
+import type { RootMessage } from "./message.ts";
 import type { Model } from "./model.ts";
 
 /** The pause between automatic reconnect attempts while offline. */
@@ -38,32 +39,26 @@ const RETRY_INTERVAL = "2 seconds";
 const bridgeToMessage = (event: BridgeEvent) =>
   Match.value(event).pipe(
     Match.tagsExhaustive({
-      event: (event) =>
+      close: () => ConnectionClosed(),
+      error: (notice) => ServerErrorNotice({ message: notice.message }),
+      event: (wireEvent) =>
         // Decode at the boundary: the wire's TS-typed event becomes the
         // console's schema projection (ADR 0005) before anything folds it.
         WireEvent({
-          threadId: event.threadId,
-          event: decodeSessionEvent(event.event),
+          event: decodeSessionEvent(wireEvent.event),
+          threadId: wireEvent.threadId,
         }),
-      thread_changed: (event) => ThreadChanged({ thread: event.thread }),
-      error: (event) => ServerErrorNotice({ message: event.message }),
-      close: () => ConnectionClosed(),
+      thread_changed: (changed) => ThreadChanged({ thread: changed.thread }),
     }),
   );
 
 export const subscriptions = Subscription.make<Model, RootMessage, Wire>()((entry) => ({
-  wire: Subscription.persistent(
-    Stream.service(Wire).pipe(
-      Stream.flatMap(({ events }) => events.pipe(Stream.map(bridgeToMessage))),
-    ),
-  ),
   // While offline: reconnect every RETRY_INTERVAL. The first tick is
   // dropped — the failure that made us offline already ran one attempt,
   // and an immediate tick would busy-loop the connection.
   retry: entry(
     { offline: S.Boolean },
     {
-      modelToDependencies: (model) => ({ offline: model.conn._tag === "Offline" }),
       dependenciesToStream: ({ offline }) =>
         offline
           ? Stream.tick(RETRY_INTERVAL).pipe(
@@ -71,6 +66,12 @@ export const subscriptions = Subscription.make<Model, RootMessage, Wire>()((entr
               Stream.map(() => RetryRequested()),
             )
           : Stream.empty,
+      modelToDependencies: (model) => ({ offline: model.conn._tag === "Offline" }),
     },
+  ),
+  wire: Subscription.persistent(
+    Stream.service(Wire).pipe(
+      Stream.flatMap(({ events }) => events.pipe(Stream.map(bridgeToMessage))),
+    ),
   ),
 }));

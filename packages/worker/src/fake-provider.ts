@@ -8,87 +8,81 @@
  * package, where the module graph must stay isolate-safe.
  */
 
-import {
-  createAssistantMessageEventStream,
-  createProvider,
-  type Api,
-  type ApiKeyAuth,
-  type AssistantMessage,
-  type Model,
-  type Provider,
-  type ProviderStreams,
-} from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, createProvider } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessage, Model, ProviderStreams } from "@earendil-works/pi-ai";
 
 export const FAKE_PROVIDER = "saku-fake";
 export const FAKE_MODEL = "test";
 
 export const fakeText = (): AssistantMessage => ({
-  role: "assistant",
-  content: [{ type: "text", text: "Hello from the saku-fake model." }],
   api: "pi-messages",
-  provider: FAKE_PROVIDER,
+  content: [{ text: "Hello from the saku-fake model.", type: "text" }],
   model: FAKE_MODEL,
-  usage: {
-    input: 10,
-    output: 5,
-    cacheRead: 0,
-    cacheWrite: 0,
-    totalTokens: 15,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-  },
+  provider: FAKE_PROVIDER,
+  role: "assistant",
   stopReason: "stop",
   timestamp: Date.now(),
+  usage: {
+    cacheRead: 0,
+    cacheWrite: 0,
+    cost: { cacheRead: 0, cacheWrite: 0, input: 0, output: 0, total: 0 },
+    input: 10,
+    output: 5,
+    totalTokens: 15,
+  },
 });
 
 /** The first answer of a turn asks for a bash tool call; the follow-up is
  * text-only, so a turn ends after one real tool round-trip. */
 export const fakeToolCall = (): AssistantMessage => ({
-  role: "assistant",
+  api: "pi-messages",
   content: [
-    { type: "text", text: "Let me look around first." },
+    { text: "Let me look around first.", type: "text" },
     {
-      type: "toolCall",
+      arguments: { command: "sleep 2 && echo fake-tool-ran" },
       id: "fake-tool-1",
       name: "bash",
-      arguments: { command: "sleep 2 && echo fake-tool-ran" },
+      type: "toolCall",
     },
   ],
-  api: "pi-messages",
-  provider: FAKE_PROVIDER,
   model: FAKE_MODEL,
-  usage: {
-    input: 10,
-    output: 5,
-    cacheRead: 0,
-    cacheWrite: 0,
-    totalTokens: 15,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-  },
+  provider: FAKE_PROVIDER,
+  role: "assistant",
   stopReason: "stop",
   timestamp: Date.now(),
+  usage: {
+    cacheRead: 0,
+    cacheWrite: 0,
+    cost: { cacheRead: 0, cacheWrite: 0, input: 0, output: 0, total: 0 },
+    input: 10,
+    output: 5,
+    totalTokens: 15,
+  },
 });
 
 export const fakeApiKeyAuth = () => ({
+  check: async () =>
+    await Promise.resolve({ source: "configured API key", type: "api_key" as const }),
+  login: async () => await Promise.resolve({ key: "fake", type: "api_key" as const }),
   name: "API key",
-  login: async () => ({ type: "api_key" as const, key: "fake" }),
-  check: async () => ({ type: "api_key" as const, source: "configured API key" }),
-  resolve: async () => ({ auth: { apiKey: "fake" }, source: "configured API key" }),
+  resolve: async () =>
+    await Promise.resolve({ auth: { apiKey: "fake" }, source: "configured API key" }),
 });
 
 /** The scripted provider: a canned stream, no network. First stream call of
  * a turn carries the tool call, later calls answer with text. */
 export const fakeProvider = () => {
   const model: Model<Api> = {
-    id: FAKE_MODEL,
-    name: "test",
     api: "pi-messages",
-    provider: FAKE_PROVIDER,
     baseUrl: "https://fake.invalid",
-    reasoning: false,
-    input: ["text"],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: 128_000,
+    cost: { cacheRead: 0, cacheWrite: 0, input: 0, output: 0 },
+    id: FAKE_MODEL,
+    input: ["text"],
     maxTokens: 16_384,
+    name: "test",
+    provider: FAKE_PROVIDER,
+    reasoning: false,
   };
   let calls = 0;
   const streams: ProviderStreams = {
@@ -106,11 +100,11 @@ export const fakeProvider = () => {
     },
   };
   return createProvider({
-    id: FAKE_PROVIDER,
-    name: "saku-fake",
-    baseUrl: "https://fake.invalid",
-    auth: { apiKey: fakeApiKeyAuth() },
-    models: [model],
     api: streams,
+    auth: { apiKey: fakeApiKeyAuth() },
+    baseUrl: "https://fake.invalid",
+    id: FAKE_PROVIDER,
+    models: [model],
+    name: "saku-fake",
   });
 };

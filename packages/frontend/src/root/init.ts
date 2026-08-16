@@ -6,19 +6,21 @@
  * when the boot URL pins a thread.
  */
 
-import { Command, Url } from "foldkit";
+import type { Url } from "foldkit";
+import { Command } from "foldkit";
 
 import { connMachine } from "../conn/machine.ts";
 import { initialModel as initialRailModel } from "../rail/model.ts";
 import { parseRoute } from "../route.ts";
 import { initialModel as initialThreadModel } from "../thread/model.ts";
 import { informRouteChanged } from "../thread/update.ts";
-import { Wire } from "../wire.ts";
+import type { Wire } from "../wire.ts";
 import { WireConnectCmd } from "./command.ts";
-import { GotThreadMessage, type RootMessage } from "./message.ts";
+import { GotThreadMessage } from "./message.ts";
+import type { RootMessage } from "./message.ts";
 import type { Model } from "./model.ts";
 
-export type Commands = ReadonlyArray<Command.Command<RootMessage, never, Wire>>;
+export type Commands = readonly Command.Command<RootMessage, never, Wire>[];
 export type InitReturn = readonly [Model, Commands];
 
 export const init = (url: Url.Url): InitReturn => {
@@ -26,10 +28,10 @@ export const init = (url: Url.Url): InitReturn => {
   const [thread, threadCommands] = informRouteChanged(initialThreadModel(), route);
   return [
     {
-      route,
-      conn: connMachine.initial,
       banner: null,
+      conn: connMachine.initial,
       rail: initialRailModel(),
+      route,
       thread,
     },
     [

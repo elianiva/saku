@@ -13,11 +13,23 @@
  * - toolResult: `{ role: "toolResult", toolCallId, toolName, content, isError }`
  */
 
-import { jsonLine, toolArgsView, type ToolArgsView } from "./tools.ts";
+import type { Json } from "effect/Schema";
+import { jsonLine, toolArgsView } from "./tools.ts";
+import type { ToolArgsView } from "./tools.ts";
 
-import type { EntryProjection, MessageProjection } from "./projection.ts";
+import type { ContentBlock, EntryProjection, MessageProjection } from "./projection.ts";
 
-export const asString = (value: unknown) => (typeof value === "string" ? value : "");
+/** A message's content: a raw string or the block list (projection.ts). */
+type MessageContent = MessageProjection["content"];
+
+const isTextContent = (content: MessageContent): content is string => typeof content === "string";
+
+const isBlockList = (content: MessageContent): content is readonly ContentBlock[] =>
+  Array.isArray(content);
+
+const isString = (value: Json): value is string => typeof value === "string";
+
+export const asString = (value: string | undefined) => value ?? "";
 
 export const messageRole = (message: MessageProjection) => asString(message.role);
 
@@ -27,9 +39,11 @@ export const messageError = (message: MessageProjection) =>
 
 /** The joined text content of a message (all text blocks / raw strings). */
 export const messageText = (message: MessageProjection) => {
-  const content = message.content;
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
+  const { content } = message;
+  if (isTextContent(content)) {
+    return content;
+  }
+  if (isBlockList(content)) {
     return content
       .map((block) => (block.type === "text" ? asString(block.text) : ""))
       .join("")
@@ -40,8 +54,10 @@ export const messageText = (message: MessageProjection) => {
 
 /** The joined thinking content of a message. */
 export const messageThinking = (message: MessageProjection) => {
-  const content = message.content;
-  if (!Array.isArray(content)) return "";
+  const { content } = message;
+  if (!isBlockList(content)) {
+    return "";
+  }
   return content
     .map((block) => (block.type === "thinking" ? asString(block.thinking) : ""))
     .join("")
@@ -58,15 +74,19 @@ export interface ToolCallRow {
 
 /** The tool calls an assistant message asks for. */
 export const messageToolCalls = (message: MessageProjection) => {
-  const content = message.content;
-  if (!Array.isArray(content)) return [];
+  const { content } = message;
+  if (!isBlockList(content)) {
+    return [];
+  }
   const rows: ToolCallRow[] = [];
   for (const block of content) {
-    if (block.type !== "toolCall") continue;
+    if (block.type !== "toolCall") {
+      continue;
+    }
     rows.push({
+      args: toolArgsView(asString(block.name), block.arguments),
       id: asString(block.id),
       name: asString(block.name),
-      args: toolArgsView(asString(block.name), block.arguments),
     });
   }
   return rows;
@@ -82,12 +102,14 @@ export interface ToolResultRow {
 
 /** A toolResult message's payload. */
 export const messageToolResult = (message: MessageProjection) => {
-  if (message.role !== "toolResult") return null;
+  if (message.role !== "toolResult") {
+    return null;
+  }
   return {
     callId: asString(message.toolCallId),
+    isError: message.isError === true,
     name: asString(message.toolName),
     text: messageText(message),
-    isError: message.isError === true,
   };
 };
 
@@ -105,18 +127,24 @@ export const trailToolIndex = (entries: readonly EntryProjection[]): TrailToolIn
   const results = new Map<string, ToolResultRow>();
   const calls = new Set<string>();
   for (const entry of entries) {
-    if (entry.type !== "message") continue;
+    if (entry.type !== "message") {
+      continue;
+    }
     const message = entry.message ?? {};
     if (messageRole(message) === "toolResult") {
       const result = messageToolResult(message);
-      if (result !== null && result.callId !== "") results.set(result.callId, result);
+      if (result !== null && result.callId !== "") {
+        results.set(result.callId, result);
+      }
     } else if (messageRole(message) === "assistant") {
       for (const call of messageToolCalls(message)) {
-        if (call.id !== "") calls.add(call.id);
+        if (call.id !== "") {
+          calls.add(call.id);
+        }
       }
     }
   }
-  return { results, paired: new Set([...calls].filter((id) => results.has(id))) };
+  return { paired: new Set([...calls].filter((id) => results.has(id))), results };
 };
 
 /** Streamed tool output grows; render its tail. */
@@ -124,15 +152,19 @@ export const tail = (text: string, limit: number) =>
   text.length > limit ? `…${text.slice(text.length - limit)}` : text;
 
 /** Streamed tool partials/results: strings as-is, everything else as JSON. */
-export const stringifyLive = (value: unknown) => {
-  if (value === undefined) return "";
-  if (typeof value === "string") return tail(value, 1200);
+export const stringifyLive = (value: Json | undefined) => {
+  if (value === undefined) {
+    return "";
+  }
+  if (isString(value)) {
+    return tail(value, 1200);
+  }
   const raw = jsonLine(value);
   return raw.length > 400 ? `${raw.slice(0, 400)}…` : raw;
 };
 
 /** First line of a summary (compaction, branch), truncated. */
-export const summaryLine = (summary: unknown) => {
+export const summaryLine = (summary: string | undefined) => {
   const text = asString(summary);
   const first = text.split("\n", 1)[0] ?? "";
   return first.length > 160 ? `${first.slice(0, 160)}…` : first;

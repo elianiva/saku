@@ -16,9 +16,20 @@
 import { describe, expect, it } from "vitest";
 import { Option } from "effect";
 import * as Dialog from "@foldkit/ui/dialog";
-import { WireError, type PiSessionInfo, type ProjectInfo, type ThreadInfo } from "@saku/wire";
-import fc from "fast-check";
-
+import { WireError } from "@saku/wire";
+import type { PiSessionInfo, ProjectInfo, ThreadInfo } from "@saku/wire";
+import type { Arbitrary } from "fast-check";
+import {
+  array,
+  assert,
+  constant,
+  constantFrom,
+  integer,
+  oneof,
+  property,
+  record,
+  string,
+} from "fast-check";
 import { ThreadsRoute, ThreadRoute } from "../route.ts";
 import { update, informRouteChanged } from "./update.ts";
 import { browseEntries, initialModel, initialPicker, projectSessions, projects } from "./model.ts";
@@ -64,40 +75,52 @@ import {
   UnarchiveRequested,
 } from "./message.ts";
 
+/** A minimal thread helper (archive-neutral). */
+const thread = (id: string, name: string): ThreadInfo => ({
+  archivedAt: null,
+  cwd: null,
+  env: "ready",
+  id,
+  mode: "local",
+  name,
+  sessionId: null,
+  state: "idle",
+  tailSeq: 0,
+});
+
+/** A minimal project helper. */
+const project = (path: string): ProjectInfo => ({ addedAt: 1, path });
+
+/** A minimal pi session helper. */
+const piSession = (path: string): PiSessionInfo => ({
+  createdAt: 1,
+  cwd: "/a",
+  firstMessage: "hi",
+  id: path,
+  messageCount: 1,
+  modifiedAt: 1,
+  name: "session",
+  path,
+});
+
 /** Any registry thread the wire could broadcast. */
-const threadArb: fc.Arbitrary<ThreadInfo> = fc.record({
-  id: fc.string({ maxLength: 24 }),
-  name: fc.string({ maxLength: 24 }),
-  cwd: fc.oneof(fc.constant(null), fc.string({ maxLength: 24 })),
-  mode: fc.constantFrom("local", "sandbox", "any"),
-  state: fc.constantFrom("idle", "working", "interrupted"),
-  env: fc.constantFrom("stopped", "provisioning", "ready", "error"),
-  sessionId: fc.oneof(fc.constant(null), fc.string({ maxLength: 24 })),
-  tailSeq: fc.integer({ min: 0 }),
-  archivedAt: fc.oneof(fc.constant(null), fc.integer()),
+const threadArb: Arbitrary<ThreadInfo> = record({
+  archivedAt: oneof(constant(null), integer()),
+  cwd: oneof(constant(null), string({ maxLength: 24 })),
+  env: constantFrom("stopped", "provisioning", "ready", "error"),
+  id: string({ maxLength: 24 }),
+  mode: constantFrom("local", "sandbox", "any"),
+  name: string({ maxLength: 24 }),
+  sessionId: oneof(constant(null), string({ maxLength: 24 })),
+  state: constantFrom("idle", "working", "interrupted"),
+  tailSeq: integer({ min: 0 }),
 });
 
-const listArb = fc.array(threadArb, { maxLength: 8 });
+const listArb = array(threadArb, { maxLength: 8 });
 
-const piSessionArb: fc.Arbitrary<PiSessionInfo> = fc.record({
-  id: fc.string({ maxLength: 24 }),
-  cwd: fc.string({ maxLength: 24 }),
-  name: fc.string({ maxLength: 24 }),
-  createdAt: fc.integer(),
-  modifiedAt: fc.integer(),
-  messageCount: fc.integer({ min: 0 }),
-  firstMessage: fc.string({ maxLength: 24 }),
-  path: fc.string({ maxLength: 24 }),
-});
-
-const projectArb: fc.Arbitrary<ProjectInfo> = fc.record({
-  path: fc.string({ maxLength: 24 }),
-  addedAt: fc.integer(),
-});
-
-const wireErrorArb = fc
-  .string({ maxLength: 24 })
-  .map((message) => new WireError({ code: "command_failed", message }));
+const wireErrorArb = string({ maxLength: 24 }).map(
+  (message) => new WireError({ code: "command_failed", message }),
+);
 
 /** Fold ThreadsListed, then one more update, returning the next model. */
 const listed = (threads: readonly ThreadInfo[]) =>
@@ -105,10 +128,10 @@ const listed = (threads: readonly ThreadInfo[]) =>
 
 describe("rail update", () => {
   it("lands any list as Success and clears the notice", () => {
-    fc.assert(
-      fc.property(
+    assert(
+      property(
         listArb,
-        fc.oneof(fc.constant(null), fc.string({ maxLength: 24 })),
+        oneof(constant(null), string({ maxLength: 24 })),
         (threads, staleNotice) => {
           const [model] = update(
             { ...initialModel(), notice: staleNotice },
@@ -122,19 +145,19 @@ describe("rail update", () => {
   });
 
   it("lands any failure as the list's Failure", () => {
-    fc.assert(
-      fc.property(wireErrorArb, (error) => {
-        const [model] = update(initialModel(), ListFailed({ error }));
-        expect(model.list).toEqual({ _tag: "Failure", error });
+    assert(
+      property(wireErrorArb, (failure) => {
+        const [model] = update(initialModel(), ListFailed({ error: failure }));
+        expect(model.list).toEqual({ _tag: "Failure", error: failure });
       }),
     );
   });
 
   it("refresh re-lists the registry and the projects — never pi sessions", () => {
-    fc.assert(
-      fc.property(
-        fc.oneof(
-          fc.constant(initialModel()),
+    assert(
+      property(
+        oneof(
+          constant(initialModel()),
           listArb.map((threads) => listed(threads)),
         ),
         (model) => {
@@ -147,8 +170,8 @@ describe("rail update", () => {
   });
 
   it("a broadcast upserts in place and appends otherwise", () => {
-    fc.assert(
-      fc.property(listArb, threadArb, (threads, incoming) => {
+    assert(
+      property(listArb, threadArb, (threads, incoming) => {
         const [model] = update(listed(threads), ThreadChanged({ thread: incoming }));
         const known = threads.some((existing) => existing.id === incoming.id);
         const expected = known
@@ -160,10 +183,10 @@ describe("rail update", () => {
   });
 
   it("a broadcast before the list lands is a no-op", () => {
-    fc.assert(
-      fc.property(
-        fc.oneof(
-          fc.constant(initialModel()),
+    assert(
+      property(
+        oneof(
+          constant(initialModel()),
           wireErrorArb.map((error) => update(initialModel(), ListFailed({ error }))[0]),
         ),
         threadArb,
@@ -177,8 +200,8 @@ describe("rail update", () => {
   });
 
   it("a row click surfaces OpenedThread with the id, leaving the model alone", () => {
-    fc.assert(
-      fc.property(fc.string({ maxLength: 24 }), (id) => {
+    assert(
+      property(string({ maxLength: 24 }), (id) => {
         const [model, commands, out] = update(initialModel(), ClickedThread({ id }));
         expect(model).toEqual(initialModel());
         expect(commands).toHaveLength(0);
@@ -188,14 +211,14 @@ describe("rail update", () => {
   });
 
   it("delete request fires the command; the landed delete filters the row and surfaces DeletedThread", () => {
-    fc.assert(
-      fc.property(listArb, fc.string({ maxLength: 24 }), (threads, id) => {
+    assert(
+      property(listArb, string({ maxLength: 24 }), (threads, id) => {
         const [, commands] = update(listed(threads), DeleteRequested({ id }));
         expect(commands).toHaveLength(1);
         const [model, , out] = update(listed(threads), ThreadDeleted({ id }));
         expect(model.list).toEqual({
           _tag: "Success",
-          data: threads.filter((thread) => thread.id !== id),
+          data: threads.filter((existing) => existing.id !== id),
         });
         expect(out).toEqual(Option.some({ _tag: "DeletedThread", id }));
       }),
@@ -203,32 +226,32 @@ describe("rail update", () => {
   });
 
   it("a failed delete shows the notice", () => {
-    fc.assert(
-      fc.property(wireErrorArb, (error) => {
-        const [model] = update(initialModel(), DeleteFailed({ error }));
-        expect(model.notice).toBe(error.message);
+    assert(
+      property(wireErrorArb, (failure) => {
+        const [model] = update(initialModel(), DeleteFailed({ error: failure }));
+        expect(model.notice).toBe(failure.message);
       }),
     );
   });
 
   it("archive: request fires the command; the landing upserts the thread", () => {
-    fc.assert(
-      fc.property(listArb, threadArb, (threads, thread) => {
-        const [, commands] = update(listed(threads), ArchiveRequested({ id: thread.id }));
+    assert(
+      property(listArb, threadArb, (threads, incoming) => {
+        const [, commands] = update(listed(threads), ArchiveRequested({ id: incoming.id }));
         expect(commands).toHaveLength(1);
-        const [model] = update(listed(threads), ThreadArchived({ thread }));
-        const expected = threads.some((existing) => existing.id === thread.id)
-          ? threads.map((existing) => (existing.id === thread.id ? thread : existing))
-          : [...threads, thread];
+        const [model] = update(listed(threads), ThreadArchived({ thread: incoming }));
+        const expected = threads.some((existing) => existing.id === incoming.id)
+          ? threads.map((existing) => (existing.id === incoming.id ? incoming : existing))
+          : [...threads, incoming];
         expect(model.list).toEqual({ _tag: "Success", data: expected });
       }),
     );
   });
 
   it("unarchive request fires the command; a failed archive shows the notice", () => {
-    fc.assert(
-      fc.property(threadArb, wireErrorArb, (thread, error) => {
-        const [, commands] = update(initialModel(), UnarchiveRequested({ id: thread.id }));
+    assert(
+      property(threadArb, wireErrorArb, (incoming, error) => {
+        const [, commands] = update(initialModel(), UnarchiveRequested({ id: incoming.id }));
         expect(commands).toHaveLength(1);
         const [model] = update(initialModel(), ArchiveFailed({ error }));
         expect(model.notice).toBe(error.message);
@@ -256,7 +279,11 @@ describe("rail update", () => {
 
   it("a renamed landing upserts the thread", () => {
     const threads = [thread("t1", "old name")];
-    const renamed = { ...threads[0]!, name: "new name" };
+    const [first] = threads;
+    if (first === undefined) {
+      throw new Error("expected a thread");
+    }
+    const renamed = { ...first, name: "new name" };
     const [model] = update(listed(threads), ThreadRenamed({ thread: renamed }));
     expect(model.list).toEqual({ _tag: "Success", data: [renamed] });
   });
@@ -293,12 +320,12 @@ describe("rail update", () => {
   it("the picker: browse levels land, and descend/up move the tree", () => {
     const [opened] = update(initialModel(), AddProjectRequested());
     const level = {
-      path: "/a",
-      parent: "/",
       entries: [
-        { name: "b", path: "/a/b", hasPiSessions: true },
-        { name: "c", path: "/a/c", hasPiSessions: false },
+        { hasPiSessions: true, name: "b", path: "/a/b" },
+        { hasPiSessions: false, name: "c", path: "/a/c" },
       ],
+      parent: "/",
+      path: "/a",
     };
     const [landed] = update(opened, PickerBrowseListed(level));
     expect(landed.picker.path).toBe("/a");
@@ -315,7 +342,7 @@ describe("rail update", () => {
     expect(upCommands.map((command) => command.name)).toEqual(["BrowseProjectDirs"]);
 
     // At the filesystem root the up gesture is a no-op.
-    const [atRoot] = update(landed, PickerBrowseListed({ path: "/", parent: null, entries: [] }));
+    const [atRoot] = update(landed, PickerBrowseListed({ entries: [], parent: null, path: "/" }));
     const [stillRoot] = update(atRoot, PickerUpRequested());
     expect(stillRoot.picker).toBe(atRoot.picker);
   });
@@ -323,13 +350,13 @@ describe("rail update", () => {
   it("the picker: the filter narrows rows and resets the highlight; arrows move it, clamped", () => {
     const [opened] = update(initialModel(), AddProjectRequested());
     const level = {
-      path: "/a",
-      parent: "/",
       entries: [
-        { name: "alpha", path: "/a/alpha", hasPiSessions: true },
-        { name: "beta", path: "/a/beta", hasPiSessions: false },
-        { name: "gamma", path: "/a/gamma", hasPiSessions: false },
+        { hasPiSessions: true, name: "alpha", path: "/a/alpha" },
+        { hasPiSessions: false, name: "beta", path: "/a/beta" },
+        { hasPiSessions: false, name: "gamma", path: "/a/gamma" },
       ],
+      parent: "/",
+      path: "/a",
     };
     const [landed] = update(opened, PickerBrowseListed(level));
 
@@ -354,7 +381,7 @@ describe("rail update", () => {
     const [unlanded] = update(opened, PickerAddRequested({ path: "/a" }));
     expect(unlanded).toBe(opened);
 
-    const [landed] = update(opened, PickerBrowseListed({ path: "/a", parent: "/", entries: [] }));
+    const [landed] = update(opened, PickerBrowseListed({ entries: [], parent: "/", path: "/a" }));
     const [, commands] = update(landed, PickerAddRequested({ path: "/a" }));
     expect(commands.map((command) => command.name)).toEqual(["AddProject"]);
 
@@ -371,9 +398,9 @@ describe("rail update", () => {
     const [landed] = update(
       opened,
       PickerBrowseListed({
-        path: "/a",
+        entries: [{ hasPiSessions: true, name: "b", path: "/a/b" }],
         parent: "/",
-        entries: [{ name: "b", path: "/a/b", hasPiSessions: true }],
+        path: "/a",
       }),
     );
     const [closed] = update(landed, GotPickerDialogMessage({ message: Dialog.RequestedClose() }));
@@ -382,7 +409,7 @@ describe("rail update", () => {
   });
 
   it("expanding a project fetches its sessions once; collapsing and removing clean up", () => {
-    const withProjects = update(initialModel(), ProjectsListed({ projects: [project("/a")] }))[0];
+    const [withProjects] = update(initialModel(), ProjectsListed({ projects: [project("/a")] }));
     const [expanded, commands] = update(withProjects, ProjectExpanded({ path: "/a" }));
     expect(expanded.expanded["/a"]).toBe(true);
     expect(commands).toHaveLength(1);
@@ -424,21 +451,21 @@ describe("rail update", () => {
   });
 
   it("a pi session click is guarded: one adoption in flight, then no-ops", () => {
-    fc.assert(
-      fc.property(
-        fc.oneof(fc.constant(null), fc.string({ maxLength: 24 })),
-        fc.string({ maxLength: 24 }),
+    assert(
+      property(
+        oneof(constant(null), string({ maxLength: 24 })),
+        string({ maxLength: 24 }),
         (adopting, path) => {
           const [next, commands] = update(
             { ...initialModel(), adopting },
             PiSessionClicked({ path }),
           );
-          if (adopting !== null) {
-            expect(next).toEqual({ ...initialModel(), adopting });
-            expect(commands).toHaveLength(0);
-          } else {
+          if (adopting === null) {
             expect(next).toEqual({ ...initialModel(), adopting: path });
             expect(commands).toHaveLength(1);
+          } else {
+            expect(next).toEqual({ ...initialModel(), adopting });
+            expect(commands).toHaveLength(0);
           }
         },
       ),
@@ -446,17 +473,17 @@ describe("rail update", () => {
   });
 
   it("an adopted session joins the registry list and surfaces OpenedThread; a failure re-lists the window", () => {
-    fc.assert(
-      fc.property(listArb, threadArb, wireErrorArb, (threads, thread, error) => {
-        const [adopted, , out] = update(listed(threads), PiSessionAdopted({ thread }));
-        const expected = threads.some((existing) => existing.id === thread.id)
-          ? threads.map((existing) => (existing.id === thread.id ? thread : existing))
-          : [...threads, thread];
+    assert(
+      property(listArb, threadArb, wireErrorArb, (threads, incoming, error) => {
+        const [adopted, , out] = update(listed(threads), PiSessionAdopted({ thread: incoming }));
+        const expected = threads.some((existing) => existing.id === incoming.id)
+          ? threads.map((existing) => (existing.id === incoming.id ? incoming : existing))
+          : [...threads, incoming];
         expect(adopted.list).toEqual({ _tag: "Success", data: expected });
         expect(adopted.adopting).toBeNull();
-        expect(out).toEqual(Option.some({ _tag: "OpenedThread", id: thread.id }));
+        expect(out).toEqual(Option.some({ _tag: "OpenedThread", id: incoming.id }));
 
-        const model = update(initialModel(), ProjectsListed({ projects: [project("/a")] }))[0];
+        const [model] = update(initialModel(), ProjectsListed({ projects: [project("/a")] }));
         const [failed, failedCommands] = update(
           { ...model, adopting: "/a/s1" },
           PiSessionAdoptFailed({ error }),
@@ -470,13 +497,13 @@ describe("rail update", () => {
   });
 
   it("informRouteChanged tracks the pinned thread for the row highlight", () => {
-    fc.assert(
-      fc.property(
-        fc.oneof(
-          fc.constant(initialModel()),
+    assert(
+      property(
+        oneof(
+          constant(initialModel()),
           listArb.map((threads) => listed(threads)),
         ),
-        fc.string({ maxLength: 24 }),
+        string({ maxLength: 24 }),
         (model, id) => {
           expect(informRouteChanged(model, ThreadsRoute()).selectedId).toBeNull();
           expect(informRouteChanged(model, ThreadRoute({ id })).selectedId).toBe(id);
@@ -484,32 +511,4 @@ describe("rail update", () => {
       ),
     );
   });
-});
-
-/** A minimal thread helper (archive-neutral). */
-const thread = (id: string, name: string): ThreadInfo => ({
-  id,
-  name,
-  cwd: null,
-  mode: "local",
-  state: "idle",
-  env: "ready",
-  sessionId: null,
-  tailSeq: 0,
-  archivedAt: null,
-});
-
-/** A minimal project helper. */
-const project = (path: string): ProjectInfo => ({ path, addedAt: 1 });
-
-/** A minimal pi session helper. */
-const piSession = (path: string): PiSessionInfo => ({
-  id: path,
-  cwd: "/a",
-  name: "session",
-  createdAt: 1,
-  modifiedAt: 1,
-  messageCount: 1,
-  firstMessage: "hi",
-  path,
 });

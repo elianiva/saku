@@ -12,45 +12,47 @@
  */
 
 import { Effect, Option, Result, Schema as S } from "effect";
+import type { Entry, SessionWireEvent } from "@saku/wire";
 import { SakuSessionEvent } from "@saku/wire";
 
 const ContentBlock = S.Struct({
-  type: S.optional(S.String),
-  text: S.optional(S.String),
-  thinking: S.optional(S.String),
+  arguments: S.optional(S.Json),
   id: S.optional(S.String),
   name: S.optional(S.String),
-  arguments: S.optional(S.Unknown),
+  text: S.optional(S.String),
+  thinking: S.optional(S.String),
+  type: S.optional(S.String),
 });
+export type ContentBlock = S.Schema.Type<typeof ContentBlock>;
 
 export const MessageProjection = S.Struct({
-  role: S.optional(S.String),
   content: S.optional(S.Union([S.String, S.Array(ContentBlock)])),
-  toolCallId: S.optional(S.String),
-  toolName: S.optional(S.String),
-  isError: S.optional(S.Boolean),
-  stopReason: S.optional(S.String),
   errorMessage: S.optional(S.String),
-  /** pi's per-request usage (the context/usage badges' source); decoded in
-   *  presentation.ts, never re-schema'd (ADR 0005). */
-  usage: S.optional(S.Unknown),
+  isError: S.optional(S.Boolean),
+  model: S.optional(S.String),
   /** pi's AssistantMessage carries the producing model verbatim (provider
    *  + model on the message, not the entry — the usage panel's model row). */
   provider: S.optional(S.String),
-  model: S.optional(S.String),
+  role: S.optional(S.String),
+  stopReason: S.optional(S.String),
+  toolCallId: S.optional(S.String),
+  toolName: S.optional(S.String),
+  /** pi's per-request usage (the context/usage badges' source); decoded in
+   *  presentation.ts, never re-schema'd (ADR 0005). */
+  usage: S.optional(S.Json),
 });
 export type MessageProjection = S.Schema.Type<typeof MessageProjection>;
 
 export const EntryProjection = S.Struct({
+  activeToolNames: S.optional(S.Array(S.String)),
   id: S.optional(S.String),
-  seq: S.optional(S.Number),
-  type: S.optional(S.String),
   message: S.optional(MessageProjection),
-  provider: S.optional(S.String),
   modelId: S.optional(S.String),
+  provider: S.optional(S.String),
+  seq: S.optional(S.Number),
+  summary: S.optional(S.String),
   thinkingLevel: S.optional(S.String),
-  activeToolNames: S.optional(S.Unknown),
-  summary: S.optional(S.Unknown),
+  type: S.optional(S.String),
 });
 export type EntryProjection = S.Schema.Type<typeof EntryProjection>;
 
@@ -64,30 +66,30 @@ export const SessionEventProjection = S.Union([
   S.TaggedStruct("message_end", { message: MessageProjection }),
   S.TaggedStruct("message_update", { message: MessageProjection }),
   S.TaggedStruct("tool_execution_start", {
+    /** The validated arguments pi starts the tool with. */
+    args: S.optional(S.Json),
     toolCallId: S.String,
     toolName: S.String,
-    /** The validated arguments pi starts the tool with. */
-    args: S.optional(S.Unknown),
   }),
   S.TaggedStruct("tool_execution_update", {
+    /** The accumulating arguments as the tool's args stream in. */
+    args: S.optional(S.Json),
+    partialResult: S.Json,
     toolCallId: S.String,
     toolName: S.optional(S.String),
-    /** The accumulating arguments as the tool's args stream in. */
-    args: S.optional(S.Unknown),
-    partialResult: S.Unknown,
   }),
   S.TaggedStruct("tool_execution_end", {
-    toolCallId: S.String,
     isError: S.Boolean,
-    result: S.Unknown,
+    result: S.Json,
+    toolCallId: S.String,
   }),
   S.TaggedStruct("settled", {}),
   S.TaggedStruct("compaction_start", { reason: S.Literals(["manual", "threshold", "overflow"]) }),
   S.TaggedStruct("compaction_end", {
-    reason: S.Literals(["manual", "threshold", "overflow"]),
-    result: S.optional(S.Unknown),
     aborted: S.Boolean,
     errorMessage: S.optional(S.String),
+    reason: S.Literals(["manual", "threshold", "overflow"]),
+    result: S.optional(S.Unknown),
   }),
   /** The explicit long tail: anything the projection does not know. */
   S.TaggedStruct("unhandled", { event: S.Unknown }),
@@ -98,7 +100,10 @@ const DECODE_TAG = S.decodeUnknownOption(EventTag);
 const DECODE_EVENT = S.decodeUnknownOption(SessionEventProjection);
 const DECODE_SAKU = S.decodeUnknownOption(SakuSessionEvent);
 
-const unhandled = (event: unknown): SessionEventProjection => ({ _tag: "unhandled", event });
+const unhandled = (event: SessionWireEvent): SessionEventProjection => ({
+  _tag: "unhandled",
+  event,
+});
 
 /**
  * Decode a raw wire event into the projection (`_tag` discriminant, for
@@ -108,16 +113,18 @@ const unhandled = (event: unknown): SessionEventProjection => ({ _tag: "unhandle
  * — unknown tags, malformed payloads, non-records — becomes `unhandled`.
  * Never throws.
  */
-export const decodeSessionEvent = (event: unknown) => {
+export const decodeSessionEvent = (event: SessionWireEvent) => {
   const saku = DECODE_SAKU(event);
   if (Option.isSome(saku)) {
     return Option.getOrElse(DECODE_EVENT(saku.value), () => unhandled(event));
   }
+  // A successful tag decode means the payload is a non-null record with a
+  // `type` string (EventTag requires it), so retagging is safe from here.
   const tagged = DECODE_TAG(event);
-  if (Option.isNone(tagged) || typeof event !== "object" || event === null) {
+  if (Option.isNone(tagged)) {
     return unhandled(event);
   }
-  const retagged = { ...(event as Record<string, unknown>), _tag: tagged.value.type };
+  const retagged = { ...event, _tag: tagged.value.type };
   return Option.getOrElse(DECODE_EVENT(retagged), () => unhandled(event));
 };
 
@@ -126,11 +133,11 @@ export const decodeSessionEvent = (event: unknown) => {
  * is fully optional-fielded, so this only fails on non-records — bounded,
  * never crashes the trail).
  */
-export const decodeEntry = Effect.fn("decodeEntry")(function* (entry: unknown) {
+export const decodeEntry = Effect.fn("decodeEntry")(function* decodeEntry(entry: Entry) {
   const decoded = Result.try(() => S.decodeUnknownSync(EntryProjection)(entry));
   if (Result.isFailure(decoded)) {
     yield* Effect.logWarning("dropping undecodable trail entry", decoded.failure);
-    return undefined;
+    return Option.none();
   }
-  return decoded.success;
+  return Option.some(decoded.success);
 });
