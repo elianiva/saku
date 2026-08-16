@@ -12,11 +12,11 @@
 import { defineConfig } from "tsdown";
 
 export default defineConfig({
+  clean: false,
   entry: ["src/entry.ts"],
   format: "esm",
-  platform: "node",
   outDir: "dist",
-  clean: false,
-  outExtension: () => ({ js: ".bundle.js" }),
+  outExtensions: () => ({ js: ".bundle.js" }),
+  platform: "node",
   sourcemap: false,
 });

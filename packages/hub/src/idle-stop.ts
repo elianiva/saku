@@ -22,27 +22,30 @@ import { Context, Effect, Option, Ref } from "effect";
 import type { ThreadInfo } from "@saku/wire";
 
 import type { HubError } from "./hub-error.ts";
-import type { HubRegistryShape } from "./registry.ts";
+import type { HubRegistryApi } from "./registry.ts";
 import type { EnvProvisioner } from "./provisioner.ts";
 import type { ThreadWorkerRef } from "./worker-ref.ts";
 
+/** The no-op stand-in for the mutual-recursive `fire` binding's initial value (never observable). */
+const onFireBeforeAssignment = () => Effect.void;
+
 /** Arm/disarm one thread's idle-stop window (the hub owns the policy). */
 export interface IdleStopController {
-  readonly arm: (threadId: string) => Effect.Effect<void, HubError, never>;
-  readonly disarm: (threadId: string) => Effect.Effect<void, never, never>;
+  readonly arm: (threadId: string) => Effect.Effect<void, HubError>;
+  readonly disarm: (threadId: string) => Effect.Effect<void>;
 }
 
 export interface IdleStopDeps {
   /** The policy gates on the record (mode, env axis) and the state cache. */
-  readonly registry: Pick<HubRegistryShape, "get" | "toInfo" | "setEnv">;
+  readonly registry: Pick<HubRegistryApi, "get" | "toInfo" | "setEnv">;
   /** Release: stop the Box when the window fires. */
   readonly provisioner: Pick<EnvProvisioner, "release">;
   /** Clear the worker's env handle on fire (the env connection died with the Box). */
   readonly workerRef: Pick<ThreadWorkerRef, "setEnvHandle">;
   /** The thread's wire view; `fire` broadcasts it after the env flip. */
-  readonly infoOf: (threadId: string) => Effect.Effect<ThreadInfo, HubError, never>;
+  readonly infoOf: (threadId: string) => Effect.Effect<ThreadInfo, HubError>;
   /** The hub's fan-out (the wire server's `thread_changed` broadcasts). */
-  readonly emitThreadChanged: (thread: ThreadInfo) => Effect.Effect<void, never, never>;
+  readonly emitThreadChanged: (thread: ThreadInfo) => Effect.Effect<void>;
   /** Idle before a sandbox env is stopped; the hub supplies the default. */
   readonly idleStopMs: number;
   /**
@@ -53,32 +56,43 @@ export interface IdleStopDeps {
   readonly controller?: IdleStopController | undefined;
 }
 
-export interface IdleStopShape {
+export interface IdleStopApi {
   /** Arm the window: sandbox + env ready + state idle → timer/alarm. */
-  readonly arm: (threadId: string) => Effect.Effect<void, HubError, never>;
+  readonly arm: (threadId: string) => Effect.Effect<void, HubError>;
   /** Clear the window (any activity, thread teardown, before fire). */
-  readonly disarm: (threadId: string) => Effect.Effect<void, never, never>;
+  readonly disarm: (threadId: string) => Effect.Effect<void>;
   /** The trigger: validate, release, clear the handle, flip the env axis, broadcast. */
-  readonly fire: (threadId: string) => Effect.Effect<void, HubError, never>;
+  readonly fire: (threadId: string) => Effect.Effect<void, HubError>;
   /** Clear every hub-side timer (hub close; the controller's alarms die with the thread DOs). */
-  readonly close: Effect.Effect<void, never>;
+  readonly close: Effect.Effect<void>;
 }
 
 /** The idle-stop policy: `IdleStop.make(deps)` arms the window per sandbox thread. */
-export class IdleStop extends Context.Service<IdleStop, IdleStopShape>()("IdleStop", {
-  make: Effect.fn("IdleStop.make")(function* (deps: IdleStopDeps) {
+export class IdleStop extends Context.Service<IdleStop, IdleStopApi>()("IdleStop", {
+  make: Effect.fn("IdleStop.make")(function* make(deps: IdleStopDeps) {
     const { registry, provisioner, workerRef, infoOf, emitThreadChanged } = deps;
-    const controller = deps.controller;
+    const { controller } = deps;
     const timersRef = yield* Ref.make<Map<string, NodeJS.Timeout>>(new Map());
+    // `fire` re-arms the window when a run starts between the timer firing
+    // and the fire effect running, while `arm` schedules that fire — mutual
+    // recursion, so the binding is initialized with a no-op stand-in here and
+    // replaced by the real policy below, after `arm`'s definition.
+    let fire: IdleStopApi["fire"] = onFireBeforeAssignment;
 
-    const arm = Effect.fn("arm")(function* (threadId: string) {
+    const arm = Effect.fn("arm")(function* arm(threadId: string) {
       const record = yield* registry.get(threadId);
-      if (Option.isNone(record)) return;
+      if (Option.isNone(record)) {
+        return;
+      }
       // Local envs never stop (ADR 0003).
-      if (record.value.mode !== "sandbox" || record.value.env !== "ready") return;
+      if (record.value.mode !== "sandbox" || record.value.env !== "ready") {
+        return;
+      }
       // Never while a run is in flight: the run's own reports re-arm.
       const state = yield* registry.toInfo(threadId);
-      if (Option.isSome(state) && state.value.state !== "idle") return;
+      if (Option.isSome(state) && state.value.state !== "idle") {
+        return;
+      }
       if (controller !== undefined) {
         // The thread DO's durable alarm: setAlarm replaces, clears, fires.
         yield* controller.arm(threadId);
@@ -87,37 +101,50 @@ export class IdleStop extends Context.Service<IdleStop, IdleStopShape>()("IdleSt
       // Any activity resets the window: clear and re-arm.
       const timers = yield* Ref.get(timersRef);
       const existing = timers.get(threadId);
-      if (existing !== undefined) clearTimeout(existing);
+      if (existing !== undefined) {
+        clearTimeout(existing);
+      }
       const timer = setTimeout(() => {
         // The forked fire is best-effort from the timer's perspective: a
         // failing fire (release/handle errors are already swallowed inside)
         // must not surface as an unhandled fiber error.
-        void Effect.runFork(fire(threadId).pipe(Effect.catch(() => Effect.void)));
+        void Effect.runFork(
+          fire(threadId).pipe(
+            Effect.catchIf(
+              () => true,
+              () => Effect.void,
+            ),
+          ),
+        );
       }, deps.idleStopMs);
-      yield* Ref.update(timersRef, (timers) => new Map(timers).set(threadId, timer));
+      yield* Ref.update(timersRef, (map) => new Map(map).set(threadId, timer));
     });
 
-    const disarm = Effect.fn("disarm")(function* (threadId: string) {
+    const disarm = Effect.fn("disarm")(function* disarm(threadId: string) {
       if (controller !== undefined) {
         yield* controller.disarm(threadId);
         return;
       }
       const timers = yield* Ref.get(timersRef);
       const timer = timers.get(threadId);
-      if (timer === undefined) return;
+      if (timer === undefined) {
+        return;
+      }
       clearTimeout(timer);
-      yield* Ref.update(timersRef, (timers) => {
-        const next = new Map(timers);
+      yield* Ref.update(timersRef, (map) => {
+        const next = new Map(map);
         next.delete(threadId);
         return next;
       });
     });
 
     /** The idle-stop trigger: stop the Box, flip the env axis, broadcast. */
-    const fire = Effect.fn("fire")(function* (threadId: string) {
+    fire = Effect.fn("fire")(function* fireImpl(threadId: string) {
       yield* disarm(threadId);
       const record = yield* registry.get(threadId);
-      if (Option.isNone(record)) return;
+      if (Option.isNone(record)) {
+        return;
+      }
       // Never mid-run: a command could have started between the timer
       // firing and this effect running.
       const info = yield* registry.toInfo(threadId);
@@ -125,7 +152,9 @@ export class IdleStop extends Context.Service<IdleStop, IdleStopShape>()("IdleSt
         yield* arm(threadId);
         return;
       }
-      if (record.value.mode !== "sandbox" || record.value.env !== "ready") return;
+      if (record.value.mode !== "sandbox" || record.value.env !== "ready") {
+        return;
+      }
       yield* provisioner
         .release(threadId, Option.fromNullishOr(record.value.envHandle))
         .pipe(Effect.catch(() => Effect.void));
@@ -136,15 +165,17 @@ export class IdleStop extends Context.Service<IdleStop, IdleStopShape>()("IdleSt
       yield* emitThreadChanged(after);
     });
 
-    const close: Effect.Effect<void, never> = Ref.get(timersRef).pipe(
+    const close: Effect.Effect<void> = Ref.get(timersRef).pipe(
       Effect.tap((timers) =>
         Effect.sync(() => {
-          for (const timer of timers.values()) clearTimeout(timer);
+          for (const timer of timers.values()) {
+            clearTimeout(timer);
+          }
         }),
       ),
       Effect.andThen(Ref.set(timersRef, new Map())),
     );
 
-    return { arm, disarm, fire, close };
+    return { arm, close, disarm, fire };
   }),
 }) {}

@@ -14,14 +14,9 @@
  */
 
 import { Schema as S } from "effect";
-import type {
-  AgentEvent,
-  CompactResult,
-  Entry,
-  SessionStats,
-  ThinkingLevel,
-} from "@earendil-works/pi-agent-core";
+import type { AgentEvent, CompactResult, Entry, SessionStats } from "@earendil-works/pi-agent-core";
 
+import { opaque } from "./opaque.ts";
 import { SkillResponse } from "./skills.ts";
 import { PiSessionResponse } from "./pi-sessions.ts";
 import { ProjectResponse } from "./projects.ts";
@@ -34,27 +29,27 @@ export const ThinkingLevelSchema = S.Literals(THINKING_LEVELS);
 export type ThinkingLevelSchema = S.Schema.Type<typeof ThinkingLevelSchema>;
 
 export const WireModelInfo = S.Struct({
-  provider: S.String,
-  id: S.String,
   contextWindow: S.Number,
+  id: S.String,
+  provider: S.String,
   reasoning: S.Boolean,
 });
 export type WireModelInfo = S.Schema.Type<typeof WireModelInfo>;
 
 /** Session state snapshot (`get_state`), one source of truth per thread. */
 export const ThreadSessionState = S.Struct({
-  sessionId: S.Union([S.Null, S.String]),
+  model: S.Union([S.Null, WireModelInfo]),
   name: S.optional(S.String),
+  sessionId: S.Union([S.Null, S.String]),
   state: S.Literals(["idle", "working", "interrupted"]),
   tailSeq: S.Number,
-  model: S.Union([S.Null, WireModelInfo]),
   thinkingLevel: ThinkingLevelSchema,
 });
 export type ThreadSessionState = S.Schema.Type<typeof ThreadSessionState>;
 
 export const PromptCommand = S.TaggedStruct("prompt", {
-  text: S.String,
   images: S.optional(S.Array(S.Unknown)),
+  text: S.String,
 });
 export const SteerCommand = S.TaggedStruct("steer", { text: S.String });
 export const FollowUpCommand = S.TaggedStruct("follow_up", { text: S.String });
@@ -73,8 +68,8 @@ export const SetAutoCompactionCommand = S.TaggedStruct("set_auto_compaction", {
 });
 export const GetAvailableModelsCommand = S.TaggedStruct("get_available_models", {});
 export const SetModelCommand = S.TaggedStruct("set_model", {
-  provider: S.String,
   modelId: S.String,
+  provider: S.String,
 });
 export const GetAvailableThinkingLevelsCommand = S.TaggedStruct(
   "get_available_thinking_levels",
@@ -129,7 +124,7 @@ export const FollowUpResponse = S.TaggedStruct("follow_up", {});
 export const AbortResponse = S.TaggedStruct("abort", {});
 export const SetSteeringModeResponse = S.TaggedStruct("set_steering_mode", {});
 export const SetFollowUpModeResponse = S.TaggedStruct("set_follow_up_mode", {});
-export const CompactResponse = S.TaggedStruct("compact", { result: S.Unknown });
+export const CompactResponse = S.TaggedStruct("compact", { result: opaque<CompactResult>() });
 export const SetAutoCompactionResponse = S.TaggedStruct("set_auto_compaction", {});
 export const GetAvailableModelsResponse = S.TaggedStruct("get_available_models", {
   models: S.Array(WireModelInfo),
@@ -144,12 +139,14 @@ export const SetThinkingLevelResponse = S.TaggedStruct("set_thinking_level", {
   level: ThinkingLevelSchema,
 });
 export const GetEntriesResponse = S.TaggedStruct("get_entries", {
-  entries: S.Array(S.Unknown),
-  tailSeq: S.Number,
+  entries: S.Array(opaque<Entry>()),
   leafId: S.Union([S.Null, S.String]),
+  tailSeq: S.Number,
 });
 export const BranchResponse = S.TaggedStruct("branch", { leafId: S.Union([S.Null, S.String]) });
-export const GetSessionStatsResponse = S.TaggedStruct("get_session_stats", { stats: S.Unknown });
+export const GetSessionStatsResponse = S.TaggedStruct("get_session_stats", {
+  stats: opaque<SessionStats>(),
+});
 export const SetSessionNameResponse = S.TaggedStruct("set_session_name", {});
 export const GetStateResponse = S.TaggedStruct("get_state", { state: ThreadSessionState });
 export const ListThreadsResponse = S.TaggedStruct("list_threads", { threads: S.Array(ThreadInfo) });
@@ -237,14 +234,20 @@ export const SakuSessionEvent = S.Union([
     reason: S.Literals(["manual", "threshold", "overflow"]),
   }).pipe(S.encodeKeys({ _tag: "type" })),
   S.TaggedStruct("compaction_end", {
-    reason: S.Literals(["manual", "threshold", "overflow"]),
-    result: S.Unknown,
     aborted: S.Boolean,
     errorMessage: S.optional(S.String),
+    reason: S.Literals(["manual", "threshold", "overflow"]),
+    result: S.Unknown,
   }).pipe(S.encodeKeys({ _tag: "type" })),
 ]);
 /** Saku's own session events — the wire shape (`type`-discriminated, derived). */
 export type SessionEventFromSaku = S.Codec.Encoded<typeof SakuSessionEvent>;
 
 // Re-exported pi types so consoles never import pi directly for the session vocabulary.
-export type { AgentEvent, CompactResult, Entry, SessionStats, ThinkingLevel };
+export type {
+  AgentEvent,
+  CompactResult,
+  Entry,
+  SessionStats,
+  ThinkingLevel,
+} from "@earendil-works/pi-agent-core";

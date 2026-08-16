@@ -11,6 +11,7 @@
 
 import { Effect, Schema as S } from "effect";
 import { Command } from "foldkit";
+import type { WireError } from "@saku/wire";
 
 import { Wire } from "../wire.ts";
 import {
@@ -38,66 +39,75 @@ import {
   UnarchiveFailed,
 } from "./message.ts";
 
+/** The wire failure projected into each command's failed message (the
+ *  command bodies below catch `WireError` with these). */
+const onListThreadsError = (error: WireError) => Effect.succeed(ListFailed({ error }));
+const onListProjectsError = (error: WireError) => Effect.succeed(ProjectsListFailed({ error }));
+const onAddProjectError = (error: WireError) => Effect.succeed(ProjectAddFailed({ error }));
+const onRemoveProjectError = (error: WireError) => Effect.succeed(ProjectRemoveFailed({ error }));
+const onProjectSessionsError = (path: string) => (error: WireError) =>
+  Effect.succeed(ProjectSessionsListFailed({ error, path }));
+const onBrowseError = (error: WireError) => Effect.succeed(PickerBrowseFailed({ error }));
+const onArchiveError = (error: WireError) => Effect.succeed(ArchiveFailed({ error }));
+const onUnarchiveError = (error: WireError) => Effect.succeed(UnarchiveFailed({ error }));
+const onRenameError = (error: WireError) => Effect.succeed(ThreadRenameFailed({ error }));
+const onAdoptError = (error: WireError) => Effect.succeed(PiSessionAdoptFailed({ error }));
+const onDeleteError = (error: WireError) => Effect.succeed(DeleteFailed({ error }));
+
 /** List the registry (the rail's grid). */
 export const ListThreadsCmd = Command.define("ListThreads", {
-  messages: [ThreadsListed, ListFailed],
-  execute: Effect.gen(function* () {
+  execute: Effect.gen(function* execute() {
     const { client } = yield* Wire;
     const threads = yield* client.listThreads();
     return ThreadsListed({ threads });
-  }).pipe(Effect.catchTag("WireError", (error) => Effect.succeed(ListFailed({ error })))),
+  }).pipe(Effect.catchTag("WireError", onListThreadsError)),
+  messages: [ThreadsListed, ListFailed],
 });
 
 /** List the added projects (the window's scope; CONTEXT.md: Project). */
 export const ListProjectsCmd = Command.define("ListProjects", {
-  messages: [ProjectsListed, ProjectsListFailed],
-  execute: Effect.gen(function* () {
+  execute: Effect.gen(function* execute() {
     const { client } = yield* Wire;
     const projects = yield* client.listProjects();
     return ProjectsListed({ projects });
-  }).pipe(Effect.catchTag("WireError", (error) => Effect.succeed(ProjectsListFailed({ error })))),
+  }).pipe(Effect.catchTag("WireError", onListProjectsError)),
+  messages: [ProjectsListed, ProjectsListFailed],
 });
 
 /** Add a project by path (the explicit gesture; re-adding is a no-op). */
 export const AddProjectCmd = Command.define("AddProject", {
   args: { path: S.String },
-  messages: [ProjectAdded, ProjectAddFailed],
   execute: ({ path }) =>
-    Effect.gen(function* () {
+    Effect.gen(function* execute() {
       const { client } = yield* Wire;
       const project = yield* client.addProject(path);
       return ProjectAdded({ project });
-    }).pipe(Effect.catchTag("WireError", (error) => Effect.succeed(ProjectAddFailed({ error })))),
+    }).pipe(Effect.catchTag("WireError", onAddProjectError)),
+  messages: [ProjectAdded, ProjectAddFailed],
 });
 
 /** Remove a project from the window; adopted threads are untouched. */
 export const RemoveProjectCmd = Command.define("RemoveProject", {
   args: { path: S.String },
-  messages: [ProjectRemoved, ProjectRemoveFailed],
   execute: ({ path }) =>
-    Effect.gen(function* () {
+    Effect.gen(function* execute() {
       const { client } = yield* Wire;
       yield* client.removeProject(path);
       return ProjectRemoved({ path });
-    }).pipe(
-      Effect.catchTag("WireError", (error) => Effect.succeed(ProjectRemoveFailed({ error }))),
-    ),
+    }).pipe(Effect.catchTag("WireError", onRemoveProjectError)),
+  messages: [ProjectRemoved, ProjectRemoveFailed],
 });
 
 /** One project's sessions — lazy, fired on first expand (never at connect). */
 export const ListProjectSessionsCmd = Command.define("ListProjectSessions", {
   args: { path: S.String },
-  messages: [ProjectSessionsListed, ProjectSessionsListFailed],
   execute: ({ path }) =>
-    Effect.gen(function* () {
+    Effect.gen(function* execute() {
       const { client } = yield* Wire;
       const sessions = yield* client.listPiSessions(path);
       return ProjectSessionsListed({ path, sessions });
-    }).pipe(
-      Effect.catchTag("WireError", (error) =>
-        Effect.succeed(ProjectSessionsListFailed({ path, error })),
-      ),
-    ),
+    }).pipe(Effect.catchTag("WireError", onProjectSessionsError(path))),
+  messages: [ProjectSessionsListed, ProjectSessionsListFailed],
 });
 
 /** One level of the add-project tree (CONTEXT.md: Add project): the
@@ -105,78 +115,76 @@ export const ListProjectSessionsCmd = Command.define("ListProjectSessions", {
  *  deepest common ancestor of every cwd pi has sessions for). */
 export const BrowseProjectDirsCmd = Command.define("BrowseProjectDirs", {
   args: { path: S.String },
-  messages: [PickerBrowseListed, PickerBrowseFailed],
   execute: ({ path }) =>
-    Effect.gen(function* () {
+    Effect.gen(function* execute() {
       const { client } = yield* Wire;
       const browse = yield* client.browseProjectDirs(path);
       return PickerBrowseListed({
-        path: browse.path,
-        parent: browse.parent,
         entries: browse.entries,
+        parent: browse.parent,
+        path: browse.path,
       });
-    }).pipe(Effect.catchTag("WireError", (error) => Effect.succeed(PickerBrowseFailed({ error })))),
+    }).pipe(Effect.catchTag("WireError", onBrowseError)),
+  messages: [PickerBrowseListed, PickerBrowseFailed],
 });
 
 /** Archive a thread: visibility-only (CONTEXT.md: Archive). */
 export const ArchiveThreadCmd = Command.define("ArchiveThread", {
   args: { id: S.String },
-  messages: [ThreadArchived, ArchiveFailed],
   execute: ({ id }) =>
-    Effect.gen(function* () {
+    Effect.gen(function* execute() {
       const { client } = yield* Wire;
       const thread = yield* client.archiveThread(id);
       return ThreadArchived({ thread });
-    }).pipe(Effect.catchTag("WireError", (error) => Effect.succeed(ArchiveFailed({ error })))),
+    }).pipe(Effect.catchTag("WireError", onArchiveError)),
+  messages: [ThreadArchived, ArchiveFailed],
 });
 
 /** Unarchive a thread: back to the active list. */
 export const UnarchiveThreadCmd = Command.define("UnarchiveThread", {
   args: { id: S.String },
-  messages: [ThreadUnarchived, UnarchiveFailed],
   execute: ({ id }) =>
-    Effect.gen(function* () {
+    Effect.gen(function* execute() {
       const { client } = yield* Wire;
       const thread = yield* client.unarchiveThread(id);
       return ThreadUnarchived({ thread });
-    }).pipe(Effect.catchTag("WireError", (error) => Effect.succeed(UnarchiveFailed({ error })))),
+    }).pipe(Effect.catchTag("WireError", onUnarchiveError)),
+  messages: [ThreadUnarchived, UnarchiveFailed],
 });
 
 /** Rename a thread (a user rename wins over auto-title forever). */
 export const RenameThreadCmd = Command.define("RenameThread", {
   args: { id: S.String, name: S.String },
-  messages: [ThreadRenamed, ThreadRenameFailed],
   execute: ({ id, name }) =>
-    Effect.gen(function* () {
+    Effect.gen(function* execute() {
       const { client } = yield* Wire;
       const thread = yield* client.renameThread(id, name);
       return ThreadRenamed({ thread });
-    }).pipe(Effect.catchTag("WireError", (error) => Effect.succeed(ThreadRenameFailed({ error })))),
+    }).pipe(Effect.catchTag("WireError", onRenameError)),
+  messages: [ThreadRenamed, ThreadRenameFailed],
 });
 
 /** Adopt a pi session as a thread (adoption, not a bridge — the pi file is
  *  never written; the thread's trail is saku's own). */
 export const AdoptPiSessionCmd = Command.define("AdoptPiSession", {
   args: { path: S.String },
-  messages: [PiSessionAdopted, PiSessionAdoptFailed],
   execute: ({ path }) =>
-    Effect.gen(function* () {
+    Effect.gen(function* execute() {
       const { client } = yield* Wire;
       const thread = yield* client.importPiSession(path);
       return PiSessionAdopted({ thread });
-    }).pipe(
-      Effect.catchTag("WireError", (error) => Effect.succeed(PiSessionAdoptFailed({ error }))),
-    ),
+    }).pipe(Effect.catchTag("WireError", onAdoptError)),
+  messages: [PiSessionAdopted, PiSessionAdoptFailed],
 });
 
 /** Delete a thread (registry record + worker storage). */
 export const DeleteThreadCmd = Command.define("DeleteThread", {
   args: { id: S.String },
-  messages: [ThreadDeleted, DeleteFailed],
   execute: ({ id }) =>
-    Effect.gen(function* () {
+    Effect.gen(function* execute() {
       const { client } = yield* Wire;
       yield* client.deleteThread(id);
       return ThreadDeleted({ id });
-    }).pipe(Effect.catchTag("WireError", (error) => Effect.succeed(DeleteFailed({ error })))),
+    }).pipe(Effect.catchTag("WireError", onDeleteError)),
+  messages: [ThreadDeleted, DeleteFailed],
 });

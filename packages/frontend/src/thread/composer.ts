@@ -29,9 +29,8 @@ import {
   KEY_ESCAPE_COMMAND,
   createEditor,
   TextNode,
-  type EditorConfig,
-  type LexicalEditor,
 } from "lexical";
+import type { EditorConfig, LexicalEditor } from "lexical";
 
 import {
   ComposerChanged,
@@ -47,7 +46,8 @@ import {
   ComposerTriggerRemoved,
   SendRequested,
 } from "./message.ts";
-import { composerSuggestions, type ComposerTrigger } from "./composer/options.ts";
+import { composerSuggestions } from "./composer/options.ts";
+import type { ComposerTrigger } from "./composer/options.ts";
 
 export const ComposerKind = S.Literals(["welcome", "thread"]);
 type ComposerKind = S.Schema.Type<typeof ComposerKind>;
@@ -56,13 +56,13 @@ type ComposerKind = S.Schema.Type<typeof ComposerKind>;
  * Its text content remains `@path`, so prompts sent over the existing wire
  * stay plain text-compatible while the editor can later attach richer file
  * metadata without changing the composer seam. */
-type TriggerMatch = {
+interface TriggerMatch {
   readonly trigger: ComposerTrigger;
   readonly query: string;
   readonly node: TextNode;
   readonly start: number;
   readonly end: number;
-};
+}
 
 export class FileMentionNode extends TextNode {
   $config() {
@@ -90,21 +90,30 @@ const activeEditor = (kind: ComposerKind) => editors.get(kind);
 
 const triggerFromSelection = () => {
   const selection = $getSelection();
-  if (!$isRangeSelection(selection) || !selection.isCollapsed()) return null;
-  if (selection.anchor.type !== "text") return null;
+  if (!$isRangeSelection(selection) || !selection.isCollapsed()) {
+    return null;
+  }
+  if (selection.anchor.type !== "text") {
+    return null;
+  }
   const node = selection.anchor.getNode();
   const beforeCaret = node.getTextContent().slice(0, selection.anchor.offset);
-  const match = /(^|\s)([@/])([^\s]*)$/.exec(beforeCaret);
-  if (match === null) return null;
-  const symbol = match[2];
-  if (symbol !== "@" && symbol !== "/") return null;
-  const precedingSpace = match[1] ?? "";
+  const match = /(?<start>^|\s)(?<symbol>[@/])(?<query>[^\s]*)$/u.exec(beforeCaret);
+  if (match === null) {
+    return null;
+  }
+  const { groups } = match;
+  const symbol = groups?.symbol;
+  if (symbol !== "@" && symbol !== "/") {
+    return null;
+  }
+  const precedingSpace = groups?.start ?? "";
   return {
-    trigger: symbol === "@" ? ("file" as const) : ("command" as const),
-    query: match[3] ?? "",
-    node,
-    start: match.index + precedingSpace.length,
     end: selection.anchor.offset,
+    node,
+    query: groups?.query ?? "",
+    start: match.index + precedingSpace.length,
+    trigger: symbol === "@" ? ("file" as const) : ("command" as const),
   };
 };
 
@@ -119,15 +128,14 @@ const replaceActiveTrigger = (
   editor.update(() => {
     const selection = $getSelection();
     const trigger = triggerFromSelection();
-    if (
-      !$isRangeSelection(selection) ||
-      trigger === null ||
-      trigger.trigger !== expected
-    )
+    if (!$isRangeSelection(selection) || trigger === null || trigger.trigger !== expected) {
       return;
+    }
     selection.setTextNodeRange(trigger.node, trigger.start, trigger.node, trigger.end);
     selection.removeText();
-    if (replacement !== "") selection.insertText(replacement);
+    if (replacement !== "") {
+      selection.insertText(replacement);
+    }
   });
 };
 
@@ -135,7 +143,9 @@ const insertFileMention = (editor: LexicalEditor, path: string) => {
   editor.update(() => {
     const selection = $getSelection();
     const trigger = triggerFromSelection();
-    if (!$isRangeSelection(selection) || trigger === null || trigger.trigger !== "file") return;
+    if (!$isRangeSelection(selection) || trigger === null || trigger.trigger !== "file") {
+      return;
+    }
     selection.setTextNodeRange(trigger.node, trigger.start, trigger.node, trigger.end);
     selection.removeText();
     const mention = new FileMentionNode(`@${path}`);
@@ -161,11 +171,11 @@ const clearEditor = (editor: LexicalEditor) => {
 export const ComposerMount = Mount.defineStream(
   "ComposerLexical",
   {
-    kind: ComposerKind,
-    initialText: S.String,
-    placeholder: S.String,
-    editable: S.Boolean,
     autofocus: S.Boolean,
+    editable: S.Boolean,
+    initialText: S.String,
+    kind: ComposerKind,
+    placeholder: S.String,
   },
   ComposerChanged,
   ComposerTriggerChanged,
@@ -175,26 +185,31 @@ export const ComposerMount = Mount.defineStream(
   ComposerFocused,
   ComposerBlurred,
   SendRequested,
-)((args) => (element) =>
-  Stream.callback((queue) =>
-    Effect.gen(function* () {
+)((args) => (element) => {
+  // The composer editor is always mounted on the contenteditable div
+  // (view.ts), so a non-HTMLElement mount is a no-op.
+  if (!(element instanceof HTMLElement)) {
+    return Stream.empty;
+  }
+  const root = element;
+  return Stream.callback((queue) =>
+    Effect.gen(function* mountEditor() {
       yield* Effect.acquireRelease(
         Effect.sync(() => {
-          const root = element as HTMLElement;
           const editor = createEditor({
+            editable: args.editable,
             namespace: `SakuComposer:${args.kind}`,
             nodes: [FileMentionNode],
-            editable: args.editable,
+            onError: (error) => {
+              Effect.runFork(Effect.logError("[saku composer] Lexical error", error));
+            },
             theme: {
               paragraph: "saku-composer-paragraph",
               text: { base: "saku-composer-text" },
             },
-            onError: (error) => {
-              Effect.runFork(Effect.logError("[saku composer] Lexical error", error));
-            },
           });
 
-          root.setAttribute("data-saku-composer", args.kind);
+          root.dataset.sakuComposer = args.kind;
           root.setAttribute("role", "textbox");
           root.setAttribute("aria-multiline", "true");
           root.setAttribute("aria-placeholder", args.placeholder);
@@ -213,9 +228,9 @@ export const ComposerMount = Mount.defineStream(
             { discrete: true },
           );
 
-          let lastTriggerKey = editor.getEditorState().read(() =>
-            triggerKey(triggerFromSelection()),
-          );
+          let lastTriggerKey = editor
+            .getEditorState()
+            .read(() => triggerKey(triggerFromSelection()));
           // The core `lexical` package only dispatches the editing commands
           // (keydown, beforeinput, …); the actual text-editing behavior —
           // inserting controlled input, backspace/delete, Enter/paragraph
@@ -231,13 +246,15 @@ export const ComposerMount = Mount.defineStream(
             editor.registerUpdateListener(({ editorState }) => {
               const trigger = editorState.read(() => triggerFromSelection());
               const nextKey = triggerKey(trigger);
-              if (nextKey === lastTriggerKey) return;
+              if (nextKey === lastTriggerKey) {
+                return;
+              }
               lastTriggerKey = nextKey;
               Queue.offerUnsafe(
                 queue,
                 trigger === null
                   ? ComposerMenuClosed()
-                  : ComposerTriggerChanged({ trigger: trigger.trigger, query: trigger.query }),
+                  : ComposerTriggerChanged({ query: trigger.query, trigger: trigger.trigger }),
               );
             }),
             editor.registerCommand(
@@ -259,7 +276,9 @@ export const ComposerMount = Mount.defineStream(
             editor.registerCommand(
               KEY_ARROW_DOWN_COMMAND,
               (event) => {
-                if (triggerFromSelection() === null) return false;
+                if (triggerFromSelection() === null) {
+                  return false;
+                }
                 event.preventDefault();
                 Queue.offerUnsafe(queue, ComposerMenuMoved({ delta: 1 }));
                 return true;
@@ -269,7 +288,9 @@ export const ComposerMount = Mount.defineStream(
             editor.registerCommand(
               KEY_ARROW_UP_COMMAND,
               (event) => {
-                if (triggerFromSelection() === null) return false;
+                if (triggerFromSelection() === null) {
+                  return false;
+                }
                 event.preventDefault();
                 Queue.offerUnsafe(queue, ComposerMenuMoved({ delta: -1 }));
                 return true;
@@ -279,7 +300,9 @@ export const ComposerMount = Mount.defineStream(
             editor.registerCommand(
               KEY_ESCAPE_COMMAND,
               (event) => {
-                if (triggerFromSelection() === null) return false;
+                if (triggerFromSelection() === null) {
+                  return false;
+                }
                 event.preventDefault();
                 Queue.offerUnsafe(queue, ComposerMenuClosed());
                 return true;
@@ -292,17 +315,22 @@ export const ComposerMount = Mount.defineStream(
                 const trigger = triggerFromSelection();
                 if (
                   trigger !== null &&
-                  composerSuggestions(trigger.trigger, trigger.query, args.kind === "thread").length > 0
+                  composerSuggestions(trigger.trigger, trigger.query, args.kind === "thread")
+                    .length > 0
                 ) {
                   event?.preventDefault();
                   Queue.offerUnsafe(queue, ComposerSuggestionAccepted());
                   return true;
                 }
-                if (event === null) return false;
+                if (event === null) {
+                  return false;
+                }
                 event.preventDefault();
                 if (event.shiftKey) {
                   const selection = $getSelection();
-                  if ($isRangeSelection(selection)) selection.insertLineBreak();
+                  if ($isRangeSelection(selection)) {
+                    selection.insertLineBreak();
+                  }
                   return true;
                 }
                 Queue.offerUnsafe(queue, SendRequested());
@@ -313,68 +341,81 @@ export const ComposerMount = Mount.defineStream(
           ];
 
           editors.set(args.kind, editor);
-          if (args.autofocus) editor.focus(undefined, { defaultSelection: "rootEnd" });
+          if (args.autofocus) {
+            editor.focus(undefined, { defaultSelection: "rootEnd" });
+          }
           return { editor, listeners, root };
         }),
-        ({ editor, listeners, root }) =>
+        ({ editor, listeners }) =>
           Effect.sync(() => {
-            for (const removeListener of listeners) removeListener();
+            for (const removeListener of listeners) {
+              removeListener();
+            }
             editor.setRootElement(null);
-            if (editors.get(args.kind) === editor) editors.delete(args.kind);
-            root.removeAttribute("data-saku-composer");
+            if (editors.get(args.kind) === editor) {
+              editors.delete(args.kind);
+            }
+            delete root.dataset.sakuComposer;
           }),
       );
 
       return yield* Effect.never;
     }),
-  ),
-);
+  );
+});
 
 /** Foldkit Commands are the only way the declarative update loop reaches the
  * mounted Lexical instance. Missing editors are harmless during route swaps:
  * the next Mount initializes from the Model's draft. */
 export const SetComposerEditableCmd = Command.define("SetComposerEditable", {
-  args: { kind: ComposerKind, editable: S.Boolean },
-  messages: [ComposerEditableChanged],
+  args: { editable: S.Boolean, kind: ComposerKind },
   execute: ({ kind, editable }) =>
     Effect.sync(() => {
       activeEditor(kind)?.setEditable(editable);
       return ComposerEditableChanged();
     }),
+  messages: [ComposerEditableChanged],
 });
 
 export const ClearComposerCmd = Command.define("ClearComposer", {
   args: { kind: ComposerKind },
-  messages: [ComposerCleared],
   execute: ({ kind }) =>
     Effect.sync(() => {
       const editor = activeEditor(kind);
-      if (editor !== undefined) clearEditor(editor);
+      if (editor !== undefined) {
+        clearEditor(editor);
+      }
       return ComposerCleared();
     }),
+  messages: [ComposerCleared],
 });
 
 export const RemoveComposerTriggerCmd = Command.define("RemoveComposerTrigger", {
   args: { kind: ComposerKind, trigger: S.Literals(["file", "command"]) },
-  messages: [ComposerTriggerRemoved],
   execute: ({ kind, trigger }) =>
     Effect.sync(() => {
       const editor = activeEditor(kind);
-      if (editor !== undefined) replaceActiveTrigger(editor, trigger, "");
+      if (editor !== undefined) {
+        replaceActiveTrigger(editor, trigger, "");
+      }
       return ComposerTriggerRemoved();
     }),
+  messages: [ComposerTriggerRemoved],
 });
 
 export const InsertComposerSuggestionCmd = Command.define("InsertComposerSuggestion", {
   args: { kind: ComposerKind, trigger: S.Literals(["file", "command"]), value: S.String },
-  messages: [ComposerSuggestionInserted],
   execute: ({ kind, trigger, value }) =>
     Effect.sync(() => {
       const editor = activeEditor(kind);
       if (editor !== undefined) {
-        if (trigger === "file") insertFileMention(editor, value);
-        else replaceActiveTrigger(editor, trigger, `/${value} `);
+        if (trigger === "file") {
+          insertFileMention(editor, value);
+        } else {
+          replaceActiveTrigger(editor, trigger, `/${value} `);
+        }
       }
       return ComposerSuggestionInserted();
     }),
+  messages: [ComposerSuggestionInserted],
 });

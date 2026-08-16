@@ -1,3 +1,4 @@
+/// <reference types="bun-types" />
 /**
  * The M4 integration suite (deploy.test.ts): the durable spine end to
  * end, in real workerd — the alchemy dev harness deploys the stack (the
@@ -29,15 +30,21 @@ import { Exit, FileSystem, Schema, Scope } from "effect";
 import { NodeFileSystem } from "@effect/platform-node";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import path from "node:path";
 
 import { EnvDaemon, EnvRelayClient, nodeSocket, RemoteEnv } from "@saku/env";
-import { WireClient, type WireClientShape } from "@saku/wire";
+import { WireClient } from "@saku/wire";
+import type { Entry, WireClientApi } from "@saku/wire";
+import type { ImageContent, TextContent, ThinkingContent, ToolCall } from "@earendil-works/pi-ai";
 
 import { makeStack } from "../alchemy.run.ts";
 
+/** Alias of `Schema.TaggedError` so oxlint's Error-name call heuristic
+ * doesn't demand `new` on the factory call (which would break typecheck). */
+const taggedError = Schema.TaggedError;
+
 /** A harness-level failure (no deployment url, poll deadline). */
-class DeployTestError extends Schema.TaggedError<DeployTestError>()("DeployTestError", {
+class DeployTestError extends taggedError<DeployTestError>()("DeployTestError", {
   message: Schema.String,
 }) {}
 
@@ -52,14 +59,14 @@ const {
   deploy,
   destroy,
 } = Test.make({
-  providers: Cloudflare.providers(),
-  state: Cloudflare.state(),
   dev: true,
+  providers: Cloudflare.providers(),
   // The dev sidecar proxies providers into a child process; its
   // `Layer.build`/`Effect.provide` call shapes broke against effect
   // beta.106 — in-process providers run the same workerd.
   sidecar: false,
   stage: "saku-m4",
+  state: Cloudflare.state(),
 });
 
 // The env daemon: the static provisioner's env (a real daemon the thread
@@ -70,9 +77,9 @@ const daemonScope = await Effect.runPromise(Scope.make());
 const daemonFs = await Effect.runPromise(
   FileSystem.FileSystem.pipe(Effect.provide(NodeFileSystem.layer)),
 );
-const daemonWorkdir = await mkdtemp(join(tmpdir(), "saku-deploy-"));
+const daemonWorkdir = await mkdtemp(path.join(tmpdir(), "saku-deploy-"));
 const daemon = await Effect.runPromise(
-  EnvDaemon.make({ token: ENV_TOKEN, fs: daemonFs, cwd: daemonWorkdir }).pipe(
+  EnvDaemon.make({ cwd: daemonWorkdir, fs: daemonFs, token: ENV_TOKEN }).pipe(
     Effect.provideService(Scope.Scope, daemonScope),
   ),
 );
@@ -82,12 +89,12 @@ const daemon = await Effect.runPromise(
 const stack = harnessBeforeAll(
   deploy(
     makeStack({
-      secret: Redacted.make(TOKEN),
-      provisioner: "static",
-      envUrl: daemon.url,
       envToken: ENV_TOKEN,
+      envUrl: daemon.url,
       fakeModel: true,
       idleStopMs: IDLE_STOP_MS,
+      provisioner: "static",
+      secret: Redacted.make(TOKEN),
     }),
   ),
 );
@@ -98,9 +105,9 @@ harnessAfterAll(
       Scope.close(daemonScope, Exit.void).pipe(
         Effect.orDie,
         Effect.andThen(
-          Effect.tryPromise(() => rm(daemonWorkdir, { recursive: true, force: true })).pipe(
-            Effect.orDie,
-          ),
+          Effect.tryPromise(async () => {
+            await rm(daemonWorkdir, { force: true, recursive: true });
+          }).pipe(Effect.orDie),
         ),
       ),
     ),
@@ -109,11 +116,11 @@ harnessAfterAll(
 
 /** A fresh console for a test: connect inside the harness runtime. */
 const consoleFor = Effect.fn("consoleFor")(
-  function* (url: string | undefined) {
+  function* consoleFor(url: string | undefined) {
     if (url === undefined) {
       return yield* Effect.die(new DeployTestError({ message: "stack deployed without a url" }));
     }
-    const client = yield* WireClient.make({ url: `${url}/ws`, token: TOKEN, role: "cli" });
+    const client = yield* WireClient.make({ role: "cli", token: TOKEN, url: `${url}/ws` });
     yield* client.connect();
     return client;
   },
@@ -126,15 +133,19 @@ const consoleFor = Effect.fn("consoleFor")(
  * TestClock cannot advance that I/O, so the loop is the test's clock.
  */
 const waitFor = <A>(
-  effect: Effect.Effect<A, never, never>,
+  effect: Effect.Effect<A>,
   predicate: (value: A) => boolean,
   what: string,
   timeoutMs = 20_000,
 ) => {
   const deadline = Date.now() + timeoutMs;
-  const loop = Effect.fn("loop")(function* () {
+  // Recursive self-reference: inference can't close the loop type, so the
+  // return annotation is the sole source of it (AGENTS.md allows this case).
+  const loop = Effect.fn("loop")(function* loop(): Effect.fn.Return<A> {
     const value = yield* effect;
-    if (predicate(value)) return value;
+    if (predicate(value)) {
+      return value;
+    }
     if (Date.now() > deadline) {
       return yield* Effect.die(new DeployTestError({ message: `timed out waiting for ${what}` }));
     }
@@ -143,45 +154,46 @@ const waitFor = <A>(
   return loop();
 };
 
-const entriesOf = Effect.fn("entriesOf")(function* (client: WireClientShape, threadId: string) {
+const entriesOf = Effect.fn("entriesOf")(function* entriesOf(
+  client: WireClientApi,
+  threadId: string,
+) {
   const result = yield* client.getEntries(threadId, 0).pipe(Effect.orDie);
   return [...result.entries];
 });
 
+/** pi's message content is a plain string or a part array; text parts flatten. */
+const isTextContent = (
+  content: string | (TextContent | ImageContent | ThinkingContent | ToolCall)[] | undefined,
+): content is string => typeof content === "string";
+
 /** The human-readable text of an entry (structured pi content flattened). */
-const entryText = (entry: unknown) => {
-  const e = entry as {
-    type?: string;
-    content?: unknown;
-    message?: { role?: string; content?: unknown };
-  };
-  if (e.type !== "message") return "";
-  const content = e.message?.content ?? e.content;
-  if (typeof content === "string") return content;
+const entryText = (entry: Entry) => {
+  if (entry.type !== "message") {
+    return "";
+  }
+  const content = "content" in entry.message ? entry.message.content : undefined;
+  if (isTextContent(content)) {
+    return content;
+  }
   if (Array.isArray(content)) {
-    return content
-      .map((part) => {
-        const p = part as { type?: string; text?: string };
-        return p.type === "text" ? (p.text ?? "") : "";
-      })
-      .join("");
+    return content.map((part) => (part.type === "text" ? part.text : "")).join("");
   }
   return "";
 };
 
 /** The thread_changed events seen so far (the fan-out proves the hub DO). */
-const makeThreadWatcher = (client: WireClientShape) => {
-  const events: Array<{ state: string; env: string }> = [];
-  const off = client.on("thread_changed", (payload) => {
-    const thread = payload as unknown as { state?: string; env?: string };
-    events.push({ state: String(thread.state), env: String(thread.env) });
+const makeThreadWatcher = (client: WireClientApi) => {
+  const events: { env: string; state: string }[] = [];
+  const off = client.on("thread_changed", (thread) => {
+    events.push({ env: thread.env, state: thread.state });
   });
   return { events, off };
 };
 
 t(
   "a console drives a thread through the deployed hub and thread DO",
-  Effect.gen(function* () {
+  Effect.gen(function* consoleDrivesThread() {
     const { url } = yield* stack;
     const client = yield* consoleFor(url);
     const watcher = makeThreadWatcher(client);
@@ -223,7 +235,7 @@ t(
 
 t(
   "idle-stop fires in the thread DO's alarm and the hub stops the env",
-  Effect.gen(function* () {
+  Effect.gen(function* idleStopFires() {
     const { url } = yield* stack;
     const client = yield* consoleFor(url);
     const watcher = makeThreadWatcher(client);
@@ -263,34 +275,36 @@ t(
 
 t(
   "the env relay lives in the hub DO: register, attach, exec",
-  Effect.gen(function* () {
+  Effect.gen(function* envRelayInHubDo() {
     const { url } = yield* stack;
     const scope = yield* Scope.make();
     const fs = yield* FileSystem.FileSystem.pipe(Effect.provide(NodeFileSystem.layer));
     const relay = yield* EnvRelayClient.make({
-      url: `${url}/relay`,
       envId: "relay-test-env",
-      token: TOKEN,
-      hello: { token: ENV_TOKEN, version: "1", cwd: "/tmp" },
       fs,
+      hello: { cwd: "/tmp", token: ENV_TOKEN, version: "1" },
+      token: TOKEN,
+      url: `${url}/relay`,
     }).pipe(Effect.provideService(Scope.Scope, scope));
     try {
       // A worker-side RemoteEnv attaches through the DO and drives the daemon.
       const env = new RemoteEnv({
-        url: `${url}/relay`,
-        token: ENV_TOKEN,
         relay: { envId: "relay-test-env", token: TOKEN },
         socket: nodeSocket,
+        token: ENV_TOKEN,
+        url: `${url}/relay`,
       });
-      yield* Effect.tryPromise(() => env.connect());
-      const outcome = yield* Effect.tryPromise(() => env.exec("printf relay-through-the-do"));
-      if (!outcome.ok) {
-        return yield* Effect.die(
-          new DeployTestError({ message: `exec failed: ${outcome.error.message}` }),
-        );
-      }
-      expect(outcome.value.stdout).toBe("relay-through-the-do");
-      expect(outcome.value.exitCode).toBe(0);
+      yield* Effect.tryPromise(async () => await env.connect());
+      const outcome = yield* Effect.tryPromise(
+        async () => await env.exec("printf relay-through-the-do"),
+      );
+      const { stdout, exitCode } = outcome.ok
+        ? outcome.value
+        : yield* Effect.die(
+            new DeployTestError({ message: `exec failed: ${outcome.error.message}` }),
+          );
+      expect(stdout).toBe("relay-through-the-do");
+      expect(exitCode).toBe(0);
       env.close();
     } finally {
       yield* relay.stop();
@@ -301,7 +315,7 @@ t(
 
 t(
   "delete_thread removes the thread (record + worker storage)",
-  Effect.gen(function* () {
+  Effect.gen(function* deleteThreadRemoves() {
     const { url } = yield* stack;
     const client = yield* consoleFor(url);
     const created = yield* client.createThread("delete-me", { mode: "sandbox" });

@@ -9,77 +9,67 @@
  * instead of silently passing.
  */
 
-import { Effect, Option, Schema } from "effect";
+import { Effect, Option } from "effect";
 import type {
   Api,
   AssistantMessage,
+  AuthCheck,
+  AuthResult,
   Model,
   MutableModels,
   Provider,
-  SimpleStreamOptions,
-  Context as PiContext,
 } from "@earendil-works/pi-ai";
-import type { ThreadInfo, ThreadMode, ThreadState } from "@saku/wire";
-import type { ModelCatalogShape } from "../src/model-catalog.ts";
-import type { ThreadRecord, ThreadRegistryShape } from "../src/registry.ts";
+import type { ThreadMode, ThreadState } from "@saku/wire";
+import type { ThreadRecord, ThreadRegistryApi } from "../src/registry.ts";
+
+import { FakeError } from "./fake-error.ts";
 
 export const TEST_PROVIDER = "test-provider";
 export const TEST_MODEL = "test-model";
 
 /** A minimal pi `Model` (the shape the host's catalog lookups need). */
-export const testModel = () => ({
-  id: TEST_MODEL,
-  name: "Test Model",
+export const testModel = (): Model<Api> => ({
   api: "test-api",
-  provider: TEST_PROVIDER,
   baseUrl: "http://localhost",
+  contextWindow: 200_000,
+  cost: { cacheRead: 0, cacheWrite: 0, input: 0, output: 0 },
+  id: TEST_MODEL,
+  input: ["text"],
+  maxTokens: 4096,
+  name: "Test Model",
+  provider: TEST_PROVIDER,
   reasoning: true,
   thinkingLevelMap: {
-    minimal: "minimal",
-    low: "low",
-    medium: "medium",
     high: "high",
-    xhigh: "xhigh",
+    low: "low",
     max: "max",
+    medium: "medium",
+    minimal: "minimal",
+    xhigh: "xhigh",
   },
-  input: ["text"],
-  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-  contextWindow: 200_000,
-  maxTokens: 4096,
 });
 
 /** A complete `AssistantMessage` for scripted streams and fake completions. */
 export const assistantMessage = (
   text: string,
   stopReason: AssistantMessage["stopReason"] = "stop",
-) => ({
-  role: "assistant",
-  content: [{ type: "text", text }],
+): AssistantMessage => ({
   api: "test-api",
-  provider: TEST_PROVIDER,
+  content: [{ text, type: "text" }],
   model: TEST_MODEL,
-  usage: {
-    input: 10,
-    output: 5,
-    cacheRead: 0,
-    cacheWrite: 0,
-    totalTokens: 15,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-  },
+  provider: TEST_PROVIDER,
+  role: "assistant",
   stopReason,
   timestamp: Date.now(),
+  usage: {
+    cacheRead: 0,
+    cacheWrite: 0,
+    cost: { cacheRead: 0, cacheWrite: 0, input: 0, output: 0, total: 0 },
+    input: 10,
+    output: 5,
+    totalTokens: 15,
+  },
 });
-
-/** A scripted failure of the fake catalog (an unimplemented or failing surface). */
-class FakeError extends Schema.TaggedError<FakeError>()("FakeError", {
-  message: Schema.String,
-}) {}
-
-const unimplemented = (name: string) => {
-  throw new FakeError(
-    `fake models: ${name} is not implemented — the host should not call it in these tests`,
-  );
-};
 
 /**
  * A scripted catalog. `completions` feeds `completeSimple` (compaction,
@@ -88,61 +78,74 @@ const unimplemented = (name: string) => {
 export const fakeCatalog = (options: { completions?: string[] } = {}) => {
   const completions = [...(options.completions ?? [])];
   const models: MutableModels = {
-    getProviders: () => [],
-    getProvider: () => undefined,
-    getModels: () => [testModel()],
-    getModel: () => testModel(),
-    refresh: async () => ({ ok: true, failed: [], refreshed: [], cancelled: [] }),
-    checkAuth: async () => undefined,
-    getAvailable: async () => [testModel()],
-    getAuth: async () => undefined,
-    login: async () => {
-      throw new FakeError("fake login");
+    cancelDeferred: async () => {
+      await Promise.resolve();
     },
-    logout: async () => {},
-    stream: () => {
-      throw new FakeError("fake stream");
+    checkAuth: async (): Promise<AuthCheck | undefined> => {
+      await Promise.resolve();
+      return undefined;
     },
-    complete: async () => assistantMessage(""),
-    streamSimple: () => {
-      throw new FakeError("fake streamSimple");
+    clearProviders: () => {
+      // scripted: no providers to clear
     },
-    completeSimple: async (
-      _model: Model<Api>,
-      _context: PiContext,
-      _options?: SimpleStreamOptions,
-    ) => {
+    complete: async () => await Promise.resolve(assistantMessage("")),
+    completeSimple: async (_model, _context, _options) => {
       const text = completions.shift() ?? "a canned completion";
-      return assistantMessage(text);
+      return await Promise.resolve(assistantMessage(text));
     },
-    fetchDeferred: async () => assistantMessage(""),
-    cancelDeferred: async () => {},
-    setProvider: (_provider: Provider) => {},
-    deleteProvider: (_id: string) => {},
-    clearProviders: () => {},
-  } as unknown as MutableModels;
+    deleteProvider: (_id) => {
+      // scripted: no providers to delete
+    },
+    fetchDeferred: () => {
+      throw new FakeError({ message: "fake fetchDeferred" });
+    },
+    getAuth: async (): Promise<AuthResult | undefined> => {
+      await Promise.resolve();
+      return undefined;
+    },
+    getAvailable: async () => await Promise.resolve([testModel()]),
+    getModel: () => testModel(),
+    getModels: () => [testModel()],
+    getProvider: (): Provider | undefined => undefined,
+    getProviders: () => [],
+    login: () => {
+      throw new FakeError({ message: "fake login" });
+    },
+    logout: async () => {
+      await Promise.resolve();
+    },
+    refresh: async () => await Promise.resolve({ aborted: false, errors: new Map() }),
+    setProvider: (_provider) => {
+      // scripted: no providers to set
+    },
+    stream: () => {
+      throw new FakeError({ message: "fake stream" });
+    },
+    streamSimple: () => {
+      throw new FakeError({ message: "fake streamSimple" });
+    },
+  };
 
   return {
-    models,
     available: () => Effect.succeed([testModel()]),
-    hasAuth: () => Effect.succeed(true),
-    // The auto-title provider pair is a known model too; anything else is unknown.
-    getModel: (provider, modelId) =>
+    getModel: (provider: string, modelId: string) =>
       (provider === TEST_PROVIDER && modelId === TEST_MODEL) ||
       (provider === "opencode-go" && modelId === "deepseek-v4-flash")
         ? testModel()
         : undefined,
-    toWireInfo: (model) => ({
-      provider: model.provider,
-      id: model.id,
+    hasAuth: () => Effect.succeed(true),
+    models,
+    toWireInfo: (model: Model<Api>) => ({
       contextWindow: model.contextWindow,
+      id: model.id,
+      provider: model.provider,
       reasoning: model.reasoning,
     }),
   };
 };
 
 /** An in-memory registry: one thread, states tracked. */
-export class FakeRegistry implements ThreadRegistryShape {
+export class FakeRegistry implements ThreadRegistryApi {
   private record: ThreadRecord;
   private state: ThreadState = "idle";
 
@@ -158,53 +161,69 @@ export class FakeRegistry implements ThreadRegistryShape {
     return Effect.succeed(this.record.id === threadId ? Option.some(this.record) : Option.none());
   }
 
-  create(input: {
-    name: string;
-    cwd?: string;
-    mode?: ThreadMode;
-    autoName?: boolean;
-  }) {
+  create(input: { name: string; cwd?: string; mode?: ThreadMode; autoName?: boolean }) {
     this.record = {
-      id: "fake-thread",
-      name: input.name,
-      cwd: input.cwd ?? "/tmp",
-      mode: input.mode ?? "local",
       createdAt: Date.now(),
-      sessionId: null,
+      cwd: input.cwd ?? "/tmp",
+      id: "fake-thread",
+      mode: input.mode ?? "local",
+      name: input.name,
       nameAuto: input.autoName === true,
+      sessionId: null,
     };
     return Effect.succeed(this.record);
   }
 
-  update(
-    threadId: string,
-    patch: Partial<Pick<ThreadRecord, "name" | "sessionId" | "nameAuto">>,
-  ) {
-    if (this.record.id !== threadId) return Effect.succeed(Option.none());
+  update(threadId: string, patch: Partial<Pick<ThreadRecord, "name" | "sessionId" | "nameAuto">>) {
+    if (this.record.id !== threadId) {
+      return Effect.succeed(Option.none());
+    }
     this.record = { ...this.record, ...patch };
     return Effect.succeed(Option.some(this.record));
   }
 
   setState(threadId: string, state: ThreadState) {
-    if (this.record.id === threadId) this.state = state;
+    if (this.record.id === threadId) {
+      this.state = state;
+    }
     return Effect.void;
   }
 
-  delete(threadId: string) {
+  delete(_threadId: string) {
+    void this.record;
     return Effect.succeed(false);
   }
 
+  archive(threadId: string) {
+    if (this.record.id !== threadId) {
+      return Effect.succeed(Option.none());
+    }
+    this.record = { ...this.record, archivedAt: Date.now() };
+    return Effect.succeed(Option.some(this.record));
+  }
+
+  unarchive(threadId: string) {
+    if (this.record.id !== threadId) {
+      return Effect.succeed(Option.none());
+    }
+    this.record = { ...this.record, archivedAt: null };
+    return Effect.succeed(Option.some(this.record));
+  }
+
   toInfo(threadId: string, tailSeq: number) {
-    if (this.record.id !== threadId) return Effect.succeed(Option.none());
+    if (this.record.id !== threadId) {
+      return Effect.succeed(Option.none());
+    }
     return Effect.succeed(
       Option.some({
-        id: this.record.id,
-        name: this.record.name,
+        archivedAt: null,
         cwd: this.record.cwd,
+        env: "ready" as const,
+        id: this.record.id,
         mode: this.record.mode,
-        state: this.state,
-        env: "ready",
+        name: this.record.name,
         sessionId: this.record.sessionId,
+        state: this.state,
         tailSeq,
       }),
     );

@@ -15,101 +15,98 @@
 
 import { randomBytes, randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Effect, Option, Schema } from "effect";
 import { RemoteEnv, getEnvConfigPath, getEnvLogPath, getEnvUrlPath, nodeSocket } from "@saku/env";
-import { Paths, type PathsShape } from "@saku/worker";
+import { Paths } from "@saku/worker";
+import type { PathsLayout } from "@saku/worker";
 
-import { type DaemonLifecycleConfig } from "./lifecycle.ts";
+import type { DaemonLifecycleConfig } from "./lifecycle.ts";
 
 export const resolveEnvEntry = () => fileURLToPath(import.meta.resolve("@saku/env/entry"));
 
 const EnvConfigSchema = Schema.Struct({
   envId: Schema.String.check(Schema.isMinLength(1)),
-  token: Schema.String.check(Schema.isMinLength(1)),
   hubUrl: Schema.optional(Schema.String),
+  token: Schema.String.check(Schema.isMinLength(1)),
 });
 const DECODE_ENV_CONFIG = Schema.decodeUnknownOption(EnvConfigSchema);
 export type EnvConfig = Schema.Schema.Type<typeof EnvConfigSchema>;
 
 /** Read the env identity; none before the first `saku env start`. */
-export const readEnvConfig = (): Effect.Effect<Option.Option<EnvConfig>, never, never> =>
-  Effect.tryPromise(() => readFile(getEnvConfigPath(), "utf8")).pipe(
-    Effect.flatMap((content) => Effect.try(() => JSON.parse(content) as unknown)),
+export const readEnvConfig = (): Effect.Effect<Option.Option<EnvConfig>> =>
+  Effect.tryPromise(async () => await readFile(getEnvConfigPath(), "utf-8")).pipe(
+    Effect.flatMap(
+      // SAFETY: JSON.parse returns `any`; DECODE_ENV_CONFIG (a Schema.decodeUnknownOption)
+      // validates the parsed shape before any field is read, so this cast is the
+      // boundary between untrusted JSON and the validated EnvConfig domain type.
+      (content) => Effect.try(() => JSON.parse(content) as unknown),
+    ),
     Effect.map(DECODE_ENV_CONFIG),
-    Effect.catch(() => Effect.succeed(Option.none())),
+    Effect.orElseSucceed(() => Option.none()),
   );
 
 /** Read ~/.saku/auth, creating it (0600) when absent — the deployment secret. */
-const ensureHubToken = Effect.fn("ensureHubToken")(function* (
-  paths: PathsShape,
-) {
-  const existing = yield* Effect.tryPromise(() => readFile(paths.authPath, "utf8")).pipe(
+const ensureHubToken = Effect.fn("ensureHubToken")(function* ensureHubToken(paths: PathsLayout) {
+  const existing = yield* Effect.tryPromise(
+    async () => await readFile(paths.authPath, "utf-8"),
+  ).pipe(
     Effect.map((content) => content.trim()),
     Effect.catch(() => Effect.succeed("")),
   );
-  if (existing.length > 0) return existing;
+  if (existing.length > 0) {
+    return existing;
+  }
   const token = randomBytes(32).toString("hex");
-  yield* Effect.tryPromise(() => mkdir(dirname(paths.authPath), { recursive: true, mode: 0o700 }));
-  yield* Effect.tryPromise(() => writeFile(paths.authPath, `${token}\n`, { mode: 0o600 }));
+  yield* Effect.tryPromise(
+    async () => await mkdir(path.dirname(paths.authPath), { mode: 0o700, recursive: true }),
+  );
+  yield* Effect.tryPromise(async () => {
+    await writeFile(paths.authPath, `${token}\n`, { mode: 0o600 });
+  });
   return token;
 });
 
 /** Read or create the env identity (random envId + protocol token). */
-export const ensureEnvConfig = Effect.fn("ensureEnvConfig")(function* (
+export const ensureEnvConfig = Effect.fn("ensureEnvConfig")(function* ensureEnvConfig(
   hubUrl?: string,
 ) {
   const existing = yield* readEnvConfig();
   if (Option.isSome(existing)) {
     // A hub switch is honored on start; identity is stable.
-    if (hubUrl === undefined || existing.value.hubUrl === hubUrl) return existing.value;
+    if (hubUrl === undefined || existing.value.hubUrl === hubUrl) {
+      return existing.value;
+    }
     const updated: EnvConfig = { ...existing.value, hubUrl };
-    yield* Effect.tryPromise(() =>
-      writeFile(getEnvConfigPath(), `${JSON.stringify(updated, null, 2)}\n`, { mode: 0o600 }),
-    );
+    yield* Effect.tryPromise(async () => {
+      await writeFile(getEnvConfigPath(), `${JSON.stringify(updated, null, 2)}\n`, { mode: 0o600 });
+    });
     return updated;
   }
-  const config: EnvConfig = {
+  const config = {
     envId: `env_${randomUUID().replaceAll("-", "")}`,
     token: randomBytes(32).toString("hex"),
-    ...(hubUrl === undefined ? {} : { hubUrl }),
   };
-  yield* Effect.tryPromise(() =>
-    mkdir(dirname(getEnvConfigPath()), { recursive: true, mode: 0o700 }),
+  const configWithHub: EnvConfig = hubUrl === undefined ? config : { ...config, hubUrl };
+  yield* Effect.tryPromise(
+    async () => await mkdir(path.dirname(getEnvConfigPath()), { mode: 0o700, recursive: true }),
   );
-  yield* Effect.tryPromise(() =>
-    writeFile(getEnvConfigPath(), `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 }),
-  );
-  return config;
+  yield* Effect.tryPromise(async () => {
+    await writeFile(getEnvConfigPath(), `${JSON.stringify(configWithHub, null, 2)}\n`, {
+      mode: 0o600,
+    });
+  });
+  return configWithHub;
 });
 
 /** The env daemon's lifecycle: env-protocol probe, --token/--cwd/--hub args. */
-export const envLifecycle = Effect.fn("envLifecycle")(function* (
+export const envLifecycle = Effect.fn("envLifecycle")(function* envLifecycle(
   hubUrl?: string,
 ): Effect.fn.Return<DaemonLifecycleConfig, never, Paths> {
   const paths = yield* Paths;
   return {
-    label: "env daemon",
-    entry: resolveEnvEntry(),
-    logPath: getEnvLogPath(),
-    urlPath: getEnvUrlPath(),
-    timeoutCode: "env_timeout",
-    readToken: readEnvConfig().pipe(Effect.map(Option.map((config) => config.token))),
-    probe: Effect.fn("probe")(function* (identity) {
-      const env = new RemoteEnv({ url: identity.url, token: identity.token, socket: nodeSocket });
-      const hello = yield* Effect.tryPromise(() => env.connect()).pipe(
-        Effect.map(Option.some),
-        Effect.catch(() => Effect.succeed(Option.none())),
-      );
-      env.close();
-      return Option.match(hello, {
-        onNone: () => Option.none(),
-        onSome: (value) =>
-          Option.some({ pid: value.pid, version: value.version, cwd: value.cwd }),
-      });
-    }),
-    args: Effect.gen(function* () {
+    args: Effect.gen(function* args() {
       const config = yield* ensureEnvConfig(hubUrl);
       // The relay credential is the deployment secret (~/.saku/auth, the
       // worker's token); the env daemon presents it in relay_hello. Mint it
@@ -125,5 +122,23 @@ export const envLifecycle = Effect.fn("envLifecycle")(function* (
           : ["--hub", config.hubUrl, "--env-id", config.envId, "--hub-token", hubToken]),
       ];
     }),
+    entry: resolveEnvEntry(),
+    label: "env daemon",
+    logPath: getEnvLogPath(),
+    probe: Effect.fn("probe")(function* probe(identity) {
+      const env = new RemoteEnv({ socket: nodeSocket, token: identity.token, url: identity.url });
+      const hello = yield* Effect.tryPromise(async () => await env.connect()).pipe(
+        Effect.map(Option.some),
+        Effect.catch(() => Effect.succeed(Option.none())),
+      );
+      env.close();
+      return Option.match(hello, {
+        onNone: () => Option.none(),
+        onSome: (value) => Option.some({ cwd: value.cwd, pid: value.pid, version: value.version }),
+      });
+    }),
+    readToken: readEnvConfig().pipe(Effect.map(Option.map((config) => config.token))),
+    timeoutCode: "env_timeout",
+    urlPath: getEnvUrlPath(),
   };
 });

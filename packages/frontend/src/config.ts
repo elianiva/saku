@@ -31,22 +31,22 @@ export interface SakuEndpoint {
 /** What boot resolution found. */
 export type ResolvedConfig = Data.TaggedEnum<{
   daemon: { endpoint: SakuEndpoint };
-  offline: {};
+  offline: Record<never, never>;
   fallback: { endpoint: SakuEndpoint };
 }>;
 /** The resolved-config constructors — one per kind, from the same definition. */
 export const ResolvedConfig = Data.taggedEnum<ResolvedConfig>();
 
 const BootstrapSchema = S.Struct({
-  url: S.NullOr(S.String),
   token: S.NullOr(S.String),
+  url: S.NullOr(S.String),
 });
 
 const LOCALSTORAGE_KEY = "saku.config";
 
 export const defaultConfig = () => {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return { url: `${protocol}//${window.location.host}/ws`, token: "" };
+  return { token: "", url: `${protocol}//${window.location.host}/ws` };
 };
 
 /**
@@ -54,15 +54,17 @@ export const defaultConfig = () => {
  * `offline` when it reports none (the vite plugin probes before
  * publishing); `None` when absent (production) or unparsable.
  */
-export const fetchBootstrap: Effect.Effect<
-  Option.Option<ResolvedConfig>,
-  never
-> = Effect.tryPromise({
-  try: () =>
-    fetch("/__saku").then((response) =>
-      response.ok ? (response.json() as Promise<unknown>) : null,
-    ),
+export const fetchBootstrap: Effect.Effect<Option.Option<ResolvedConfig>> = Effect.tryPromise({
   catch: () => null,
+  try: async () => {
+    const response = await fetch("/__saku");
+    if (!response.ok) {
+      return null;
+    }
+    // SAFETY: response.json() resolves to the bootstrap payload; the schema
+    // decode below is the boundary check that validates it.
+    return (await response.json()) as unknown;
+  },
 }).pipe(
   // A failed fetch is the same as no bootstrap: fall through.
   Effect.orElseSucceed(() => null),
@@ -71,12 +73,14 @@ export const fetchBootstrap: Effect.Effect<
       ? Effect.succeed(Option.none())
       : Effect.sync(() => {
           const decoded = Option.getOrNull(S.decodeUnknownOption(BootstrapSchema)(parsed));
-          if (decoded === null) return Option.none();
+          if (decoded === null) {
+            return Option.none();
+          }
           // A null url is the daemon-offline marker; a half-payload is
           // treated as offline too — never as a fallback trigger.
           return decoded.url !== null && decoded.token !== null
             ? Option.some(
-                ResolvedConfig.daemon({ endpoint: { url: decoded.url, token: decoded.token } }),
+                ResolvedConfig.daemon({ endpoint: { token: decoded.token, url: decoded.url } }),
               )
             : Option.some(ResolvedConfig.offline());
         }),
@@ -85,21 +89,33 @@ export const fetchBootstrap: Effect.Effect<
 
 export const readSavedConfig = () => {
   const raw = window.localStorage.getItem(LOCALSTORAGE_KEY);
-  if (raw === null) return null;
+  if (raw === null) {
+    return null;
+  }
   // A corrupt saved config falls through to the next source, like a
   // missing bootstrap (Result.try at the sync parse point, house style).
+  // SAFETY: JSON.parse output is untyped by definition; the schema decode
+  // below is the boundary check that validates it.
   const parsed = Result.try(() => JSON.parse(raw) as unknown);
-  if (Result.isFailure(parsed)) return null;
+  if (Result.isFailure(parsed)) {
+    return null;
+  }
   const decoded = Option.getOrNull(S.decodeUnknownOption(BootstrapSchema)(parsed.success));
   // A saved half-payload (null url/token) is not an endpoint.
-  if (decoded === null || decoded.url === null || decoded.token === null) return null;
-  return { url: decoded.url, token: decoded.token };
+  if (decoded === null || decoded.url === null || decoded.token === null) {
+    return null;
+  }
+  return { token: decoded.token, url: decoded.url };
 };
 
-export const resolveConfig: Effect.Effect<ResolvedConfig, never> = Effect.gen(function* () {
+export const resolveConfig: Effect.Effect<ResolvedConfig> = Effect.gen(function* resolveConfig() {
   const bootstrap = yield* fetchBootstrap;
-  if (Option.isSome(bootstrap)) return bootstrap.value;
+  if (Option.isSome(bootstrap)) {
+    return bootstrap.value;
+  }
   const saved = readSavedConfig();
-  if (saved !== null) return ResolvedConfig.fallback({ endpoint: saved });
+  if (saved !== null) {
+    return ResolvedConfig.fallback({ endpoint: saved });
+  }
   return ResolvedConfig.fallback({ endpoint: defaultConfig() });
 });

@@ -37,8 +37,8 @@ export const GotThreadMessage = Message.m("GotThreadMessage", { message: Thread.
 /** A session event streamed for some thread; the root routes it to the pane
  *  only when the route pins that thread. */
 export const WireEvent = Message.m("WireEvent", {
-  threadId: S.String,
   event: SessionEventProjection,
+  threadId: S.String,
 });
 /** The registry broadcast (the rail's own message, re-exported). */
 export { ThreadChanged } from "../rail/message.ts";

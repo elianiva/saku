@@ -7,12 +7,12 @@
  */
 
 import { homedir } from "node:os";
-import { join } from "node:path";
+import path from "node:path";
 
 import { ConfigProvider, Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { Paths, PathsLive, type PathsShape } from "../src/paths.ts";
+import { Paths, PathsLive } from "../src/paths.ts";
 
 const resolve = (env: Record<string, string>) =>
   Effect.runSync(
@@ -24,13 +24,15 @@ const resolve = (env: Record<string, string>) =>
 describe("PathsLive", () => {
   it("defaults to ~/.saku and ~/.pi/agent when the vars are unset", () => {
     const paths = resolve({});
-    expect(paths.sakuDir).toBe(join(homedir(), ".saku"));
-    expect(paths.agentDir).toBe(join(homedir(), ".pi", "agent"));
-    expect(paths.threadTrailRoot("abc")).toBe(join(homedir(), ".saku", "threads", "abc", "trail"));
+    expect(paths.sakuDir).toBe(path.join(homedir(), ".saku"));
+    expect(paths.agentDir).toBe(path.join(homedir(), ".pi", "agent"));
+    expect(paths.threadTrailRoot("abc")).toBe(
+      path.join(homedir(), ".saku", "threads", "abc", "trail"),
+    );
   });
 
   it("honors SAKU_HOME and PI_CODING_AGENT_DIR", () => {
-    const paths = resolve({ SAKU_HOME: "/tmp/home-a", PI_CODING_AGENT_DIR: "/tmp/pi-a" });
+    const paths = resolve({ PI_CODING_AGENT_DIR: "/tmp/pi-a", SAKU_HOME: "/tmp/home-a" });
     expect(paths.sakuDir).toBe("/tmp/home-a");
     expect(paths.authPath).toBe("/tmp/home-a/auth");
     expect(paths.threadsDir).toBe("/tmp/home-a/threads");
@@ -40,11 +42,11 @@ describe("PathsLive", () => {
 
   it("resolves relative roots against the cwd", () => {
     const paths = resolve({ SAKU_HOME: "rel/home" });
-    expect(paths.sakuDir).toBe(join(process.cwd(), "rel", "home"));
+    expect(paths.sakuDir).toBe(path.join(process.cwd(), "rel", "home"));
   });
 
   it("treats an empty SAKU_HOME as unset", () => {
     const paths = resolve({ SAKU_HOME: "" });
-    expect(paths.sakuDir).toBe(join(homedir(), ".saku"));
+    expect(paths.sakuDir).toBe(path.join(homedir(), ".saku"));
   });
 });

@@ -19,19 +19,23 @@
  */
 
 import { Effect, Match, Option, Ref, Result, Schema } from "effect";
-import { Event, Machine, State, type DeferReplyResult, type ReplyResult } from "effect-machine";
+import { Event, Machine, State } from "effect-machine";
 import {
   buildSessionContext,
   compact,
   estimateContextTokens,
   prepareCompaction,
   shouldCompact,
-  type Agent,
-  type CompactionSettings,
-  type Entry,
-  type LogItem,
-  type Session,
-  type ThinkingLevel,
+} from "@earendil-works/pi-agent-core";
+import type {
+  Agent,
+  CompactionEntry,
+  CompactionSettings,
+  CompactResult,
+  LogItem,
+  ProvisionedEntry,
+  Session,
+  ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import { clampThinkingLevel, getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type {
@@ -41,17 +45,11 @@ import type {
   Model,
   UserMessage,
 } from "@earendil-works/pi-ai";
-import {
-  THINKING_LEVELS,
-  ThinkingLevelSchema,
-  type SessionWireEvent,
-  type ThreadState,
-  WireModelInfo,
-} from "@saku/wire";
+import { THINKING_LEVELS, ThinkingLevelSchema, WireModelInfo } from "@saku/wire";
+import type { SessionWireEvent, ThreadState } from "@saku/wire";
 
-import type { ModelCatalogShape } from "./model-catalog.ts";
-import type { HostRegistryShape, ThreadRecord } from "./registry.ts";
-import { RegistryError } from "./registry-error.ts";
+import type { ModelCatalogApi } from "./model-catalog.ts";
+import type { HostRegistryApi, ThreadRecord } from "./registry.ts";
 import { SessionHostError, messageOf, toSessionHostError } from "./session-host-error.ts";
 
 /** The session's mutation lane (the wire's blocking-prompt semantics live on it). */
@@ -65,23 +63,27 @@ export type SessionHostState = ThreadState | "crashed";
 
 /** Host lifecycle. `Crashed` never crosses the wire (ADR 0001). */
 const HostState = State({
-  Idle: {},
-  /** The trail had an open operation at boot; the previous run died mid-flight. */
-  Interrupted: {},
-  /** A run (prompt/steer/follow-up) is in flight; the state carries the run. */
-  Working: { text: Schema.String, images: Schema.optional(Schema.Array(Schema.Unknown)) },
   /** A manual compaction is in flight; the state carries its instructions. */
   Compacting: { customInstructions: Schema.optional(Schema.String) },
   /** A run failed; the next command rebuilds the host. */
   Crashed: { message: Schema.String },
+  Idle: {},
+  /** The trail had an open operation at boot; the previous run died mid-flight. */
+  Interrupted: {},
+  /** A run (prompt/steer/follow-up) is in flight; the state carries the run. */
+  Working: { images: Schema.optional(Schema.Array(Schema.Unknown)), text: Schema.String },
 });
 export type HostStateV = Schema.Schema.Type<typeof HostState>;
 
 /** The reply every command carries: the command's value, or the failure. */
+// The compact result is pi's own type, carried opaque (ADR 0005): the
+// guard checks nothing, the declared type is the contract.
+const CompactResultOpaque = Schema.declare<CompactResult>((_u): _u is CompactResult => true);
 const ReplyOk = Schema.TaggedStruct("reply_ok", {
-  result: Schema.optional(Schema.Unknown), // compact result
-  model: Schema.optional(Schema.Union([Schema.Null, WireModelInfo])),
   level: Schema.optional(ThinkingLevelSchema),
+  model: Schema.optional(Schema.Union([Schema.Null, WireModelInfo])),
+  // The compact result (undefined for aborted compactions).
+  result: Schema.optional(CompactResultOpaque),
 });
 type ReplyOk = Schema.Schema.Type<typeof ReplyOk>;
 const ReplyFailed = Schema.TaggedStruct("reply_failed", { message: Schema.String });
@@ -92,23 +94,22 @@ export type { ReplyOk };
 
 /** Everything the machine reacts to: commands (reply-bearing) and run/compaction lifecycle events. */
 const HostEvent = Event({
+  AbortRequested: Event.reply({}, HostReply),
+  CompactFailed: { message: Schema.String },
+  CompactFinished: { result: Schema.Unknown },
+  CompactRequested: Event.reply({ customInstructions: Schema.optional(Schema.String) }, HostReply),
+  FollowUpRequested: Event.reply({ text: Schema.String }, HostReply),
   PromptRequested: Event.reply(
-    { text: Schema.String, images: Schema.optional(Schema.Array(Schema.Unknown)) },
+    { images: Schema.optional(Schema.Array(Schema.Unknown)), text: Schema.String },
     HostReply,
   ),
-  SteerRequested: Event.reply({ text: Schema.String }, HostReply),
-  FollowUpRequested: Event.reply({ text: Schema.String }, HostReply),
-  AbortRequested: Event.reply({}, HostReply),
-  CompactRequested: Event.reply({ customInstructions: Schema.optional(Schema.String) }, HostReply),
-  SetAutoCompactionRequested: Event.reply({ enabled: Schema.Boolean }, HostReply),
-  SetModelRequested: Event.reply({ provider: Schema.String, modelId: Schema.String }, HostReply),
-  SetThinkingLevelRequested: Event.reply({ level: ThinkingLevelSchema }, HostReply),
-  SetSessionNameRequested: Event.reply({ name: Schema.String }, HostReply),
-  // Internal lifecycle events, sent by the state-scoped run/compaction effects.
-  RunFinished: {},
   RunFailed: { message: Schema.String },
-  CompactFinished: { result: Schema.Unknown },
-  CompactFailed: { message: Schema.String },
+  RunFinished: {},
+  SetAutoCompactionRequested: Event.reply({ enabled: Schema.Boolean }, HostReply),
+  SetModelRequested: Event.reply({ modelId: Schema.String, provider: Schema.String }, HostReply),
+  SetSessionNameRequested: Event.reply({ name: Schema.String }, HostReply),
+  SetThinkingLevelRequested: Event.reply({ level: ThinkingLevelSchema }, HostReply),
+  SteerRequested: Event.reply({ text: Schema.String }, HostReply),
 });
 export type HostEventV = Schema.Schema.Type<typeof HostEvent>;
 export type HostCommandEvent = Extract<
@@ -143,8 +144,8 @@ export interface HostDeps {
   readonly threadId: string;
   readonly agent: Agent;
   readonly session: Session;
-  readonly catalog: ModelCatalogShape;
-  readonly registry: HostRegistryShape;
+  readonly catalog: ModelCatalogApi;
+  readonly registry: HostRegistryApi;
   readonly sink: HostEventSink;
   readonly onRecordChanged: ((record: ThreadRecord) => void) | undefined;
   readonly modelRef: Ref.Ref<Model<Api> | null>;
@@ -155,7 +156,7 @@ export interface HostDeps {
   /** The machine's initial state (Idle, or Interrupted after crash recovery). */
   readonly initialState: HostStateV;
   /** Push the wire-visible state into the registry (crashed → idle). */
-  readonly pushState: (state: ThreadState) => Effect.Effect<void, never>;
+  readonly pushState: (state: ThreadState) => Effect.Effect<void>;
 }
 
 /** Auto-title: the pinned lightweight model that names quick-started threads (CONTEXT.md: Auto-title). */
@@ -173,39 +174,40 @@ export const entriesFromLog = (log: readonly LogItem[]) =>
     .map((item) => item.entry);
 
 /** Apply a thinking level with model clamping; appends the trail entry. */
-const applyThinkingLevel = Effect.fn("applyThinkingLevel")(function* (
+const applyThinkingLevel = Effect.fn("applyThinkingLevel")(function* applyThinkingLevel(
   deps: HostDeps,
   level: ThinkingLevel,
 ) {
   const model = yield* Ref.get(deps.modelRef);
-  const available =
-    model === null ? [...THINKING_LEVELS] : (getSupportedThinkingLevels(model) as ThinkingLevel[]);
+  const available = model === null ? [...THINKING_LEVELS] : getSupportedThinkingLevels(model);
   let effective = level;
   if (!available.includes(level) && model !== null) {
-    effective = clampThinkingLevel(model, level) as ThinkingLevel;
+    effective = clampThinkingLevel(model, level);
   }
   const current = yield* Ref.get(deps.thinkingLevelRef);
-  if (effective === current) return effective;
+  if (effective === current) {
+    return effective;
+  }
   yield* Ref.set(deps.thinkingLevelRef, effective);
   deps.agent.state.thinkingLevel = effective;
   const entry = yield* Effect.tryPromise({
-    try: () =>
-      deps.session.appendEntry(
+    catch: toSessionHostError,
+    try: async () =>
+      await deps.session.appendEntry(
         {
           id: deps.session.idGenerator.next(),
-          type: "thinking_level_change",
           thinkingLevel: effective,
+          type: "thinking_level_change",
         },
         LANE,
       ),
-    catch: toSessionHostError,
   });
-  deps.sink({ type: "entry_appended", entry });
+  deps.sink({ entry, type: "entry_appended" });
   return effective;
 });
 
 /** Set the thread's model: catalog + auth checks, trail entry, thinking re-clamp. */
-const applyModel = Effect.fn("applyModel")(function* (
+const applyModel = Effect.fn("applyModel")(function* applyModel(
   deps: HostDeps,
   provider: string,
   modelId: string,
@@ -227,60 +229,23 @@ const applyModel = Effect.fn("applyModel")(function* (
   yield* Ref.set(deps.modelRef, model);
   deps.agent.state.model = model;
   const entry = yield* Effect.tryPromise({
-    try: () =>
-      deps.session.appendEntry(
-        { id: deps.session.idGenerator.next(), type: "model_change", provider, modelId },
+    catch: toSessionHostError,
+    try: async () =>
+      await deps.session.appendEntry(
+        { id: deps.session.idGenerator.next(), modelId, provider, type: "model_change" },
         LANE,
       ),
-    catch: toSessionHostError,
   });
-  deps.sink({ type: "entry_appended", entry });
+  deps.sink({ entry, type: "entry_appended" });
   yield* applyThinkingLevel(deps, yield* Ref.get(deps.thinkingLevelRef));
   return model;
-});
-
-/** One unit of agent work: the run, then auto-compaction, settled, auto-title. */
-const runCommand = Effect.fn("runCommand")(function* (
-  deps: HostDeps,
-  working: Extract<HostStateV, { readonly _tag: "Working" }>,
-) {
-  const content: Array<{ type: "text"; text: string } | ImageContent> = [
-    { type: "text", text: working.text },
-  ];
-  if (working.images !== undefined && working.images.length > 0) {
-    content.push(...(working.images as ImageContent[]));
-  }
-  const message: UserMessage = { role: "user", content, timestamp: Date.now() };
-  yield* Effect.tryPromise({ try: () => deps.agent.prompt(message), catch: toSessionHostError });
-  yield* maybeAutoCompact(deps);
-  deps.sink({ type: "settled" });
-  // Best-effort, never fails or delays the run or the prompt response.
-  yield* maybeAutoTitle(deps).pipe(Effect.ignore);
-});
-
-const maybeAutoCompact = Effect.fn("maybeAutoCompact")(function* (deps: HostDeps) {
-  const settings = yield* Ref.get(deps.compactionSettingsRef);
-  if (!settings.enabled) return;
-  const assistant = yield* Ref.get(deps.lastAssistantRef);
-  const model = yield* Ref.get(deps.modelRef);
-  if (assistant === undefined || model === null) return;
-  if (assistant.stopReason === "aborted" || assistant.stopReason === "error") return;
-  const log = yield* Effect.tryPromise({
-    try: () => deps.session.getLog(),
-    catch: toSessionHostError,
-  });
-  const context = buildSessionContext(entriesFromLog(log));
-  const estimate = estimateContextTokens(context.messages);
-  if (shouldCompact(estimate.tokens, model.contextWindow, settings)) {
-    yield* runCompaction(deps, "threshold");
-  }
 });
 
 /**
  * Compaction, manual or threshold. Aborts settle as success with `undefined`
  * (the run continues); real failures propagate.
  */
-const runCompaction = Effect.fn("runCompaction")(function* (
+const runCompaction = Effect.fn("runCompaction")(function* runCompaction(
   deps: HostDeps,
   reason: "manual" | "threshold" | "overflow",
   customInstructions?: string,
@@ -293,33 +258,34 @@ const runCompaction = Effect.fn("runCompaction")(function* (
   }
   const settings = yield* Ref.get(deps.compactionSettingsRef);
   const log = yield* Effect.tryPromise({
-    try: () => deps.session.getLog(),
     catch: toSessionHostError,
+    try: async () => await deps.session.getLog(),
   });
   const preparation = prepareCompaction(entriesFromLog(log), settings);
   if (!preparation.ok) {
     return yield* Effect.fail(
       new SessionHostError({
+        cause: preparation.error,
         kind: "compact_prepare",
         message: messageOf(preparation.error),
-        cause: preparation.error,
       }),
     );
   }
   if (preparation.value === undefined) {
-    return undefined;
+    return undefined satisfies undefined;
   }
   const prepared = preparation.value;
 
   const abortController = new AbortController();
   yield* Ref.set(deps.compactionAbortRef, Option.some(abortController));
-  deps.sink({ type: "compaction_start", reason });
+  deps.sink({ reason, type: "compaction_start" });
   const thinkingLevel = yield* Ref.get(deps.thinkingLevelRef);
   const outcome = yield* Effect.result(
-    Effect.gen(function* () {
+    Effect.gen(function* outcome() {
       const result = yield* Effect.tryPromise({
-        try: () =>
-          compact(
+        catch: toSessionHostError,
+        try: async () =>
+          await compact(
             prepared,
             deps.catalog.models,
             model,
@@ -327,84 +293,118 @@ const runCompaction = Effect.fn("runCompaction")(function* (
             abortController.signal,
             thinkingLevel,
           ),
-        catch: toSessionHostError,
       });
       if (!result.ok) {
         return yield* Effect.fail(toSessionHostError(result.error));
       }
       const compacted = yield* Effect.tryPromise({
-        try: () =>
-          deps.session.appendEntry(
-            {
-              id: deps.session.idGenerator.next(),
-              type: "compaction",
-              summary: result.value.summary,
-              retainedTail: result.value.retainedTail,
-              tokensBefore: result.value.tokensBefore,
-              ...(result.value.details === undefined ? {} : { details: result.value.details }),
-              ...(result.value.usage === undefined ? {} : { usage: result.value.usage }),
-            },
-            LANE,
-          ),
         catch: toSessionHostError,
+        try: async () => {
+          const entry: ProvisionedEntry<CompactionEntry> = {
+            id: deps.session.idGenerator.next(),
+            retainedTail: result.value.retainedTail,
+            summary: result.value.summary,
+            tokensBefore: result.value.tokensBefore,
+            type: "compaction",
+          };
+          if (result.value.details !== undefined) {
+            entry.details = result.value.details;
+          }
+          if (result.value.usage !== undefined) {
+            entry.usage = result.value.usage;
+          }
+          return await deps.session.appendEntry(entry, LANE);
+        },
       });
-      deps.sink({ type: "entry_appended", entry: compacted });
+      deps.sink({ entry: compacted, type: "entry_appended" });
       // Rebuild the live context from the compacted trail.
       const newLog = yield* Effect.tryPromise({
-        try: () => deps.session.getLog(),
         catch: toSessionHostError,
+        try: async () => await deps.session.getLog(),
       });
       deps.agent.state.messages = buildSessionContext(entriesFromLog(newLog)).messages;
-      deps.sink({ type: "compaction_end", reason, result: result.value, aborted: false });
+      deps.sink({ aborted: false, reason, result: result.value, type: "compaction_end" });
       return result.value;
     }).pipe(Effect.ensuring(Ref.set(deps.compactionAbortRef, Option.none()))),
   );
   if (Result.isFailure(outcome)) {
     if (abortController.signal.aborted) {
-      deps.sink({ type: "compaction_end", reason, result: undefined, aborted: true });
-      return undefined;
+      deps.sink({ aborted: true, reason, result: undefined, type: "compaction_end" });
+      return undefined satisfies undefined;
     }
     deps.sink({
-      type: "compaction_end",
-      reason,
-      result: undefined,
       aborted: false,
       errorMessage: outcome.failure.message,
+      reason,
+      result: undefined,
+      type: "compaction_end",
     });
     return yield* Effect.fail(outcome.failure);
   }
   return outcome.success;
 });
 
+const maybeAutoCompact = Effect.fn("maybeAutoCompact")(function* maybeAutoCompact(deps: HostDeps) {
+  const settings = yield* Ref.get(deps.compactionSettingsRef);
+  if (!settings.enabled) {
+    return;
+  }
+  const assistant = yield* Ref.get(deps.lastAssistantRef);
+  const model = yield* Ref.get(deps.modelRef);
+  if (assistant === undefined || model === null) {
+    return;
+  }
+  if (assistant.stopReason === "aborted" || assistant.stopReason === "error") {
+    return;
+  }
+  const log = yield* Effect.tryPromise({
+    catch: toSessionHostError,
+    try: async () => await deps.session.getLog(),
+  });
+  const context = buildSessionContext(entriesFromLog(log));
+  const estimate = estimateContextTokens(context.messages);
+  if (shouldCompact(estimate.tokens, model.contextWindow, settings)) {
+    yield* runCompaction(deps, "threshold");
+  }
+});
+
 /** Auto-title: name quick-started threads after their first settled run. */
-const maybeAutoTitle = Effect.fn("maybeAutoTitle")(function* (deps: HostDeps) {
+const maybeAutoTitle = Effect.fn("maybeAutoTitle")(function* maybeAutoTitle(deps: HostDeps) {
   const record = yield* deps.registry.get(deps.threadId);
-  if (Option.isNone(record) || record.value.nameAuto !== true) return;
+  if (Option.isNone(record) || !record.value.nameAuto) {
+    return;
+  }
   const model = deps.catalog.getModel(AUTO_TITLE_PROVIDER, AUTO_TITLE_MODEL);
-  if (model === undefined) return;
-  if (!(yield* deps.catalog.hasAuth(AUTO_TITLE_PROVIDER))) return;
+  if (model === undefined) {
+    return;
+  }
+  if (!(yield* deps.catalog.hasAuth(AUTO_TITLE_PROVIDER))) {
+    return;
+  }
 
   const response = yield* Effect.tryPromise({
-    try: () =>
-      deps.catalog.models.completeSimple(model, {
+    catch: toSessionHostError,
+    try: async () =>
+      await deps.catalog.models.completeSimple(model, {
         messages: [
           {
+            content: [{ text: AUTO_TITLE_PROMPT(record.value.name), type: "text" }],
             role: "user",
-            content: [{ type: "text", text: AUTO_TITLE_PROMPT(record.value.name) }],
             timestamp: Date.now(),
           },
         ],
       }),
-    catch: toSessionHostError,
   });
   const title = response.content
     .filter((c): c is { type: "text"; text: string } => c.type === "text")
     .map((c) => c.text)
     .join("")
     .trim()
-    .replace(/^["']|["']$/g, "")
+    .replaceAll(/^["']|["']$/gu, "")
     .slice(0, 80);
-  if (title.length === 0) return;
+  if (title.length === 0) {
+    return;
+  }
 
   const updated = yield* deps.registry.update(deps.threadId, {
     name: `${title} — ${record.value.name}`,
@@ -415,8 +415,34 @@ const maybeAutoTitle = Effect.fn("maybeAutoTitle")(function* (deps: HostDeps) {
   }
 });
 
-/** The host machine type (the builder's result); `HostMachine.make` shapes one. */
-type HostMachine = Machine.Machine<HostStateV, HostEventV, never, any, any, any>;
+/** One unit of agent work: the run, then auto-compaction, settled, auto-title. */
+const runCommand = Effect.fn("runCommand")(function* runCommand(
+  deps: HostDeps,
+  working: Extract<HostStateV, { readonly _tag: "Working" }>,
+) {
+  const content: ({ type: "text"; text: string } | ImageContent)[] = [
+    { text: working.text, type: "text" },
+  ];
+  if (working.images !== undefined && working.images.length > 0) {
+    content.push(
+      ...working.images.filter(
+        (image): image is ImageContent =>
+          typeof image === "object" && image !== null && "type" in image && image.type === "image",
+      ),
+    );
+  }
+  const message: UserMessage = { content, role: "user", timestamp: Date.now() };
+  yield* Effect.tryPromise({
+    catch: toSessionHostError,
+    try: async () => {
+      await deps.agent.prompt(message);
+    },
+  });
+  yield* maybeAutoCompact(deps);
+  deps.sink({ type: "settled" });
+  // Best-effort, never fails or delays the run or the prompt response.
+  yield* maybeAutoTitle(deps).pipe(Effect.ignore);
+});
 
 /**
  * The busy-state rejection for the three run commands: one reply per state
@@ -428,12 +454,40 @@ const busyReply = (
   ReplyFailed.make({
     message: Match.value(state).pipe(
       Match.tagsExhaustive({
-        Working: () => "agent is already processing",
         Compacting: () => "cannot start a run while compacting",
         Crashed: () => "host crashed; retry",
+        Working: () => "agent is already processing",
       }),
     ),
   });
+
+/** Start a run from idle/interrupted: model check, then defer the reply to the run. */
+const startRun = Effect.fn("startRun")(function* startRun<S extends HostStateV>(
+  deps: HostDeps,
+  state: S,
+  working: Extract<HostStateV, { readonly _tag: "Working" }>,
+) {
+  const model = yield* Ref.get(deps.modelRef);
+  if (model === null) {
+    return Machine.reply(
+      state,
+      ReplyFailed.make({ message: "no model selected for this thread; use set_model first" }),
+    );
+  }
+  yield* deps.pushState("working");
+  return Machine.deferReply(working);
+});
+
+/** Run IO and always answer the call with a reply — handlers never fail the actor. */
+const safeReply = Effect.fn("safeReply")(function* safeReply<S extends HostStateV>(
+  state: S,
+  work: Effect.Effect<HostReplyV, unknown>,
+) {
+  const outcome = yield* work.pipe(Effect.result);
+  return Result.isFailure(outcome)
+    ? Machine.reply(state, ReplyFailed.make({ message: messageOf(outcome.failure) }))
+    : Machine.reply(state, outcome.success);
+});
 
 /**
  * The host machine builder: `Machine.make` plus the full transition table.
@@ -442,13 +496,20 @@ const busyReply = (
  * `SakuDaemon`-style services build the hosts, not the machines).
  */
 const HostMachine = {
-  make: (deps: HostDeps): HostMachine => {
-    const machine = Machine.make({ state: HostState, event: HostEvent, initial: deps.initialState });
+  make: (deps: HostDeps) => {
+    const machine = Machine.make({
+      event: HostEvent,
+      initial: deps.initialState,
+      state: HostState,
+    });
 
     return (
       machine
-        .on([HostState.Idle, HostState.Interrupted], HostEvent.PromptRequested, ({ state, event }) =>
-          startRun(deps, state, HostState.Working({ text: event.text, images: event.images })),
+        .on(
+          [HostState.Idle, HostState.Interrupted],
+          HostEvent.PromptRequested,
+          ({ state, event }) =>
+            startRun(deps, state, HostState.Working({ images: event.images, text: event.text })),
         )
         .on(
           [HostState.Working, HostState.Compacting, HostState.Crashed],
@@ -475,9 +536,11 @@ const HostMachine = {
         )
         // Abort settles the in-flight run; elsewhere it is a no-op.
         .on(HostState.Working, HostEvent.AbortRequested, ({ state }) =>
-          Effect.gen(function* () {
+          Effect.gen(function* make() {
             const compactionAbort = yield* Ref.get(deps.compactionAbortRef);
-            if (Option.isSome(compactionAbort)) compactionAbort.value.abort();
+            if (Option.isSome(compactionAbort)) {
+              compactionAbort.value.abort();
+            }
             deps.agent.abort();
             return Machine.reply(state, ReplyOk.make({}));
           }),
@@ -488,7 +551,9 @@ const HostMachine = {
           ({ state }) => Machine.reply(state, ReplyOk.make({})),
         )
         .on([HostState.Idle, HostState.Interrupted], HostEvent.CompactRequested, ({ event }) =>
-          Machine.deferReply(HostState.Compacting({ customInstructions: event.customInstructions })),
+          Machine.deferReply(
+            HostState.Compacting({ customInstructions: event.customInstructions }),
+          ),
         )
         .on(HostState.Working, HostEvent.CompactRequested, ({ state }) =>
           Machine.reply(
@@ -513,7 +578,7 @@ const HostMachine = {
           ],
           HostEvent.SetAutoCompactionRequested,
           ({ state, event }) =>
-            Effect.gen(function* () {
+            Effect.gen(function* make() {
               yield* Ref.update(deps.compactionSettingsRef, (settings) => ({
                 ...settings,
                 enabled: event.enabled,
@@ -534,8 +599,10 @@ const HostMachine = {
             safeReply(
               state,
               Effect.tryPromise({
-                try: () => deps.session.setName(event.name),
                 catch: toSessionHostError,
+                try: async () => {
+                  await deps.session.setName(event.name);
+                },
               }).pipe(Effect.map(() => ReplyOk.make({}))),
             ),
         )
@@ -577,53 +644,53 @@ const HostMachine = {
         )
         // Run lifecycle: the state-scoped effects settle their own replies.
         .on(HostState.Working, HostEvent.RunFinished, () =>
-          Effect.gen(function* () {
+          Effect.gen(function* make() {
             yield* deps.pushState("idle");
             return HostState.Idle;
           }),
         )
         .on(HostState.Working, HostEvent.RunFailed, ({ event }) =>
-          Effect.gen(function* () {
+          Effect.gen(function* make() {
             yield* deps.pushState("idle");
             return HostState.Crashed({ message: event.message });
           }),
         )
         .on(HostState.Compacting, HostEvent.CompactFinished, () =>
-          Effect.gen(function* () {
+          Effect.gen(function* make() {
             yield* deps.pushState("idle");
             return HostState.Idle;
           }),
         )
         .on(HostState.Compacting, HostEvent.CompactFailed, () =>
-          Effect.gen(function* () {
+          Effect.gen(function* make() {
             yield* deps.pushState("idle");
             return HostState.Idle;
           }),
         )
         .spawn(HostState.Working, ({ self, state }) =>
-          Effect.gen(function* () {
+          Effect.gen(function* make() {
             yield* runCommand(deps, state);
             yield* self.reply(ReplyOk.make({}));
             yield* self.send(HostEvent.RunFinished);
           }).pipe(
-            Effect.catch((error) =>
-              Effect.gen(function* () {
-                yield* self.reply(ReplyFailed.make({ message: messageOf(error) }));
-                yield* self.send(HostEvent.RunFailed({ message: messageOf(error) }));
+            Effect.catchEager((failure) =>
+              Effect.gen(function* make() {
+                yield* self.reply(ReplyFailed.make({ message: messageOf(failure) }));
+                yield* self.send(HostEvent.RunFailed({ message: messageOf(failure) }));
               }),
             ),
           ),
         )
         .spawn(HostState.Compacting, ({ self, state }) =>
-          Effect.gen(function* () {
+          Effect.gen(function* make() {
             const result = yield* runCompaction(deps, "manual", state.customInstructions);
             yield* self.reply(ReplyOk.make({ result }));
             yield* self.send(HostEvent.CompactFinished({ result }));
           }).pipe(
-            Effect.catch((error) =>
-              Effect.gen(function* () {
-                yield* self.reply(ReplyFailed.make({ message: messageOf(error) }));
-                yield* self.send(HostEvent.CompactFailed({ message: messageOf(error) }));
+            Effect.catchEager((failure) =>
+              Effect.gen(function* make() {
+                yield* self.reply(ReplyFailed.make({ message: messageOf(failure) }));
+                yield* self.send(HostEvent.CompactFailed({ message: messageOf(failure) }));
               }),
             ),
           ),
@@ -631,33 +698,5 @@ const HostMachine = {
     );
   },
 };
-
-/** Start a run from idle/interrupted: model check, then defer the reply to the run. */
-const startRun = Effect.fn("startRun")(function* <S extends HostStateV>(
-  deps: HostDeps,
-  state: S,
-  working: Extract<HostStateV, { readonly _tag: "Working" }>,
-) {
-  const model = yield* Ref.get(deps.modelRef);
-  if (model === null) {
-    return Machine.reply(
-      state,
-      ReplyFailed.make({ message: "no model selected for this thread; use set_model first" }),
-    );
-  }
-  yield* deps.pushState("working");
-  return Machine.deferReply(working);
-});
-
-/** Run IO and always answer the call with a reply — handlers never fail the actor. */
-const safeReply = Effect.fn("safeReply")(function* <S extends HostStateV>(
-  state: S,
-  work: Effect.Effect<HostReplyV, unknown, never>,
-) {
-  const outcome = yield* work.pipe(Effect.result);
-  return Result.isFailure(outcome)
-    ? Machine.reply(state, ReplyFailed.make({ message: messageOf(outcome.failure) }))
-    : Machine.reply(state, outcome.success);
-});
 
 export { HostState, HostEvent, HostMachine };

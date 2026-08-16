@@ -17,13 +17,14 @@ import type {
 } from "@saku/wire";
 
 import type { IconName } from "./icon.ts";
+import type { Json } from "effect/Schema";
 import { asString } from "./thread/format.ts";
-import type { EntryProjection } from "./thread/projection.ts";
+import type { EntryProjection, MessageProjection } from "./thread/projection.ts";
 
 const modeIcons = {
+  any: "shuffle",
   local: "laptop",
   sandbox: "box",
-  any: "shuffle",
 } satisfies Record<ThreadMode, IconName>;
 
 /** The rail's mode icon: the hands-policy mode (CONTEXT.md: Mode). */
@@ -46,13 +47,19 @@ export const pickerRows = (picker: {
     | { readonly _tag: "Idle" | "Loading" | "Refreshing" | "Stale" | "Failure" };
   readonly filter: string;
 }): PickerRow[] => {
-  if (picker.entries._tag !== "Success") return [];
+  if (picker.entries._tag !== "Success") {
+    return [];
+  }
   const needle = picker.filter.trim().toLowerCase();
   const rows: PickerRow[] = [];
-  if (picker.parent !== null) rows.push({ kind: "up" });
+  if (picker.parent !== null) {
+    rows.push({ kind: "up" });
+  }
   for (const entry of picker.entries.data) {
-    if (needle.length > 0 && !entry.name.toLowerCase().includes(needle)) continue;
-    rows.push({ kind: "dir", entry });
+    if (needle.length > 0 && !entry.name.toLowerCase().includes(needle)) {
+      continue;
+    }
+    rows.push({ entry, kind: "dir" });
   }
   return rows;
 };
@@ -65,13 +72,13 @@ export interface StatePresentation {
 }
 
 const statePresentations = {
-  idle: { icon: "circle", tone: "text-muted", title: "idle" },
-  working: { icon: "loaderCircle", tone: "text-gold animate-spin", title: "working" },
+  idle: { icon: "circle", title: "idle", tone: "text-muted" },
   interrupted: {
     icon: "circleAlert",
-    tone: "text-rose",
     title: "interrupted — recovery on next command",
+    tone: "text-rose",
   },
+  working: { icon: "loaderCircle", title: "working", tone: "text-gold animate-spin" },
 } satisfies Record<ThreadState, StatePresentation>;
 
 export const statePresentation = (state: ThreadState) => statePresentations[state];
@@ -84,14 +91,14 @@ export interface EnvPresentation {
 }
 
 const envPresentations = {
-  ready: { icon: "circleCheck", tone: "text-foam", title: "env ready" },
+  error: { icon: "circleX", title: "env error — next prompt retries", tone: "text-love" },
   provisioning: {
     icon: "loaderCircle",
-    tone: "text-gold animate-spin",
     title: "env provisioning",
+    tone: "text-gold animate-spin",
   },
-  stopped: { icon: "circleStop", tone: "text-muted", title: "env stopped — resumes on prompt" },
-  error: { icon: "circleX", tone: "text-love", title: "env error — next prompt retries" },
+  ready: { icon: "circleCheck", title: "env ready", tone: "text-foam" },
+  stopped: { icon: "circleStop", title: "env stopped — resumes on prompt", tone: "text-muted" },
 } satisfies Record<ThreadEnvState, EnvPresentation>;
 
 export const envPresentation = (env: ThreadEnvState) => envPresentations[env];
@@ -107,7 +114,9 @@ export const modelLabel = (model: { readonly provider: string; readonly id: stri
  *  an empty query returns everything. */
 export const filterModels = (models: readonly WireModelInfo[], query: string) => {
   const q = query.trim().toLowerCase();
-  if (q === "") return models;
+  if (q === "") {
+    return models;
+  }
   return models.filter(
     (model) =>
       modelLabel(model).toLowerCase().includes(q) ||
@@ -122,38 +131,61 @@ export const CONTEXT_CRITICAL_PERCENT = 90;
 
 /** Tone for a context-usage percent: foam below the warning, gold below the
  *  critical threshold, love past it. */
-export const contextTone = (percent: number) =>
-  percent >= CONTEXT_CRITICAL_PERCENT
-    ? "text-love"
-    : percent >= CONTEXT_WARNING_PERCENT
-      ? "text-gold"
-      : "text-foam";
+export const contextTone = (percent: number) => {
+  if (percent >= CONTEXT_CRITICAL_PERCENT) {
+    return "text-love";
+  }
+  if (percent >= CONTEXT_WARNING_PERCENT) {
+    return "text-gold";
+  }
+  return "text-foam";
+};
+
+/** A usage payload as a record (the message's `usage` after boundary
+ *  decoding — ADR 0005). */
+interface UsageRecord {
+  readonly [key: string]: Json;
+}
+
+const isUsageRecord = (usage: Json | undefined): usage is UsageRecord =>
+  typeof usage === "object" && usage !== null;
+
+const isNumber = (value: Json | undefined): value is number => typeof value === "number";
+
+/** A usage field as a number, absent fields counting as 0. */
+const num = (usage: UsageRecord, key: string) => {
+  const value = usage[key];
+  return isNumber(value) ? value : 0;
+};
 
 /** pi's per-request context size from a usage payload: the native
  *  `totalTokens`, else the component sum (pi's own shell rule, decoded in
  *  the console — ADR 0005). Null when the payload carries neither. */
-export const usageContextTokens = (usage: unknown) => {
-  if (typeof usage !== "object" || usage === null) return null;
-  const record = usage as Record<string, unknown>;
-  if (typeof record.totalTokens === "number") return record.totalTokens;
-  const input = typeof record.input === "number" ? record.input : 0;
-  const cacheRead = typeof record.cacheRead === "number" ? record.cacheRead : 0;
-  const cacheWrite = typeof record.cacheWrite === "number" ? record.cacheWrite : 0;
-  const tokens = input + cacheRead + cacheWrite;
+export const usageContextTokens = (usage: Json | undefined) => {
+  if (!isUsageRecord(usage)) {
+    return null;
+  }
+  if (isNumber(usage.totalTokens)) {
+    return usage.totalTokens;
+  }
+  const tokens = num(usage, "input") + num(usage, "cacheRead") + num(usage, "cacheWrite");
   return tokens > 0 ? tokens : null;
 };
 
 /** A pi usage payload's token breakdown (input/output/cacheRead/cacheWrite),
  *  decoded defensively; null when the payload carries no components at all. */
-export const usageBreakdown = (usage: unknown) => {
-  if (typeof usage !== "object" || usage === null) return null;
-  const record = usage as Record<string, unknown>;
-  const input = typeof record.input === "number" ? record.input : 0;
-  const output = typeof record.output === "number" ? record.output : 0;
-  const cacheRead = typeof record.cacheRead === "number" ? record.cacheRead : 0;
-  const cacheWrite = typeof record.cacheWrite === "number" ? record.cacheWrite : 0;
-  if (input === 0 && output === 0 && cacheRead === 0 && cacheWrite === 0) return null;
-  return { input, output, cacheRead, cacheWrite };
+export const usageBreakdown = (usage: Json | undefined) => {
+  if (!isUsageRecord(usage)) {
+    return null;
+  }
+  const input = num(usage, "input");
+  const output = num(usage, "output");
+  const cacheRead = num(usage, "cacheRead");
+  const cacheWrite = num(usage, "cacheWrite");
+  if (input === 0 && output === 0 && cacheRead === 0 && cacheWrite === 0) {
+    return null;
+  }
+  return { cacheRead, cacheWrite, input, output };
 };
 
 /** The usage panel's derivation: everything known about the thread's last
@@ -186,69 +218,108 @@ export interface UsageStatus {
   readonly thinkingLevel: string | null;
 }
 
+/** The walking accumulator for the last-usage scan. */
+interface UsageWalk {
+  cacheRead: number;
+  compactionSeq: number;
+  currentLevel: string | null;
+  currentModelChange: { provider: string; id: string } | null;
+  input: number;
+  levelAtUsage: string | null;
+  modelAtUsage: { provider: string; id: string } | null;
+  output: number;
+  tokens: number | null;
+  usageSeq: number;
+}
+
+/** Fold one assistant message's usage into the walk. */
+const applyUsageMessage = (acc: UsageWalk, message: MessageProjection, seq: number) => {
+  const next = usageContextTokens(message.usage);
+  if (next === null) {
+    return;
+  }
+  acc.tokens = next;
+  acc.usageSeq = seq;
+  const breakdown = usageBreakdown(message.usage);
+  acc.input = breakdown?.input ?? 0;
+  acc.output = breakdown?.output ?? 0;
+  acc.cacheRead = breakdown?.cacheRead ?? 0;
+  const provider = asString(message.provider);
+  const id = asString(message.model);
+  acc.modelAtUsage = provider === "" || id === "" ? acc.currentModelChange : { id, provider };
+  acc.levelAtUsage = acc.currentLevel;
+};
+
+/** Fold one trail entry into the walk (compactions, level/model changes,
+ *  and assistant messages with usage). */
+const foldUsageEntry = (acc: UsageWalk, entry: EntryProjection) => {
+  const seq = entry.seq ?? -1;
+  if (entry.type === "compaction") {
+    acc.compactionSeq = seq;
+    return;
+  }
+  if (entry.type === "thinking_level_change") {
+    const level = asString(entry.thinkingLevel);
+    acc.currentLevel = level === "" ? null : level;
+    return;
+  }
+  if (entry.type === "model_change") {
+    const provider = asString(entry.provider);
+    const id = asString(entry.modelId);
+    acc.currentModelChange = provider === "" || id === "" ? null : { id, provider };
+    return;
+  }
+  if (entry.type !== "message") {
+    return;
+  }
+  const { message } = entry;
+  if (message === undefined || message.role !== "assistant") {
+    return;
+  }
+  if (message.stopReason === "aborted" || message.stopReason === "error") {
+    return;
+  }
+  applyUsageMessage(acc, message, seq);
+};
+
 /** The trail's last assistant usage, walked once into the full status
  *  (the badge and the floating usage panel read the same derivation). */
 export const usageStatus = (entries: readonly EntryProjection[], model: WireModelInfo | null) => {
   const window = model?.contextWindow ?? 0;
-  if (window <= 0) return null;
-  let tokens: number | null = null;
-  let input = 0;
-  let output = 0;
-  let cacheRead = 0;
-  let usageSeq = -1;
-  let compactionSeq = -1;
-  let levelAtUsage: string | null = null;
-  let currentLevel: string | null = null;
-  let modelAtUsage: { provider: string; id: string } | null = null;
-  let currentModelChange: { provider: string; id: string } | null = null;
-  for (const entry of entries) {
-    const seq = entry.seq ?? -1;
-    if (entry.type === "compaction") {
-      compactionSeq = seq;
-      continue;
-    }
-    if (entry.type === "thinking_level_change") {
-      const level = asString(entry.thinkingLevel);
-      currentLevel = level === "" ? null : level;
-      continue;
-    }
-    if (entry.type === "model_change") {
-      const provider = asString(entry.provider);
-      const id = asString(entry.modelId);
-      currentModelChange = provider === "" || id === "" ? null : { provider, id };
-      continue;
-    }
-    if (entry.type !== "message") continue;
-    const message = entry.message;
-    if (message === undefined || message.role !== "assistant") continue;
-    if (message.stopReason === "aborted" || message.stopReason === "error") continue;
-    const next = usageContextTokens(message.usage);
-    if (next === null) continue;
-    tokens = next;
-    usageSeq = seq;
-    const breakdown = usageBreakdown(message.usage);
-    input = breakdown?.input ?? 0;
-    output = breakdown?.output ?? 0;
-    cacheRead = breakdown?.cacheRead ?? 0;
-    const provider = asString(message.provider);
-    const id = asString(message.model);
-    modelAtUsage = provider === "" || id === "" ? currentModelChange : { provider, id };
-    levelAtUsage = currentLevel;
+  if (window <= 0) {
+    return null;
   }
-  if (tokens === null || compactionSeq > usageSeq) return null;
-  const percent = Math.round((tokens / window) * 100);
-  const hitRateInput = input + cacheRead;
+  const acc: UsageWalk = {
+    cacheRead: 0,
+    compactionSeq: -1,
+    currentLevel: null,
+    currentModelChange: null,
+    input: 0,
+    levelAtUsage: null,
+    modelAtUsage: null,
+    output: 0,
+    tokens: null,
+    usageSeq: -1,
+  };
+  for (const entry of entries) {
+    foldUsageEntry(acc, entry);
+  }
+  if (acc.tokens === null || acc.compactionSeq > acc.usageSeq) {
+    return null;
+  }
+  const percent = Math.round((acc.tokens / window) * 100);
+  const hitRateInput = acc.input + acc.cacheRead;
   return {
-    context: { tokens, window, percent },
-    input,
-    output,
-    cacheRead,
-    cacheHitRate: hitRateInput > 0 ? cacheRead / hitRateInput : null,
+    cacheHitRate: hitRateInput > 0 ? acc.cacheRead / hitRateInput : null,
+    cacheRead: acc.cacheRead,
+    context: { percent, tokens: acc.tokens, window },
+    input: acc.input,
     model:
-      modelAtUsage ??
-      currentModelChange ??
-      (model === null ? null : { provider: model.provider, id: model.id }),
-    thinkingLevel: levelAtUsage ?? currentLevel,
+      acc.modelAtUsage ??
+      acc.currentModelChange ??
+      (model === null ? null : { id: model.id, provider: model.provider }),
+    output: acc.output,
+    thinkingLevel: acc.levelAtUsage ?? acc.currentLevel,
   };
 };
 
@@ -270,8 +341,10 @@ export const unadoptedPiSessions = (
 ) => {
   const adopted = new Set<string>();
   for (const thread of threads) {
-    const source = thread.source;
-    if (source !== undefined && source.kind === "pi") adopted.add(source.path);
+    const { source } = thread;
+    if (source !== undefined && source.kind === "pi") {
+      adopted.add(source.path);
+    }
   }
   return sessions.filter((session) => !adopted.has(session.path));
 };
@@ -293,24 +366,44 @@ export const archivedThreads = (threads: readonly ThreadInfo[]) =>
   threads.filter((thread) => thread.archivedAt !== null);
 
 /** A project's display name: the path's basename. */
-export const projectName = (path: string) => path.split("/").filter(Boolean).pop() ?? path;
+export const projectName = (path: string) =>
+  path.split("/").findLast((part) => part !== "") ?? path;
 
 /** A compact relative time ("just now", "5m", "3h", "2d", then a date). */
 export const relativeTime = (ms: number) => {
   const seconds = Math.max(0, Math.floor((Date.now() - ms) / 1000));
-  if (seconds < 60) return "just now";
+  if (seconds < 60) {
+    return "just now";
+  }
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 60) {
+    return `${minutes}m ago`;
+  }
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
+  if (hours < 24) {
+    return `${hours}h ago`;
+  }
   const days = Math.floor(hours / 24);
-  if (days < 7) return `${days}d ago`;
+  if (days < 7) {
+    return `${days}d ago`;
+  }
   return new Date(ms).toLocaleDateString();
+};
+
+/** The header's state/env tone (the shared derivation). */
+const stateTone = (state: ThreadState | undefined, env: ThreadEnvState | undefined) => {
+  if (state === "working") {
+    return "text-gold";
+  }
+  if (env === "error") {
+    return "text-love";
+  }
+  return "text-subtle";
 };
 
 /** The header's state/env presentation: values and tone. */
 export const headerState = (state: ThreadState | undefined, env: ThreadEnvState | undefined) => ({
-  state,
   env,
-  tone: state === "working" ? "text-gold" : env === "error" ? "text-love" : "text-subtle",
+  state,
+  tone: stateTone(state, env),
 });

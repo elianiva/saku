@@ -6,26 +6,36 @@
  * implementation, not a thrower, so tool-calling tests can grow on it.
  */
 
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import path from "node:path";
 import type {
   ExecutionEnv,
+  ExecutionError,
   FileInfo,
-  Result as PiResult,
+  Result,
   ShellExecOptions,
 } from "@earendil-works/pi-agent-core";
 import { FileError, err, ok } from "@earendil-works/pi-agent-core";
 
-const notFound = (path: string) =>
-  new FileError("not_found", `no such file or directory: ${path}`, path);
+const notFound = (filePath: string) =>
+  new FileError("not_found", `no such file or directory: ${filePath}`, filePath);
 
-const norm = (path: string, cwd: string) => (isAbsolute(path) ? path : resolve(cwd, path));
+const norm = (filePath: string, cwd: string) =>
+  path.isAbsolute(filePath) ? filePath : path.resolve(cwd, filePath);
+
+const isText = (content: string | Uint8Array): content is string => typeof content === "string";
+
+// Pin the error type: `ok`/`err` leave `TError` unbound at inference, which
+// would widen every `Result` to `unknown` and break the `ExecutionEnv` seam.
+const okResult = <TValue>(value: TValue): Result<TValue, FileError> => ok(value);
+const okVoid = (): Result<void, FileError> => ({ ok: true, value: undefined });
+const errResult = (error: FileError): Result<never, FileError> => err(error);
 
 export class StubEnv implements ExecutionEnv {
   readonly cwd: string;
   private readonly files = new Map<string, Uint8Array>();
   private readonly dirs = new Set<string>();
   /** Every command executed, in order. */
-  readonly commands: Array<{ command: string; cwd: string }> = [];
+  readonly commands: { command: string; cwd: string }[] = [];
   /** Canned bash output; empty string by default. */
   bashStdout = "";
 
@@ -34,93 +44,107 @@ export class StubEnv implements ExecutionEnv {
     this.dirs.add(cwd);
   }
 
-  writeFileSync(path: string, content: string | Uint8Array) {
-    const target = norm(path, this.cwd);
-    this.files.set(
-      target,
-      typeof content === "string" ? new TextEncoder().encode(content) : content,
-    );
+  writeFileSync(filePath: string, content: string | Uint8Array) {
+    const target = norm(filePath, this.cwd);
+    this.files.set(target, isText(content) ? new TextEncoder().encode(content) : content);
   }
 
-  private fileInfoFor(path: string) {
-    const target = norm(path, this.cwd);
+  private fileInfoFor(filePath: string) {
+    const target = norm(filePath, this.cwd);
     const value = this.files.get(target);
-    if (value === undefined) return undefined;
-    return {
-      name: basename(target),
-      path: target,
-      kind: "file",
-      size: value.byteLength,
-      mtimeMs: 0,
-    };
+    return value === undefined
+      ? undefined
+      : {
+          kind: "file" as const,
+          mtimeMs: 0,
+          name: path.basename(target),
+          path: target,
+          size: value.byteLength,
+        };
   }
 
-  absolutePath(path: string) {
-    return Promise.resolve(ok(norm(path, this.cwd)));
+  async absolutePath(filePath: string) {
+    return await Promise.resolve(okResult(norm(filePath, this.cwd)));
   }
 
-  joinPath(parts: string[]) {
-    return Promise.resolve(ok(join(...parts)));
+  async joinPath(parts: string[]) {
+    void this.cwd;
+    return await Promise.resolve(okResult(path.join(...parts)));
   }
 
-  async readTextFile(path: string) {
-    const info = this.fileInfoFor(path);
-    if (info === undefined) return err(notFound(path));
-    return ok(new TextDecoder().decode(this.files.get(info.path)));
+  async readTextFile(filePath: string) {
+    const info = this.fileInfoFor(filePath);
+    if (info === undefined) {
+      return errResult(notFound(filePath));
+    }
+    return await Promise.resolve(okResult(new TextDecoder().decode(this.files.get(info.path))));
   }
 
   async readTextLines(
-    path: string,
+    filePath: string,
     options?: { maxLines?: number; abortSignal?: AbortSignal },
   ) {
-    const content = await this.readTextFile(path);
-    if (!content.ok) return content;
+    const content: Result<string, FileError> = await this.readTextFile(filePath);
+    if (!content.ok) {
+      return content;
+    }
     const lines = content.value.split("\n");
-    return ok(options?.maxLines === undefined ? lines : lines.slice(0, options.maxLines));
+    return await Promise.resolve(
+      okResult(options?.maxLines === undefined ? lines : lines.slice(0, options.maxLines)),
+    );
   }
 
-  async readBinaryFile(path: string) {
-    const info = this.fileInfoFor(path);
-    if (info === undefined) return err(notFound(path));
-    return ok(this.files.get(info.path) ?? new Uint8Array());
+  async readBinaryFile(filePath: string) {
+    const info = this.fileInfoFor(filePath);
+    if (info === undefined) {
+      return errResult(notFound(filePath));
+    }
+    return await Promise.resolve(okResult(this.files.get(info.path) ?? new Uint8Array()));
   }
 
-  writeFile(path: string, content: string | Uint8Array) {
-    this.writeFileSync(path, content);
-    return Promise.resolve(ok(undefined));
+  async writeFile(filePath: string, content: string | Uint8Array) {
+    this.writeFileSync(filePath, content);
+    return await Promise.resolve(okVoid());
   }
 
-  appendFile(path: string, content: string | Uint8Array) {
-    const target = norm(path, this.cwd);
+  async appendFile(filePath: string, content: string | Uint8Array) {
+    const target = norm(filePath, this.cwd);
     const existing = this.files.get(target);
-    const bytes = typeof content === "string" ? new TextEncoder().encode(content) : content;
+    const bytes = isText(content) ? new TextEncoder().encode(content) : content;
     const next = existing === undefined ? bytes : new Uint8Array([...existing, ...bytes]);
     this.files.set(target, next);
-    return Promise.resolve(ok(undefined));
+    return await Promise.resolve(okVoid());
   }
 
-  renameFile(sourcePath: string, destinationPath: string) {
+  async renameFile(sourcePath: string, destinationPath: string) {
     const source = norm(sourcePath, this.cwd);
     const value = this.files.get(source);
-    if (value === undefined) return Promise.resolve(err(notFound(sourcePath)));
+    if (value === undefined) {
+      return errResult(notFound(sourcePath));
+    }
     this.files.delete(source);
     this.files.set(norm(destinationPath, this.cwd), value);
-    return Promise.resolve(ok(undefined));
+    return await Promise.resolve(okVoid());
   }
 
-  fileInfo(path: string) {
-    const info = this.fileInfoFor(path);
-    return Promise.resolve(info === undefined ? err(notFound(path)) : ok(info));
+  async fileInfo(filePath: string) {
+    const info = this.fileInfoFor(filePath);
+    return await Promise.resolve(
+      info === undefined ? errResult(notFound(filePath)) : okResult(info),
+    );
   }
 
-  listDir(path: string) {
-    const target = norm(path, this.cwd);
+  async listDir(filePath: string) {
+    const target = norm(filePath, this.cwd);
     const entries: FileInfo[] = [];
-    for (const filePath of this.files.keys()) {
-      if (filePath.startsWith(`${target}/`)) {
-        const rest = filePath.slice(target.length + 1);
+    for (const entryPath of this.files.keys()) {
+      if (entryPath.startsWith(`${target}/`)) {
+        const rest = entryPath.slice(target.length + 1);
         if (!rest.includes("/")) {
-          entries.push(this.fileInfoFor(filePath)!);
+          const info = this.fileInfoFor(entryPath);
+          if (info !== undefined) {
+            entries.push(info);
+          }
         }
       }
     }
@@ -128,49 +152,46 @@ export class StubEnv implements ExecutionEnv {
       if (dir !== target && dir.startsWith(`${target}/`)) {
         const rest = dir.slice(target.length + 1);
         if (!rest.includes("/")) {
-          entries.push({ name: rest, path: dir, kind: "directory", size: 0, mtimeMs: 0 });
+          entries.push({ kind: "directory", mtimeMs: 0, name: rest, path: dir, size: 0 });
         }
       }
     }
-    return Promise.resolve(ok(entries));
+    return await Promise.resolve(okResult(entries));
   }
 
-  canonicalPath(path: string) {
-    return Promise.resolve(ok(norm(path, this.cwd)));
+  async canonicalPath(filePath: string) {
+    return await Promise.resolve(okResult(norm(filePath, this.cwd)));
   }
 
-  async exists(path: string) {
-    const target = norm(path, this.cwd);
-    return ok(this.files.has(target) || this.dirs.has(target));
+  async exists(filePath: string) {
+    const target = norm(filePath, this.cwd);
+    return await Promise.resolve(okResult(this.files.has(target) || this.dirs.has(target)));
   }
 
-  createDir(path: string, options?: { recursive?: boolean }) {
-    const target = norm(path, this.cwd);
+  async createDir(filePath: string, options?: { recursive?: boolean }) {
+    const target = norm(filePath, this.cwd);
     this.dirs.add(target);
     if (options?.recursive !== false) {
-      let current = dirname(target);
+      let current = path.dirname(target);
       while (current.startsWith(this.cwd) && current !== this.cwd) {
         this.dirs.add(current);
-        current = dirname(current);
+        current = path.dirname(current);
       }
     }
-    return Promise.resolve(ok(undefined));
+    return await Promise.resolve(okVoid());
   }
 
-  async remove(
-    path: string,
-    options?: { recursive?: boolean; force?: boolean },
-  ) {
-    const target = norm(path, this.cwd);
+  async remove(filePath: string, options?: { recursive?: boolean; force?: boolean }) {
+    const target = norm(filePath, this.cwd);
     let removed = this.files.delete(target);
-    if (options?.recursive) {
-      for (const key of [...this.files.keys()]) {
+    if (options?.recursive === true) {
+      for (const key of this.files.keys()) {
         if (key.startsWith(`${target}/`)) {
           this.files.delete(key);
           removed = true;
         }
       }
-      for (const dir of [...this.dirs]) {
+      for (const dir of this.dirs) {
         if (dir === target || dir.startsWith(`${target}/`)) {
           this.dirs.delete(dir);
           removed = true;
@@ -179,33 +200,36 @@ export class StubEnv implements ExecutionEnv {
     } else if (this.dirs.delete(target)) {
       removed = true;
     }
-    return removed || options?.force ? ok(undefined) : err(notFound(path));
+    return await Promise.resolve(
+      removed || options?.force === true ? okVoid() : errResult(notFound(filePath)),
+    );
   }
 
-  createTempDir(prefix?: string) {
-    const path = `${this.cwd}/${prefix ?? "tmp-"}`;
-    this.dirs.add(path);
-    return Promise.resolve(ok(path));
+  async createTempDir(prefix?: string) {
+    const filePath = `${this.cwd}/${prefix ?? "tmp-"}`;
+    this.dirs.add(filePath);
+    return await Promise.resolve(okResult(filePath));
   }
 
-  createTempFile(options?: {
-    prefix?: string;
-    suffix?: string;
-  }) {
-    const path = `${this.cwd}/${options?.prefix ?? ""}${Math.random().toString(36).slice(2)}${options?.suffix ?? ""}`;
-    this.files.set(path, new Uint8Array());
-    return Promise.resolve(ok(path));
+  async createTempFile(options?: { prefix?: string; suffix?: string }) {
+    const filePath = `${this.cwd}/${options?.prefix ?? ""}${Math.random().toString(36).slice(2)}${options?.suffix ?? ""}`;
+    this.files.set(filePath, new Uint8Array());
+    return await Promise.resolve(okResult(filePath));
   }
 
-  cleanup() {
-    return Promise.resolve();
+  async cleanup() {
+    void this.cwd;
+    await Promise.resolve();
   }
 
-  exec(
-    command: string,
-    options?: ShellExecOptions,
-  ) {
+  async exec(command: string, options?: ShellExecOptions) {
     this.commands.push({ command, cwd: options?.cwd ?? this.cwd });
-    return Promise.resolve(ok({ stdout: this.bashStdout, stderr: "", exitCode: 0 }));
+    return await Promise.resolve(
+      ok<{ exitCode: number; stderr: string; stdout: string }, ExecutionError>({
+        exitCode: 0,
+        stderr: "",
+        stdout: this.bashStdout,
+      }),
+    );
   }
 }

@@ -15,14 +15,18 @@
  * close the sockets before exit.
  */
 
-import { dirname } from "node:path";
+import path from "node:path";
 import { runMain } from "@effect/platform-node/NodeRuntime";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect, FileSystem } from "effect";
 
 import { getEnvUrlPath } from "./paths.ts";
 import { EnvDaemon } from "./daemon.ts";
+import type { EnvDaemonOptions } from "./daemon.ts";
 import { EnvRelayClient } from "./relay.ts";
+
+/** The daemon's log line; the CLI captures stdout into ~/.saku/env.log. */
+const log = (message: string) => Effect.logInfo(`[saku-env] ${message}`);
 
 /** Minimal flag parsing: `--name value` pairs; no deps, no surprises. */
 const flags = (args: readonly string[]) => {
@@ -30,32 +34,33 @@ const flags = (args: readonly string[]) => {
   for (let i = 0; i < args.length; i += 2) {
     const flag = args[i];
     const value = args[i + 1];
-    if (flag === undefined || value === undefined) continue;
-    if (!flag.startsWith("--")) continue;
+    if (flag === undefined || value === undefined) {
+      continue;
+    }
+    if (!flag.startsWith("--")) {
+      continue;
+    }
     map.set(flag, value);
   }
   return map;
 };
 
-const program = Effect.gen(function* () {
+const program = Effect.gen(function* program() {
   const args = flags(process.argv.slice(2));
   const token = args.get("--token") ?? "";
   const cwd = args.get("--cwd") ?? process.cwd();
   const port = Number(args.get("--port") ?? "0");
   const fs = yield* FileSystem.FileSystem;
-  const log = (message: string) => Effect.logInfo(`[saku-env] ${message}`);
 
-  const daemon = yield* EnvDaemon.make({
-    token,
-    cwd,
-    fs,
-    log,
-    ...(Number.isInteger(port) && port > 0 ? { port } : {}),
-  });
+  let daemonOptions: EnvDaemonOptions = { cwd, fs, log, token };
+  if (Number.isInteger(port) && port > 0) {
+    daemonOptions = { ...daemonOptions, port };
+  }
+  const daemon = yield* EnvDaemon.make(daemonOptions);
   yield* log(`listening on ${daemon.url}`);
   // The CLI reads the URL from ~/.saku/env.url; create the dir first.
   yield* fs
-    .makeDirectory(dirname(getEnvUrlPath()), { recursive: true })
+    .makeDirectory(path.dirname(getEnvUrlPath()), { recursive: true })
     .pipe(Effect.catch(() => Effect.void));
   yield* fs
     .writeFileString(getEnvUrlPath(), `${daemon.url}\n`)
@@ -75,19 +80,19 @@ const program = Effect.gen(function* () {
       yield* log("--hub requires --env-id and --hub-token; skipping relay registration");
     } else {
       yield* EnvRelayClient.make({
-        url: hub,
         envId,
-        token: hubToken,
-        hello: { token, version: "1", cwd },
         fs,
+        hello: { cwd, token, version: "1" },
         log,
+        token: hubToken,
+        url: hub,
       });
       yield* log(`relay client started for ${envId.slice(0, 8)} (${hub})`);
     }
   }
 });
 
-const main = Effect.gen(function* () {
+const main = Effect.gen(function* main() {
   yield* program;
   return yield* Effect.never;
 });

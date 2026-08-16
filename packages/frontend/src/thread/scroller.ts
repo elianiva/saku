@@ -43,11 +43,15 @@ const atEnd = (trail: HTMLElement) =>
  *  Emits no messages — it is the pane's imperative shell, mirroring the
  *  composer's focus mount. */
 export const ChatScroller: MountAction<ThreadMessage> = {
-  name: "ChatScroller",
-  f: (element) =>
-    Stream.callback<ThreadMessage>(() =>
-      Effect.gen(function* () {
-        const trail = element as HTMLElement;
+  f: (element) => {
+    // The mount is attached to the trail viewport div (view.ts mounts it
+    // with `id="trail"`), so a non-HTMLElement mount is a no-op.
+    if (!(element instanceof HTMLElement)) {
+      return Stream.empty;
+    }
+    const trail = element;
+    return Stream.callback<ThreadMessage>(() =>
+      Effect.gen(function* f() {
         const content =
           trail.firstElementChild instanceof HTMLElement ? trail.firstElementChild : null;
         const button =
@@ -69,18 +73,20 @@ export const ChatScroller: MountAction<ThreadMessage> = {
         let suppressUntil = 0;
 
         const syncButton = () => {
-          button?.setAttribute("data-active", atEnd(trail) ? "false" : "true");
+          if (button !== null) {
+            button.dataset.active = atEnd(trail) ? "false" : "true";
+          }
         };
 
         const scrollToEnd = (behavior: ScrollBehavior = "auto") => {
           following = true;
           suppressUntil = performance.now() + PROGRAMMATIC_SUPPRESS_MS;
-          trail.scrollTo({ top: trail.scrollHeight, behavior });
+          trail.scrollTo({ behavior, top: trail.scrollHeight });
           syncButton();
         };
 
         const onScroll = () => {
-          const scrollTop = trail.scrollTop;
+          const { scrollTop } = trail;
           const scrolledUp = scrollTop < lastScrollTop - POSITION_EPSILON;
           lastScrollTop = scrollTop;
           if (atEnd(trail)) {
@@ -102,12 +108,17 @@ export const ChatScroller: MountAction<ThreadMessage> = {
         };
 
         const onContentChange = () => {
-          if (following) scrollToEnd();
-          else syncButton();
+          if (following) {
+            scrollToEnd();
+          } else {
+            syncButton();
+          }
         };
 
         const scheduleContentChange = () => {
-          if (frame !== 0) return;
+          if (frame !== 0) {
+            return;
+          }
           frame = requestAnimationFrame(() => {
             frame = 0;
             onContentChange();
@@ -122,7 +133,7 @@ export const ChatScroller: MountAction<ThreadMessage> = {
           const top =
             row.getBoundingClientRect().top - trailRect.top + trail.scrollTop - ANCHOR_PEEK;
           suppressUntil = performance.now() + PROGRAMMATIC_SUPPRESS_MS;
-          trail.scrollTo({ top: Math.max(0, top), behavior: "auto" });
+          trail.scrollTo({ behavior: "auto", top: Math.max(0, top) });
           syncButton();
         };
 
@@ -130,8 +141,11 @@ export const ChatScroller: MountAction<ThreadMessage> = {
           for (const record of records) {
             for (const node of record.addedNodes) {
               if (node instanceof HTMLElement && node.dataset.role === "user") {
-                if (following) scrollToEnd();
-                else anchorRow(node);
+                if (following) {
+                  scrollToEnd();
+                } else {
+                  anchorRow(node);
+                }
                 return;
               }
             }
@@ -153,38 +167,38 @@ export const ChatScroller: MountAction<ThreadMessage> = {
               ? Stream.empty
               : Subscription.fromEventFilterMap<MouseEvent, ThreadMessage>({
                   target: button,
-                  type: "click",
                   toMessage: () => {
                     button.blur();
                     scrollToEnd("smooth");
                     return Option.none();
                   },
+                  type: "click",
                 }),
             Subscription.fromEventFilterMap<Event, ThreadMessage>({
               target: trail,
-              type: "scroll",
               toMessage: () => {
                 onScroll();
                 return Option.none();
               },
+              type: "scroll",
             }),
             Subscription.fromEventFilterMap<WheelEvent, ThreadMessage>({
-              target: trail,
-              type: "wheel",
               options: { passive: true },
+              target: trail,
               toMessage: () => {
                 onWheel();
                 return Option.none();
               },
+              type: "wheel",
             }),
             Subscription.fromEventFilterMap<TouchEvent, ThreadMessage>({
-              target: trail,
-              type: "touchmove",
               options: { passive: true },
+              target: trail,
               toMessage: () => {
                 onTouchMove();
                 return Option.none();
               },
+              type: "touchmove",
             }),
           ],
           { concurrency: "unbounded" },
@@ -200,28 +214,30 @@ export const ChatScroller: MountAction<ThreadMessage> = {
           Effect.sync(() => {
             scrollToEnd();
             let resize: ResizeObserver | null = null;
-            if (typeof ResizeObserver !== "undefined") {
+            if (globalThis.ResizeObserver !== undefined) {
               resize = new ResizeObserver(scheduleContentChange);
               // The content box grows with entries and the streaming live
               // region; the trail box only changes when the pane itself
               // resizes.
-              if (content !== null) resize.observe(content);
+              if (content !== null) {
+                resize.observe(content);
+              }
               resize.observe(trail);
             }
             let mutation: MutationObserver | null = null;
-            if (typeof MutationObserver !== "undefined") {
+            if (globalThis.MutationObserver !== undefined) {
               mutation = new MutationObserver(onMutations);
               mutation.observe(content ?? trail, { childList: true });
             }
             return {
-              resize,
-              mutation,
               cancelFrame: () => {
                 if (frame !== 0) {
                   cancelAnimationFrame(frame);
                   frame = 0;
                 }
               },
+              mutation,
+              resize,
             };
           }),
           ({ resize, mutation, cancelFrame }) =>
@@ -238,5 +254,7 @@ export const ChatScroller: MountAction<ThreadMessage> = {
         // the release above.
         return yield* Stream.runDrain(listeners);
       }),
-    ),
+    );
+  },
+  name: "ChatScroller",
 };

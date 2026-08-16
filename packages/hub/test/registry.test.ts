@@ -10,9 +10,10 @@ import { NodeFileSystem } from "@effect/platform-node";
 import { Effect, FileSystem, Option } from "effect";
 
 import { KvStore } from "@saku/store";
-import { HubRegistry, type HubRegistryShape } from "../src/index.ts";
+import { HubRegistry } from "../src/index.ts";
+import type { HubRegistryApi } from "../src/index.ts";
 
-let registry: HubRegistryShape;
+let registry: HubRegistryApi;
 let home: string;
 
 beforeEach(async () => {
@@ -24,10 +25,10 @@ afterEach(async () => {
   if (home !== "") {
     await Effect.runPromise(
       Effect.provide(NodeFileSystem.layer)(
-        Effect.gen(function* () {
+        Effect.gen(function* cleanup() {
           const fs = yield* FileSystem.FileSystem;
           yield* fs
-            .remove(home, { recursive: true, force: true })
+            .remove(home, { force: true, recursive: true })
             .pipe(Effect.catch(() => Effect.void));
         }),
       ),
@@ -39,20 +40,20 @@ describe("HubRegistry.make", () => {
   it("creates records with the env axis pinned by mode", async () => {
     const local = await Effect.runPromise(registry.create({ name: "local thread" }));
     expect(local).toMatchObject({
-      cwd: null,
-      mode: "local",
-      env: "ready",
-      sessionId: null,
       autoName: false,
+      cwd: null,
+      env: "ready",
+      mode: "local",
+      sessionId: null,
     });
     const sandbox = await Effect.runPromise(
-      registry.create({ name: "box thread", mode: "sandbox" }),
+      registry.create({ mode: "sandbox", name: "box thread" }),
     );
-    expect(sandbox).toMatchObject({ cwd: null, mode: "sandbox", env: "stopped" });
+    expect(sandbox).toMatchObject({ cwd: null, env: "stopped", mode: "sandbox" });
     const withCwd = await Effect.runPromise(
-      registry.create({ name: "work thread", cwd: "/work", autoName: true }),
+      registry.create({ autoName: true, cwd: "/work", name: "work thread" }),
     );
-    expect(withCwd).toMatchObject({ cwd: "/work", autoName: true });
+    expect(withCwd).toMatchObject({ autoName: true, cwd: "/work" });
   });
 
   it("lists in creation order and resolves by id", async () => {
@@ -68,7 +69,7 @@ describe("HubRegistry.make", () => {
   it("projects the wire view with derived state and tailSeq", async () => {
     const record = await Effect.runPromise(registry.create({ name: "t" }));
     const info = Option.getOrNull(await Effect.runPromise(registry.toInfo(record.id)));
-    expect(info).toMatchObject({ state: "idle", env: "ready", tailSeq: 0 });
+    expect(info).toMatchObject({ env: "ready", state: "idle", tailSeq: 0 });
     await Effect.runPromise(registry.setState(record.id, "working"));
     await Effect.runPromise(registry.setTailSeq(record.id, 7));
     const after = Option.getOrNull(await Effect.runPromise(registry.toInfo(record.id)));
@@ -76,7 +77,7 @@ describe("HubRegistry.make", () => {
   });
 
   it("persists the env axis and sessionId across updates", async () => {
-    const record = await Effect.runPromise(registry.create({ name: "t", mode: "sandbox" }));
+    const record = await Effect.runPromise(registry.create({ mode: "sandbox", name: "t" }));
     await Effect.runPromise(registry.setEnv(record.id, "provisioning"));
     await Effect.runPromise(registry.setEnv(record.id, "ready"));
     await Effect.runPromise(registry.update(record.id, { sessionId: "sess-1" }));
@@ -96,10 +97,10 @@ describe("HubRegistry.make", () => {
   it("survives a rebuild over the file backend (restart persistence)", async () => {
     const { fs, dir } = await Effect.runPromise(
       Effect.provide(NodeFileSystem.layer)(
-        Effect.gen(function* () {
+        Effect.gen(function* buildWorld() {
           const f = yield* FileSystem.FileSystem;
           const d = yield* f.makeTempDirectory({ prefix: "saku-hub-registry-" });
-          return { fs: f, dir: d };
+          return { dir: d, fs: f };
         }),
       ),
     );
@@ -108,7 +109,7 @@ describe("HubRegistry.make", () => {
       HubRegistry.make().pipe(Effect.provide(KvStore.file(fs, home))),
     );
     const record = await Effect.runPromise(
-      first.create({ name: "durable", cwd: "/work", autoName: true }),
+      first.create({ autoName: true, cwd: "/work", name: "durable" }),
     );
     await Effect.runPromise(first.setEnv(record.id, "ready"));
     await Effect.runPromise(first.update(record.id, { sessionId: "sess-9" }));
@@ -118,10 +119,10 @@ describe("HubRegistry.make", () => {
     );
     const reloaded = Option.getOrNull(await Effect.runPromise(second.get(record.id)));
     expect(reloaded).toMatchObject({
-      name: "durable",
-      cwd: "/work",
       autoName: true,
+      cwd: "/work",
       env: "ready",
+      name: "durable",
       sessionId: "sess-9",
     });
     // Volatile caches start fresh.

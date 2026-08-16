@@ -24,10 +24,34 @@
  * the same over both.
  */
 
+import type { RawData } from "ws";
 import { WebSocket as WsWebSocket } from "ws";
+import type { SocketMessage } from "@saku/wire";
 
+/** A platform socket event's close payload: workerd's CloseEvent code/reason. */
+interface ClosePayload {
+  readonly code?: number | undefined;
+  readonly reason?: string | undefined;
+}
+
+/** A payload the registry can deliver to a listener: message data, an error, a close, or nothing. */
+type SocketEventPayload = SocketMessage | Error | ClosePayload | undefined;
+
+/** A platform socket event, structurally (the fields the adapter reads). */
+export interface SocketEvent {
+  readonly code?: number;
+  readonly data?: SocketMessage;
+  readonly error?: Error;
+  readonly reason?: string;
+}
+
+/** Whether a node `ws` payload is a binary socket message (ws delivers Buffers; never Buffer[] for whole frames). */
+const isSocketMessageData = (data: RawData): data is ArrayBuffer | Buffer =>
+  data instanceof ArrayBuffer || ArrayBuffer.isView(data);
+
+/** A registered listener: the registry delivers raw payloads through it. */
 interface ListenerEntry {
-  readonly listener: (data: unknown) => void;
+  readonly listener: (data: SocketEventPayload) => void;
   readonly once: boolean;
 }
 
@@ -35,23 +59,23 @@ interface ListenerEntry {
 export interface WorkerdWebSocketLike {
   readonly send: (data: string) => void;
   readonly close: (code?: number, reason?: string) => void;
-  readonly addEventListener: (event: string, listener: (event: unknown) => void) => void;
-  readonly removeEventListener: (event: string, listener: (event: unknown) => void) => void;
+  readonly addEventListener: (event: string, listener: (event: SocketEvent) => void) => void;
+  readonly removeEventListener: (event: string, listener: (event: SocketEvent) => void) => void;
 }
 
 /** The listener surface every connection handler drives. */
 export interface SocketLike {
   readonly send: (data: string) => void;
   readonly close: (code?: number, reason?: string) => void;
-  readonly on: (event: string, listener: (data: unknown) => void) => void;
-  readonly once: (event: string, listener: (data: unknown) => void) => void;
-  readonly off: (event: string, listener: (data: unknown) => void) => void;
+  readonly on: (event: string, listener: (data: SocketEventPayload) => void) => void;
+  readonly once: (event: string, listener: (data: SocketEventPayload) => void) => void;
+  readonly off: (event: string, listener: (data: SocketEventPayload) => void) => void;
   /**
    * Push an inbound message into the socket (DOs only: workerd delivers
    * accepted-socket messages through the DO's `webSocketMessage`, so the
    * DO forwards them here).
    */
-  readonly receive?: (data: unknown) => void;
+  readonly receive?: (data: SocketMessage) => void;
   /** Push an inbound close into the socket (DOs: `webSocketClose`). */
   readonly receiveClose?: (code: number, reason: string) => void;
 }
@@ -59,7 +83,7 @@ export interface SocketLike {
 /** The listener registry behind both adapters. */
 const makeRegistry = () => {
   const listeners = new Map<string, Set<ListenerEntry>>();
-  const on = (event: string, listener: (data: unknown) => void) => {
+  const on = (event: string, listener: (data: SocketEventPayload) => void) => {
     let set = listeners.get(event);
     if (set === undefined) {
       set = new Set();
@@ -67,7 +91,7 @@ const makeRegistry = () => {
     }
     set.add({ listener, once: false });
   };
-  const once = (event: string, listener: (data: unknown) => void) => {
+  const once = (event: string, listener: (data: SocketEventPayload) => void) => {
     let set = listeners.get(event);
     if (set === undefined) {
       set = new Set();
@@ -76,11 +100,15 @@ const makeRegistry = () => {
     set.add({ listener, once: true });
   };
   /** Remove one listener; true when the event has no listeners left. */
-  const off = (event: string, listener: (data: unknown) => void) => {
+  const off = (event: string, listener: (data: SocketMessage) => void) => {
     const set = listeners.get(event);
-    if (set === undefined) return true;
+    if (set === undefined) {
+      return true;
+    }
     for (const entry of set) {
-      if (entry.listener === listener) set.delete(entry);
+      if (entry.listener === listener) {
+        set.delete(entry);
+      }
     }
     if (set.size === 0) {
       listeners.delete(event);
@@ -88,23 +116,46 @@ const makeRegistry = () => {
     }
     return false;
   };
-  const dispatch = (event: string, data: unknown) => {
+  const dispatch = (event: string, data?: SocketEventPayload) => {
     const set = listeners.get(event);
-    if (set === undefined) return;
+    if (set === undefined) {
+      return;
+    }
     for (const entry of set) {
-      if (entry.once) set.delete(entry);
+      if (entry.once) {
+        set.delete(entry);
+      }
       entry.listener(data);
     }
   };
-  return { on, once, off, dispatch };
+  return { dispatch, off, on, once };
 };
 
-/** An event's payload: MessageEvent.data, ErrorEvent.error, else the event. */
-const eventPayload = (ev: unknown) => {
-  if (ev === null || typeof ev !== "object") return ev;
-  const record = ev as { data?: unknown; error?: unknown };
-  if ("data" in record) return record.data;
-  if ("error" in record && record.error !== undefined) return record.error;
+/** A close event's payload (workerd's CloseEvent code/reason, when present). */
+const closePayloadOf = (code: number | undefined, reason: string | undefined): ClosePayload => {
+  if (code === undefined && reason === undefined) {
+    return {};
+  }
+  if (code === undefined) {
+    return { reason };
+  }
+  if (reason === undefined) {
+    return { code };
+  }
+  return { code, reason };
+};
+
+/** An event's payload: MessageEvent.data, ErrorEvent.error, a close's code/reason, else the event. */
+const eventPayload = (ev: SocketEvent): SocketEventPayload => {
+  if ("data" in ev) {
+    return ev.data;
+  }
+  if ("error" in ev && ev.error !== undefined) {
+    return ev.error;
+  }
+  if ("code" in ev || "reason" in ev) {
+    return closePayloadOf(ev.code, ev.reason);
+  }
   return ev;
 };
 
@@ -118,22 +169,34 @@ const eventPayload = (ev: unknown) => {
  */
 export const workerdSocket = (ws: WorkerdWebSocketLike): SocketLike => {
   const registry = makeRegistry();
-  const handlers = new Map<string, (ev: unknown) => void>();
+  const handlers = new Map<string, (ev: SocketEvent) => void>();
   const register = (event: string) => {
-    if (handlers.has(event)) return;
-    const handler = (ev: unknown) => registry.dispatch(event, eventPayload(ev));
+    if (handlers.has(event)) {
+      return;
+    }
+    const handler = (ev: SocketEvent) => {
+      registry.dispatch(event, eventPayload(ev));
+    };
     handlers.set(event, handler);
     ws.addEventListener(event, handler);
   };
   const unregister = (event: string) => {
     const handler = handlers.get(event);
-    if (handler === undefined) return;
+    if (handler === undefined) {
+      return;
+    }
     handlers.delete(event);
     ws.removeEventListener(event, handler);
   };
   return {
-    send: (data) => ws.send(data),
-    close: (code, reason) => ws.close(code, reason),
+    close: (code, reason) => {
+      ws.close(code, reason);
+    },
+    off: (event, listener) => {
+      if (registry.off(event, listener)) {
+        unregister(event);
+      }
+    },
     on: (event, listener) => {
       register(event);
       registry.on(event, listener);
@@ -142,13 +205,17 @@ export const workerdSocket = (ws: WorkerdWebSocketLike): SocketLike => {
       register(event);
       registry.once(event, listener);
     },
-    off: (event, listener) => {
-      if (registry.off(event, listener)) unregister(event);
-    },
     // DOs: workerd delivers accepted-socket messages through the DO's
     // webSocketMessage/webSocketClose methods — the DO forwards them here.
-    receive: (data) => registry.dispatch("message", data),
-    receiveClose: (code, reason) => registry.dispatch("close", { code, reason }),
+    receive: (data) => {
+      registry.dispatch("message", data);
+    },
+    receiveClose: (code, reason) => {
+      registry.dispatch("close", { code, reason });
+    },
+    send: (data) => {
+      ws.send(data);
+    },
   };
 };
 
@@ -160,22 +227,42 @@ export const workerdSocket = (ws: WorkerdWebSocketLike): SocketLike => {
 export const nodeSocket = (url: string): SocketLike => {
   const ws = new WsWebSocket(url);
   const registry = makeRegistry();
-  ws.on("open", () => registry.dispatch("open", undefined));
-  ws.on("message", (data) => registry.dispatch("message", data));
-  ws.on("error", (error) => registry.dispatch("error", error));
-  ws.on("close", () => registry.dispatch("close", undefined));
+  ws.on("open", () => {
+    registry.dispatch("open");
+  });
+  ws.on("message", (data) => {
+    if (isSocketMessageData(data)) {
+      registry.dispatch("message", data);
+    }
+  });
+  ws.on("error", (error) => {
+    registry.dispatch("error", error);
+  });
+  ws.on("close", () => {
+    registry.dispatch("close");
+  });
   return {
-    send: (data) => ws.send(data),
     close: (code, reason) => {
-      if (code === undefined) ws.close();
-      else ws.close(code, reason);
+      if (code === undefined) {
+        ws.close();
+      } else {
+        ws.close(code, reason);
+      }
     },
-    on: (event, listener) => registry.on(event, listener),
-    once: (event, listener) => registry.once(event, listener),
-    off: (event, listener) => registry.off(event, listener),
+    off: (event, listener) => {
+      registry.off(event, listener);
+    },
+    on: (event, listener) => {
+      registry.on(event, listener);
+    },
+    once: (event, listener) => {
+      registry.once(event, listener);
+    },
+    send: (data) => {
+      ws.send(data);
+    },
   };
 };
 
 /** An outbound workerd socket factory for `RemoteEnv` (the DO's `socket` option). */
-export const workerdSocketFactory = (url: string): SocketLike =>
-  workerdSocket(new WebSocket(url) as unknown as WorkerdWebSocketLike);
+export const workerdSocketFactory = (url: string): SocketLike => workerdSocket(new WebSocket(url));

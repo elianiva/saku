@@ -16,16 +16,13 @@ import {
   GetEntriesResponse,
   GetStateResponse,
   THINKING_LEVELS,
-  type ResponsePayload,
-  type SessionCommand,
-  type SessionWireEvent,
-  type ThreadState,
 } from "@saku/wire";
+import type { SessionCommand, SessionWireEvent } from "@saku/wire";
 
 import type { EnvHandle } from "@saku/env";
 import { HubError } from "../src/hub-error.ts";
-import type { EnvProvisioner } from "../src/index.ts";
 import type {
+  EnvProvisioner,
   HubEventSink,
   ThreadWorkerRef,
   WorkerCommandResult,
@@ -45,7 +42,9 @@ export const scriptedProvisioner = (
   const released: string[] = [];
   return {
     ensure: (thread, handle) => {
-      if (thread.mode !== "sandbox") return Effect.succeed(Option.none());
+      if (thread.mode !== "sandbox") {
+        return Effect.succeed(Option.none());
+      }
       if (options.fail === true) {
         return Effect.fail(
           new HubError({ kind: "provisioner", message: "sandbox provisioning failed (scripted)" }),
@@ -53,7 +52,7 @@ export const scriptedProvisioner = (
       }
       const existing: EnvHandle = Option.isSome(handle)
         ? handle.value
-        : { url: "ws://127.0.0.1:1", token: "env-token", boxId: "bx_scripted" };
+        : { boxId: "bx_scripted", token: "env-token", url: "ws://127.0.0.1:1" };
       return Effect.succeed(Option.some(existing));
     },
     release: (threadId) =>
@@ -65,7 +64,7 @@ export const scriptedProvisioner = (
 };
 
 /** The single model the scripted worker's catalog knows (wire test's twin). */
-export const MOCK_MODEL = { provider: "mock", id: "m1", contextWindow: 128_000, reasoning: true };
+export const MOCK_MODEL = { contextWindow: 128_000, id: "m1", provider: "mock", reasoning: true };
 
 export interface ScriptedCommand {
   readonly threadId: string;
@@ -79,10 +78,7 @@ export interface ScriptedWorker {
   readonly commands: ScriptedCommand[];
   /** Scripted command handler; defaults to the canned read-only answers. */
   readonly onCommand: (
-    fn: (
-      threadId: string,
-      command: SessionCommand,
-    ) => Effect.Effect<WorkerCommandResult, HubError, never>,
+    fn: (threadId: string, command: SessionCommand) => Effect.Effect<WorkerCommandResult, HubError>,
   ) => void;
   /** Make `create` fail with the given error (worker-lifecycle failures). */
   readonly failCreateWith: (error: HubError) => void;
@@ -97,26 +93,8 @@ export interface ScriptedWorker {
 /** The canned read-only answers the scripted worker gives until scripted over. */
 const canned = (_threadId: string, command: SessionCommand) =>
   Match.value(command).pipe(
-    Match.withReturnType<Effect.Effect<WorkerCommandResult, HubError, never>>(),
+    Match.withReturnType<Effect.Effect<WorkerCommandResult, HubError>>(),
     Match.tags({
-      get_entries: () =>
-        Effect.succeed({
-          payload: GetEntriesResponse.make({ entries: [], tailSeq: 0, leafId: null }),
-          tailSeq: 0,
-        }),
-      get_state: () =>
-        Effect.succeed({
-          payload: GetStateResponse.make({
-            state: {
-              sessionId: null,
-              state: "idle",
-              tailSeq: 0,
-              model: null,
-              thinkingLevel: "off",
-            },
-          }),
-          tailSeq: 0,
-        }),
       get_available_models: () =>
         Effect.succeed({
           payload: GetAvailableModelsResponse.make({ models: [MOCK_MODEL] }),
@@ -127,11 +105,27 @@ const canned = (_threadId: string, command: SessionCommand) =>
           payload: GetAvailableThinkingLevelsResponse.make({ levels: [...THINKING_LEVELS] }),
           tailSeq: 0,
         }),
+      get_entries: () =>
+        Effect.succeed({
+          payload: GetEntriesResponse.make({ entries: [], leafId: null, tailSeq: 0 }),
+          tailSeq: 0,
+        }),
+      get_state: () =>
+        Effect.succeed({
+          payload: GetStateResponse.make({
+            state: {
+              model: null,
+              sessionId: null,
+              state: "idle",
+              tailSeq: 0,
+              thinkingLevel: "off",
+            },
+          }),
+          tailSeq: 0,
+        }),
     }),
-    Match.orElse((command) =>
-      Effect.fail(
-        new HubError({ kind: "command", message: `unscripted command: ${command._tag}` }),
-      ),
+    Match.orElse((other) =>
+      Effect.fail(new HubError({ kind: "command", message: `unscripted command: ${other._tag}` })),
     ),
   );
 
@@ -142,11 +136,16 @@ export const scriptedWorker = (): ScriptedWorker => {
   let handler: (
     threadId: string,
     command: SessionCommand,
-  ) => Effect.Effect<WorkerCommandResult, HubError, never> = canned;
+  ) => Effect.Effect<WorkerCommandResult, HubError> = canned;
   let sink: HubEventSink | undefined;
   let createError: HubError | undefined;
 
   const ref: ThreadWorkerRef = {
+    close: () => Effect.void,
+    command: Effect.fn("command")(function* runCommand(threadId, command) {
+      commands.push({ command, threadId });
+      return yield* handler(threadId, command);
+    }),
     create: (threadId) =>
       createError === undefined
         ? Effect.sync(() => {
@@ -158,28 +157,23 @@ export const scriptedWorker = (): ScriptedWorker => {
         deleted.push(threadId);
       }),
     setEnvHandle: () => Effect.void,
-    command: Effect.fn("command")(function* (threadId, command) {
-      commands.push({ threadId, command });
-      return yield* handler(threadId, command);
-    }),
-    close: () => Effect.void,
   };
 
   return {
-    ref,
-    created,
-    deleted,
-    commands,
-    onCommand: (fn) => {
-      handler = fn;
-    },
-    failCreateWith: (error) => {
-      createError = error;
-    },
     attach: (attached) => {
       sink = attached;
     },
+    commands,
+    created,
+    deleted,
     emit: (threadId, event, tailSeq) => sink?.sessionEvent(threadId, event, tailSeq ?? 0),
+    failCreateWith: (error) => {
+      createError = error;
+    },
+    onCommand: (fn) => {
+      handler = fn;
+    },
+    ref,
     report: (threadId, patch) => sink?.report(threadId, patch),
   };
 };

@@ -4,7 +4,7 @@
  * hello/version handshake, token auth, stateless command routing, and
  * fan-out of `thread_changed` + session events to every authed console.
  *
- * The server is a thin adapter: all semantics live in the `WireCoreShape`
+ * The server is a thin adapter: all semantics live in the `WireCoreApi`
  * it wraps (routing, registry, skills, worker seam); the DO adapter of M4
  * drives the same core over a Durable Object's accepted sockets. The env
  * relay (M3) serves on its own port; the DO adapter multiplexes both
@@ -17,34 +17,39 @@
  */
 
 import type { WebSocket, WebSocketServer } from "ws";
-import { Context, Effect, Option, Ref, Scope } from "effect";
+import { Context, Effect, Option, Ref } from "effect";
 
 import { listenWs, wsUrlOf } from "@saku/wire/server";
 
-import type { HubShape } from "./hub.ts";
+import type { HubApi } from "./hub.ts";
 import { HubError } from "./hub-error.ts";
-import { WireCore, type WireCoreShape } from "./wire-core.ts";
-import { HubRelay, type HubRelayShape } from "./relay.ts";
+import { WireCore } from "./wire-core.ts";
+import type { WireCoreApi } from "./wire-core.ts";
+import { HubRelay } from "./relay.ts";
+import type { HubRelayApi } from "./relay.ts";
 import type { SocketLike } from "./socket.ts";
 
 /** A node `ws` socket satisfies the hub's `SocketLike` surface directly. */
-const asSocketLike = (socket: WebSocket) => socket as unknown as SocketLike;
+const asSocketLike = (socket: WebSocket): SocketLike => socket;
+
+/** The server's error log line (module-scope: no per-make closure). */
+const log = (message: string) => Effect.logError(`[saku-hub] ${message}`);
 
 export interface HubServerOptions {
-  readonly hub: HubShape;
+  readonly hub: HubApi;
   /** The deployment secret, presented in `hello` (v1: single-owner auth). */
   readonly token: string;
   /** Serve the env relay too (the daemons' outbound registration). */
   readonly relay?: boolean;
 }
 
-export interface HubServerShape {
+export interface HubServerApi {
   /** The ws:// URL the hub listens on (consoles). */
   readonly url: string;
   /** The ws:// URL the env relay listens on (daemons + workers). */
   readonly relayUrl: string | null;
   /** Stop the server: drop clients, unsubscribe, close the sockets. */
-  readonly close: () => Effect.Effect<void, never>;
+  readonly close: () => Effect.Effect<void>;
 }
 
 /**
@@ -54,12 +59,12 @@ export interface HubServerShape {
  * discipline, so the protocol's contract is exercised by both until the
  * rework lands (plan 0001).
  */
-export class HubServer extends Context.Service<HubServer, HubServerShape>()("HubServer", {
-  make: Effect.fn("HubServer.make")(function* (options: HubServerOptions) {
+export class HubServer extends Context.Service<HubServer, HubServerApi>()("HubServer", {
+  make: Effect.fn("HubServer.make")(function* make(options: HubServerOptions) {
     const { hub, token } = options;
     // The env relay: a separate port for M3 (the DO adapter of M4
     // multiplexes both behind the deployment's domain).
-    const relay: Option.Option<HubRelayShape> =
+    const relay: Option.Option<HubRelayApi> =
       options.relay === true
         ? Option.some(
             yield* HubRelay.make({ token }).pipe(
@@ -67,29 +72,31 @@ export class HubServer extends Context.Service<HubServer, HubServerShape>()("Hub
               Effect.mapError(
                 (error) =>
                   new HubError({
+                    cause: error,
                     kind: "startup",
                     message: `relay: ${error instanceof Error ? error.message : String(error)}`,
-                    cause: error,
                   }),
               ),
             ),
           )
         : Option.none();
-    const core: WireCoreShape = yield* WireCore.make({ hub, token });
+    const core: WireCoreApi = yield* WireCore.make({ hub, token });
     const closedRef = yield* Ref.make(false);
     const serverRef = yield* Ref.make<Option.Option<WebSocketServer>>(Option.none());
 
-    const log = (message: string) => Effect.logError(`[saku-hub] ${message}`);
-
-    const close = Effect.fn("close")(function* () {
+    const close = Effect.fn("close")(function* close() {
       const closed = yield* Ref.get(closedRef);
-      if (closed) return;
+      if (closed) {
+        return;
+      }
       yield* Ref.set(closedRef, true);
       yield* core.close();
       const server = yield* Ref.get(serverRef);
       if (Option.isSome(server)) {
-        yield* Effect.callback<void>((resume) => {
-          server.value.close(() => resume(Effect.void));
+        yield* Effect.callback((resume) => {
+          server.value.close(() => {
+            resume(Effect.void);
+          });
           return Effect.void;
         });
       }
@@ -109,15 +116,15 @@ export class HubServer extends Context.Service<HubServer, HubServerShape>()("Hub
       onError: (error) => {
         // The listenWs mapper is a sync callback: fork the log.
         void Effect.runFork(log(`server error: ${error.message}`));
-        return new HubError({ kind: "startup", message: error.message, cause: error });
+        return new HubError({ cause: error, kind: "startup", message: error.message });
       },
     });
     yield* Ref.set(serverRef, Option.some(server));
     yield* Effect.addFinalizer(() => close());
     return {
-      url: wsUrlOf(server),
-      relayUrl: Option.isSome(relay) ? relay.value.url : null,
       close,
+      relayUrl: Option.isSome(relay) ? relay.value.url : null,
+      url: wsUrlOf(server),
     };
   }),
 }) {}

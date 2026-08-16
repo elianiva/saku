@@ -8,15 +8,19 @@
  * authoritative at runtime.
  */
 declare module "bun:test" {
-  export interface Expect {
-    toBe(expected: unknown): void;
-    toEqual(expected: unknown): void;
-    toContain(expected: unknown): void;
-    toBeGreaterThanOrEqual(n: number): void;
-    toBeUndefined(): void;
+  export interface Expect<T = unknown> {
+    toBe: (expected: T) => void;
+    toBeGreaterThanOrEqual: (n: number) => void;
+    toBeUndefined: () => void;
+    toContain: (expected: T) => void;
+    toEqual: (expected: T) => void;
   }
-  export function expect<T>(value: T): Expect;
-  export function test(name: string, fn: () => void | Promise<void>, opts?: object): void;
+  export interface TestOptions {
+    /** Per-test timeout in milliseconds (bun's default is 5000). */
+    readonly timeout?: number;
+  }
+  export function expect<T>(value: T): Expect<T>;
+  export function test(name: string, fn: () => void | Promise<void>, opts?: TestOptions): void;
   export function beforeAll(fn: () => void | Promise<void>): void;
   export function afterAll(fn: () => void | Promise<void>): void;
 }

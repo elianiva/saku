@@ -20,7 +20,7 @@ export default {
       // The upgrade lands in the hub DO, which accepts the socket and
       // serves the wire or the relay from the shared cores.
       const hub = env.HUB.get(env.HUB.idFromName("hub"));
-      return hub.fetch(request);
+      return await hub.fetch(request);
     }
     return new Response("saku: not found", { status: 404 });
   },

@@ -11,22 +11,22 @@ import { Schema } from "effect";
 import { ThreadMode, ThreadSource } from "@saku/wire";
 
 export const ThreadRecordSchema = Schema.Struct({
-  id: Schema.String,
-  name: Schema.String,
-  cwd: Schema.String,
-  /** Hands policy, pinned at creation. */
-  mode: ThreadMode,
-  createdAt: Schema.Number,
-  /** Pi session id, stable across daemon restarts; set on first touch. */
-  sessionId: Schema.Union([Schema.Null, Schema.String]),
-  /** The name is an auto-generated prompt snippet awaiting auto-title (CONTEXT.md: Quick start, Auto-title). */
-  nameAuto: Schema.Boolean,
-  /** Adoption provenance; absent on threads created from scratch. */
-  source: Schema.optional(ThreadSource),
   /** Archive visibility lifecycle (CONTEXT.md: Archive); null when active. The
    * optional key keeps records written before archive readable (normalized
    * to null at load — the schema never sees the missing key). */
   archivedAt: Schema.optionalKey(Schema.Union([Schema.Null, Schema.Number])),
+  createdAt: Schema.Number,
+  cwd: Schema.String,
+  id: Schema.String,
+  /** Hands policy, pinned at creation. */
+  mode: ThreadMode,
+  name: Schema.String,
+  /** The name is an auto-generated prompt snippet awaiting auto-title (CONTEXT.md: Quick start, Auto-title). */
+  nameAuto: Schema.Boolean,
+  /** Pi session id, stable across daemon restarts; set on first touch. */
+  sessionId: Schema.Union([Schema.Null, Schema.String]),
+  /** Adoption provenance; absent on threads created from scratch. */
+  source: Schema.optional(ThreadSource),
 });
 
 /**

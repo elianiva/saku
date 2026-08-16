@@ -35,24 +35,29 @@ import {
   buildSessionContext,
   convertToLlm,
   DEFAULT_COMPACTION_SETTINGS,
-  type AgentEvent,
-  type CompactionSettings,
-  type Entry,
-  type ExecutionEnv,
-  type SessionStats,
-  type StreamFn,
-  type ThinkingLevel,
+} from "@earendil-works/pi-agent-core";
+import type {
+  AgentEvent,
+  AgentState,
+  CompactionSettings,
+  CompactResult,
+  Entry,
+  ExecutionEnv,
+  SessionStats,
+  StreamFn,
+  ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
-import { THINKING_LEVELS, type ThreadState, type WireModelInfo } from "@saku/wire";
+import { THINKING_LEVELS } from "@saku/wire";
+import type { ThreadState, WireModelInfo } from "@saku/wire";
 
-import { DoSessionRepo } from "./do-session.ts";
+import { DoSessionRepo } from "./do-session-repo.ts";
 import { KvStore } from "@saku/store";
-import type { ModelCatalogShape } from "./model-catalog.ts";
+import type { ModelCatalogApi } from "./model-catalog.ts";
 import { buildTools } from "./tools.ts";
-import { RegistryError } from "./registry-error.ts";
-import type { HostRegistryShape, ThreadRecord } from "./registry.ts";
+import type { RegistryError } from "./registry-error.ts";
+import type { HostRegistryApi, ThreadRecord } from "./registry.ts";
 import { SessionHostError, toSessionHostError } from "./session-host-error.ts";
 import { handleAgentEvent } from "./agent-events.ts";
 import {
@@ -63,16 +68,23 @@ import {
   HostEvent,
   HostMachine,
   HostState,
-  type HostCommandEvent,
-  type HostDeps,
-  type HostEventSink,
-  type HostStateV,
-  type ReplyOk,
-  type SessionHostState,
+} from "./session-machine.ts";
+import type {
+  HostCommandEvent,
+  HostDeps,
+  HostEventSink,
+  HostStateV,
+  SessionHostState,
 } from "./session-machine.ts";
 
 export { SessionHostError } from "./session-host-error.ts";
 export type { HostEventSink, SessionHostState as HostState } from "./session-machine.ts";
+
+/** Narrow a trail `thinking_level_change` value to a supported level (trail values predate wire validation). */
+const isThinkingLevel = (level: string): level is ThinkingLevel =>
+  // SAFETY: THINKING_LEVELS is the canonical supported set; reading it as
+  // string[] only widens `includes`'s parameter to accept the trail string.
+  (THINKING_LEVELS as readonly string[]).includes(level);
 
 export interface SessionHost {
   readonly threadId: string;
@@ -87,52 +99,58 @@ export interface SessionHost {
       model: WireModelInfo | null;
       thinkingLevel: ThinkingLevel;
     },
-    SessionHostError,
-    never
+    SessionHostError
   >;
   readonly getEntries: (
     sinceSeq?: number,
   ) => Effect.Effect<
     { entries: Entry[]; tailSeq: number; leafId: string | null },
-    SessionHostError,
-    never
+    SessionHostError
   >;
-  readonly getSessionStats: () => Effect.Effect<SessionStats, SessionHostError, never>;
-  readonly getAvailableThinkingLevels: () => Effect.Effect<ThinkingLevel[], never>;
+  readonly getSessionStats: () => Effect.Effect<SessionStats, SessionHostError>;
+  readonly getAvailableThinkingLevels: () => Effect.Effect<ThinkingLevel[]>;
   readonly prompt: (
     text: string,
-    images?: ReadonlyArray<unknown>,
-  ) => Effect.Effect<void, SessionHostError, never>;
-  readonly steer: (text: string) => Effect.Effect<void, SessionHostError, never>;
-  readonly followUp: (text: string) => Effect.Effect<void, SessionHostError, never>;
-  readonly abort: () => Effect.Effect<void, SessionHostError, never>;
-  readonly compact: (
-    customInstructions?: string,
-  ) => Effect.Effect<unknown, SessionHostError, never>;
-  readonly setAutoCompaction: (enabled: boolean) => Effect.Effect<void, SessionHostError, never>;
+    images?: readonly unknown[],
+  ) => Effect.Effect<void, SessionHostError>;
+  readonly steer: (text: string) => Effect.Effect<void, SessionHostError>;
+  readonly followUp: (text: string) => Effect.Effect<void, SessionHostError>;
+  readonly abort: () => Effect.Effect<void, SessionHostError>;
+  readonly compact: (customInstructions?: string) => Effect.Effect<CompactResult, SessionHostError>;
+  readonly setAutoCompaction: (enabled: boolean) => Effect.Effect<void, SessionHostError>;
   readonly setModel: (
     provider: string,
     modelId: string,
-  ) => Effect.Effect<WireModelInfo | null, SessionHostError, never>;
+  ) => Effect.Effect<WireModelInfo | null, SessionHostError>;
   readonly setThinkingLevel: (
     level: ThinkingLevel,
-  ) => Effect.Effect<ThinkingLevel, SessionHostError, never>;
-  readonly setSessionName: (name: string) => Effect.Effect<void, SessionHostError, never>;
+  ) => Effect.Effect<ThinkingLevel, SessionHostError>;
+  readonly setSessionName: (name: string) => Effect.Effect<void, SessionHostError>;
   /** Move the lane leaf to a past entry (fork-on-next-prompt). Idle threads only. */
-  readonly branch: (entryId: string) => Effect.Effect<string | null, SessionHostError, never>;
-  readonly setSteeringMode: (mode: "all" | "one-at-a-time") => Effect.Effect<void, never>;
-  readonly setFollowUpMode: (mode: "all" | "one-at-a-time") => Effect.Effect<void, never>;
+  readonly branch: (entryId: string) => Effect.Effect<string | null, SessionHostError>;
+  readonly setSteeringMode: (mode: "all" | "one-at-a-time") => Effect.Effect<void>;
+  readonly setFollowUpMode: (mode: "all" | "one-at-a-time") => Effect.Effect<void>;
   /** Best-effort teardown: settle the run, drain the actor, release the env. */
-  readonly dispose: () => Effect.Effect<void, never>;
+  readonly dispose: () => Effect.Effect<void>;
+}
+
+/** The durable state projection the host serves (the wire `get_state` payload body). */
+interface HostStateProjection {
+  sessionId: string | null;
+  name?: string;
+  state: ThreadState;
+  tailSeq: number;
+  model: WireModelInfo | null;
+  thinkingLevel: ThinkingLevel;
 }
 
 export interface SessionHostOptions {
   readonly threadId: string;
   /** The registry record; its sessionId is back-filled when null (first touch). */
   readonly record: ThreadRecord;
-  readonly catalog: ModelCatalogShape;
+  readonly catalog: ModelCatalogApi;
   /** The host's registry view (get/update/setState — the narrow seam). */
-  readonly registry: HostRegistryShape;
+  readonly registry: HostRegistryApi;
   readonly sink: HostEventSink;
   readonly onRecordChanged?: (record: ThreadRecord) => void;
   /** Test seam: the agent's stream function. Defaults to the catalog's models. */
@@ -143,10 +161,8 @@ export interface SessionHostOptions {
 
 /** Create the host for a thread: open/create the DO session, recover, spawn. */
 export const SessionHost = {
-  create(
-    options: SessionHostOptions,
-  ) {
-    return Effect.fn("SessionHost.create")(function* (): Effect.fn.Return<
+  create(options: SessionHostOptions) {
+    return Effect.fn("SessionHost.create")(function* create(): Effect.fn.Return<
       SessionHost,
       SessionHostError | RegistryError,
       KvStore
@@ -158,16 +174,19 @@ export const SessionHost = {
       const kv = yield* KvStore;
       const repo = new DoSessionRepo(kv);
       const found = (yield* Effect.tryPromise({
-        try: () => repo.list(),
         catch: toSessionHostError,
+        try: async () => await repo.list(),
       })).find((metadata) => metadata.id === threadId);
       const session =
         found === undefined
           ? yield* Effect.tryPromise({
-              try: () => repo.create({ id: threadId }),
               catch: toSessionHostError,
+              try: async () => await repo.create({ id: threadId }),
             })
-          : yield* Effect.tryPromise({ try: () => repo.open(found), catch: toSessionHostError });
+          : yield* Effect.tryPromise({
+              catch: toSessionHostError,
+              try: async () => await repo.open(found),
+            });
       if (record.sessionId === null) {
         // First touch (or a crash between repo creation and the registry update
         // on a previous boot): back-fill the stable session id.
@@ -177,7 +196,10 @@ export const SessionHost = {
       }
 
       const entries = entriesFromLog(
-        yield* Effect.tryPromise({ try: () => session.getLog(), catch: toSessionHostError }),
+        yield* Effect.tryPromise({
+          catch: toSessionHostError,
+          try: async () => await session.getLog(),
+        }),
       );
       const context = buildSessionContext(entries);
 
@@ -191,40 +213,49 @@ export const SessionHost = {
         if (entry.type === "model_change") {
           model = catalog.getModel(entry.provider, entry.modelId) ?? null;
         } else if (entry.type === "thinking_level_change") {
-          thinkingLevel = entry.thinkingLevel as ThinkingLevel;
+          const { thinkingLevel: trailThinkingLevel } = entry;
+          if (isThinkingLevel(trailThinkingLevel)) {
+            thinkingLevel = trailThinkingLevel;
+          }
         }
       }
       if (model === null) {
         const available = yield* Effect.tryPromise({
-          try: () => catalog.models.getAvailable(),
           catch: toSessionHostError,
+          try: async () => await catalog.models.getAvailable(),
         });
         model = available[0] ?? null;
       }
 
       // Recovery: an unfinished operation means the daemon died mid-run.
       const openOperations = yield* Effect.tryPromise({
-        try: () => session.findOpenOperations(LANE, { limit: 1 }),
         catch: toSessionHostError,
+        try: async () => await session.findOpenOperations(LANE, { limit: 1 }),
       });
       const initialState: HostStateV =
         openOperations.length > 0 ? HostState.Interrupted : HostState.Idle;
 
+      const initialAgentState: Partial<
+        Omit<AgentState, "pendingToolCalls" | "isStreaming" | "streamingMessage" | "errorMessage">
+      > = {
+        systemPrompt: "",
+        thinkingLevel,
+        tools: buildTools(env),
+      };
+      if (model !== null) {
+        initialAgentState.model = model;
+      }
+
       const agent = new Agent({
-        initialState: {
-          systemPrompt: "",
-          ...(model === null ? {} : { model }),
-          thinkingLevel,
-          tools: buildTools(env),
-        },
         convertToLlm,
+        followUpMode: "all",
+        initialState: initialAgentState,
+        sessionId: threadId,
+        steeringMode: "all",
         streamFn:
           options.streamFn ??
           ((modelForRequest, streamContext, streamOptions) =>
             catalog.models.streamSimple(modelForRequest, streamContext, streamOptions)),
-        sessionId: threadId,
-        steeringMode: "all",
-        followUpMode: "all",
       });
 
       // Restore the live transcript; new sessions get their initial trail.
@@ -233,26 +264,26 @@ export const SessionHost = {
       } else {
         if (model !== null) {
           yield* Effect.tryPromise({
-            try: () =>
-              session.appendEntry(
+            catch: toSessionHostError,
+            try: async () =>
+              await session.appendEntry(
                 {
                   id: session.idGenerator.next(),
-                  type: "model_change",
-                  provider: model.provider,
                   modelId: model.id,
+                  provider: model.provider,
+                  type: "model_change",
                 },
                 LANE,
               ),
-            catch: toSessionHostError,
           });
         }
         yield* Effect.tryPromise({
-          try: () =>
-            session.appendEntry(
-              { id: session.idGenerator.next(), type: "thinking_level_change", thinkingLevel },
+          catch: toSessionHostError,
+          try: async () =>
+            await session.appendEntry(
+              { id: session.idGenerator.next(), thinkingLevel, type: "thinking_level_change" },
               LANE,
             ),
-          catch: toSessionHostError,
         });
       }
 
@@ -263,30 +294,31 @@ export const SessionHost = {
       const compactionSettingsRef = yield* Ref.make<CompactionSettings>({
         ...DEFAULT_COMPACTION_SETTINGS,
       });
-      const lastAssistantRef = yield* Ref.make<AssistantMessage | undefined>(undefined);
+      const lastAssistantRef = yield* Ref.make<AssistantMessage | undefined>(
+        undefined satisfies undefined,
+      );
       const compactionAbortRef = yield* Ref.make<Option.Option<AbortController>>(Option.none());
 
       const deps: HostDeps = {
-        threadId,
         agent,
-        session,
         catalog,
-        registry,
-        sink: options.sink,
-        onRecordChanged: options.onRecordChanged,
-        modelRef,
-        thinkingLevelRef,
-        compactionSettingsRef,
-        lastAssistantRef,
         compactionAbortRef,
+        compactionSettingsRef,
         initialState,
+        lastAssistantRef,
+        modelRef,
+        onRecordChanged: options.onRecordChanged,
         pushState: (state) => registry.setState(threadId, state),
+        registry,
+        session,
+        sink: options.sink,
+        thinkingLevelRef,
+        threadId,
       };
 
-      const unsubscribeAgent = agent.subscribe(
-        (event: AgentEvent, _signal: AbortSignal) =>
-          Effect.runPromise(handleAgentEvent(deps, event)),
-      );
+      const unsubscribeAgent = agent.subscribe(async (event: AgentEvent, _signal: AbortSignal) => {
+        await Effect.runPromise(handleAgentEvent(deps, event));
+      });
 
       const actor = yield* Machine.spawn(HostMachine.make(deps));
       yield* actor.start;
@@ -296,37 +328,40 @@ export const SessionHost = {
           Effect.flatMap((reply) =>
             Match.value(reply).pipe(
               Match.tagsExhaustive({
-                reply_ok: (ok) => Effect.succeed(ok),
                 reply_failed: (failed) =>
                   Effect.fail(
                     new SessionHostError({ kind: "command_failed", message: failed.message }),
                   ),
+                reply_ok: (ok) => Effect.succeed(ok),
               }),
             ),
           ),
           Effect.mapError(toSessionHostError),
         );
 
-      const getEntries = Effect.fn("getEntries")(function* (sinceSeq?: number) {
+      const getEntries = Effect.fn("getEntries")(function* getEntries(sinceSeq?: number) {
         const log = yield* Effect.tryPromise({
-          try: () => session.getLog(sinceSeq === undefined ? {} : { afterSeq: sinceSeq }),
           catch: toSessionHostError,
+          try: async () =>
+            await session.getLog(sinceSeq === undefined ? {} : { afterSeq: sinceSeq }),
         });
-        const entries = entriesFromLog(log);
-        const last = log[log.length - 1];
+        const logEntries = entriesFromLog(log);
+        const last = log.at(-1);
         const tailSeq = last === undefined ? (sinceSeq ?? 0) : last.seq;
         const leafId = yield* Effect.tryPromise({
-          try: () => session.getLeafId(),
           catch: toSessionHostError,
+          try: async () => await session.getLeafId(),
         });
-        return { entries, tailSeq, leafId };
+        return { entries: logEntries, leafId, tailSeq };
       });
 
-      const dispose = Effect.fn("dispose")(function* () {
+      const dispose = Effect.fn("dispose")(function* dispose() {
         unsubscribeAgent();
         // Settle an in-flight run; the run's own effect then finishes it.
         const compactionAbort = yield* Ref.get(compactionAbortRef);
-        if (Option.isSome(compactionAbort)) compactionAbort.value.abort();
+        if (Option.isSome(compactionAbort)) {
+          compactionAbort.value.abort();
+        }
         agent.abort();
         yield* actor
           .waitFor((state) => state._tag !== "Working" && state._tag !== "Compacting")
@@ -334,66 +369,17 @@ export const SessionHost = {
         yield* actor.drain;
         // Best-effort teardown: a cleanup failure is a typed pi-seam
         // failure, swallowed by the dispose's `Effect.ignore` below.
-        yield* Effect.tryPromise({ try: () => env.cleanup(), catch: toSessionHostError }).pipe(
-          Effect.ignore,
-        );
+        yield* Effect.tryPromise({
+          catch: toSessionHostError,
+          try: async () => {
+            await env.cleanup();
+          },
+        }).pipe(Effect.ignore);
       });
 
       return {
-        threadId,
-        get threadState() {
-          return hostStateOf(actor.sync.snapshot());
-        },
-        getState: Effect.fn("getState")(function* () {
-          const [name, { tailSeq }, snapshot, modelValue, thinkingLevelValue] = yield* Effect.all([
-            Effect.tryPromise({ try: () => session.getName(), catch: toSessionHostError }),
-            getEntries(),
-            actor.snapshot,
-            Ref.get(modelRef),
-            Ref.get(thinkingLevelRef),
-          ]);
-          return {
-            sessionId: agent.sessionId ?? null,
-            ...(name === undefined ? {} : { name }),
-            state: wireStateOf(snapshot),
-            tailSeq,
-            model: modelValue === null ? null : catalog.toWireInfo(modelValue),
-            thinkingLevel: thinkingLevelValue,
-          };
-        }),
-        getEntries,
-        getSessionStats: () =>
-          Effect.tryPromise({ try: () => session.getStats(), catch: toSessionHostError }),
-        getAvailableThinkingLevels: () =>
-          Ref.get(modelRef).pipe(
-            Effect.map((modelValue) =>
-              modelValue === null
-                ? [...THINKING_LEVELS]
-                : (getSupportedThinkingLevels(modelValue) as ThinkingLevel[]),
-            ),
-          ),
-        prompt: (text, images) =>
-          command(HostEvent.PromptRequested({ text, images })).pipe(Effect.asVoid),
-        steer: (text) => command(HostEvent.SteerRequested({ text })).pipe(Effect.asVoid),
-        followUp: (text) => command(HostEvent.FollowUpRequested({ text })).pipe(Effect.asVoid),
         abort: () => command(HostEvent.AbortRequested).pipe(Effect.asVoid),
-        compact: (customInstructions) =>
-          command(HostEvent.CompactRequested({ customInstructions })).pipe(
-            Effect.map((reply) => reply.result),
-          ),
-        setAutoCompaction: (enabled) =>
-          command(HostEvent.SetAutoCompactionRequested({ enabled })).pipe(Effect.asVoid),
-        setModel: (provider, modelId) =>
-          command(HostEvent.SetModelRequested({ provider, modelId })).pipe(
-            Effect.map((reply) => reply.model ?? null),
-          ),
-        setThinkingLevel: (level) =>
-          command(HostEvent.SetThinkingLevelRequested({ level })).pipe(
-            Effect.map((reply) => reply.level ?? level),
-          ),
-        setSessionName: (name) =>
-          command(HostEvent.SetSessionNameRequested({ name })).pipe(Effect.asVoid),
-        branch: Effect.fn("branch")(function* (entryId) {
+        branch: Effect.fn("branch")(function* branch(entryId) {
           const snapshot = yield* actor.snapshot;
           if (snapshot._tag === "Working" || snapshot._tag === "Compacting") {
             return yield* Effect.fail(
@@ -404,8 +390,8 @@ export const SessionHost = {
             );
           }
           const entry = yield* Effect.tryPromise({
-            try: () => session.getEntry(entryId),
             catch: toSessionHostError,
+            try: async () => await session.getEntry(entryId),
           });
           if (entry === undefined) {
             return yield* Effect.fail(
@@ -416,20 +402,90 @@ export const SessionHost = {
             );
           }
           yield* Effect.tryPromise({
-            try: () => session.moveLane(LANE, entryId),
             catch: toSessionHostError,
+            try: async () => {
+              await session.moveLane(LANE, entryId);
+            },
           });
           return entryId;
         }),
-        setSteeringMode: (mode) =>
-          Effect.sync(() => {
-            agent.steeringMode = mode;
+        compact: (customInstructions) =>
+          command(HostEvent.CompactRequested({ customInstructions })).pipe(
+            Effect.flatMap((reply) =>
+              reply.result === undefined
+                ? Effect.fail(
+                    new SessionHostError({
+                      kind: "compact_prepare",
+                      message: "nothing to compact",
+                    }),
+                  )
+                : Effect.succeed(reply.result),
+            ),
+          ),
+        dispose,
+        followUp: (text) => command(HostEvent.FollowUpRequested({ text })).pipe(Effect.asVoid),
+        getAvailableThinkingLevels: () =>
+          Ref.get(modelRef).pipe(
+            Effect.map((modelValue) =>
+              modelValue === null ? [...THINKING_LEVELS] : getSupportedThinkingLevels(modelValue),
+            ),
+          ),
+        getEntries,
+        getSessionStats: () =>
+          Effect.tryPromise({
+            catch: toSessionHostError,
+            try: async () => await session.getStats(),
           }),
+        getState: Effect.fn("getState")(function* getState() {
+          const [name, { tailSeq }, snapshot, modelValue, thinkingLevelValue] = yield* Effect.all([
+            Effect.tryPromise({
+              catch: toSessionHostError,
+              try: async () => await session.getName(),
+            }),
+            getEntries(),
+            actor.snapshot,
+            Ref.get(modelRef),
+            Ref.get(thinkingLevelRef),
+          ]);
+          const state: HostStateProjection = {
+            model: modelValue === null ? null : catalog.toWireInfo(modelValue),
+            sessionId: agent.sessionId ?? null,
+            state: wireStateOf(snapshot),
+            tailSeq,
+            thinkingLevel: thinkingLevelValue,
+          };
+          if (name !== undefined) {
+            state.name = name;
+          }
+          return state;
+        }),
+        prompt: (text, images) =>
+          command(HostEvent.PromptRequested({ images, text })).pipe(Effect.asVoid),
+        setAutoCompaction: (enabled) =>
+          command(HostEvent.SetAutoCompactionRequested({ enabled })).pipe(Effect.asVoid),
         setFollowUpMode: (mode) =>
           Effect.sync(() => {
             agent.followUpMode = mode;
           }),
-        dispose,
+        setModel: (provider, modelId) =>
+          command(HostEvent.SetModelRequested({ modelId, provider })).pipe(
+            Effect.map((reply) => reply.model ?? null),
+          ),
+        setSessionName: (name) =>
+          command(HostEvent.SetSessionNameRequested({ name })).pipe(Effect.asVoid),
+        setSteeringMode: (mode) =>
+          Effect.sync(() => {
+            agent.steeringMode = mode;
+          }),
+        setThinkingLevel: (level) =>
+          command(HostEvent.SetThinkingLevelRequested({ level })).pipe(
+            Effect.map((reply) => reply.level ?? level),
+          ),
+        steer: (text) => command(HostEvent.SteerRequested({ text })).pipe(Effect.asVoid),
+        threadId,
+        get threadState() {
+          return hostStateOf(actor.sync.snapshot());
+        },
       };
     })();
   },

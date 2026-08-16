@@ -44,12 +44,12 @@ export interface DeploymentEnv extends DeploymentVars {
 /** The hub DO's instance name (the single control-plane instance). */
 export const HUB_INSTANCE = "hub";
 
+/** Whether a deployment var holds a usable value (a non-empty string). */
+export const isNonEmptyString = (value: string | undefined): value is string =>
+  value !== undefined && value.length > 0;
+
 /** Resolve a deployment var with a default (workerd has no process.env). */
-export const varOrDefault = (
-  env: DeploymentEnv,
-  name: keyof DeploymentVars,
-  fallback: string,
-) => {
+export const varOrDefault = (env: DeploymentEnv, name: keyof DeploymentVars, fallback: string) => {
   const value = env[name];
-  return typeof value === "string" && value.length > 0 ? value : fallback;
+  return isNonEmptyString(value) ? value : fallback;
 };

@@ -26,9 +26,9 @@ export type SkillInfo = S.Schema.Type<typeof SkillInfo>;
 
 export const ListSkillsCommand = S.TaggedStruct("list_skills", {});
 export const ImportSkillCommand = S.TaggedStruct("import_skill", {
-  source: S.String,
   /** Defaults to `personal` when omitted. */
   scope: S.optional(SkillScope),
+  source: S.String,
 });
 export const DeleteSkillCommand = S.TaggedStruct("delete_skill", { id: S.String });
 

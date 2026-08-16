@@ -17,11 +17,13 @@ import {
   readPiSession,
   PiSessionsError,
 } from "../src/pi-sessions.ts";
-import { Paths, PathsTest, type PathsShape } from "../src/paths.ts";
+import { Paths, PathsTest } from "../src/paths.ts";
+import type { PathsLayout } from "../src/paths.ts";
+import type { SessionMutation } from "../src/session-state.ts";
 
 const fs = await Effect.runPromise(
   Effect.provide(NodeFileSystem.layer)(
-    Effect.gen(function* () {
+    Effect.gen(function* fs() {
       return yield* FileSystem.FileSystem;
     }),
   ),
@@ -32,18 +34,27 @@ const fs = await Effect.runPromise(
  *  candidates). */
 const FIXTURE_TREE = "/tmp/sakupicker";
 
+/** The mutation's log sequence: entries carry theirs on the entry. */
+const mutationSeq = (mutation: SessionMutation): number => {
+  if (mutation.kind === "entry") {
+    return mutation.entry.seq;
+  }
+  return mutation.kind === "record" ? mutation.record.seq : mutation.seq;
+};
+
 /** A temp dir acting as pi's agent dir; the layout comes from `PathsTest`. */
-const withPiAgentDir = async <T>(run: (root: string, paths: PathsShape) => Promise<T>) =>
-  Effect.runPromise(
-    Effect.gen(function* () {
+const withPiAgentDir = async <T>(run: (root: string, paths: PathsLayout) => Promise<T>) =>
+  await Effect.runPromise(
+    Effect.gen(function* withPiAgentDirScoped() {
       const paths = yield* Paths;
-      return yield* Effect.tryPromise(() => run(paths.agentDir, paths));
+      const outcome = yield* Effect.tryPromise(async () => await run(paths.agentDir, paths));
+      return outcome;
     }).pipe(Effect.provide(PathsTest()), Effect.provide(NodeFileSystem.layer)),
   );
 
-const writeSession = (root: string, cwdSlug: string, fileName: string, content: string) =>
-  Effect.runPromise(
-    Effect.gen(function* () {
+const writeSession = async (root: string, cwdSlug: string, fileName: string, content: string) =>
+  await Effect.runPromise(
+    Effect.gen(function* writeSessionIn() {
       const dir = `${root}/sessions/${cwdSlug}`;
       yield* fs.makeDirectory(dir, { recursive: true });
       yield* fs.writeFileString(`${dir}/${fileName}`, content);
@@ -53,18 +64,17 @@ const writeSession = (root: string, cwdSlug: string, fileName: string, content: 
 
 /** A realistic v3 session: header, model, thinking level, messages, a name,
  * a label (chained like an entry), a custom_message, and a compaction. */
-const V3_SESSION =
-  [
-    '{"type":"session","version":3,"id":"v3sess0001","timestamp":"2026-01-31T22:33:31.764Z","cwd":"/tmp/pi-workspace"}',
-    '{"type":"model_change","id":"m1","parentId":null,"timestamp":"2026-01-31T22:33:31.765Z","provider":"google-antigravity","modelId":"gemini-3-flash"}',
-    '{"type":"thinking_level_change","id":"t1","parentId":"m1","timestamp":"2026-01-31T22:33:31.766Z","thinkingLevel":"low"}',
-    '{"type":"message","id":"u1","parentId":"t1","timestamp":"2026-01-31T22:33:31.900Z","message":{"role":"user","content":[{"type":"text","text":"fix the flaky test"}]}}',
-    '{"type":"message","id":"a1","parentId":"u1","timestamp":"2026-01-31T22:33:34.009Z","message":{"role":"assistant","content":[{"type":"text","text":"I am Pi."}]}}',
-    '{"type":"custom_message","id":"c1","parentId":"a1","timestamp":"2026-01-31T22:33:35.000Z","customType":"ext.demo","content":[{"type":"text","text":"hello from an extension"}],"display":true,"details":{"k":1}}',
-    '{"type":"label","id":"l1","parentId":"c1","timestamp":"2026-01-31T22:33:36.000Z","targetId":"u1","label":"flagged"}',
-    '{"type":"message","id":"u2","parentId":"l1","timestamp":"2026-01-31T22:33:37.000Z","message":{"role":"user","content":"actually also check the e2e"}}',
-    '{"type":"session_info","id":"s1","parentId":"u2","timestamp":"2026-01-31T22:33:38.000Z","name":"flaky tests"}',
-  ].join("\n") + "\n";
+const V3_SESSION = `${[
+  '{"type":"session","version":3,"id":"v3sess0001","timestamp":"2026-01-31T22:33:31.764Z","cwd":"/tmp/pi-workspace"}',
+  '{"type":"model_change","id":"m1","parentId":null,"timestamp":"2026-01-31T22:33:31.765Z","provider":"google-antigravity","modelId":"gemini-3-flash"}',
+  '{"type":"thinking_level_change","id":"t1","parentId":"m1","timestamp":"2026-01-31T22:33:31.766Z","thinkingLevel":"low"}',
+  '{"type":"message","id":"u1","parentId":"t1","timestamp":"2026-01-31T22:33:31.900Z","message":{"role":"user","content":[{"type":"text","text":"fix the flaky test"}]}}',
+  '{"type":"message","id":"a1","parentId":"u1","timestamp":"2026-01-31T22:33:34.009Z","message":{"role":"assistant","content":[{"type":"text","text":"I am Pi."}]}}',
+  '{"type":"custom_message","id":"c1","parentId":"a1","timestamp":"2026-01-31T22:33:35.000Z","customType":"ext.demo","content":[{"type":"text","text":"hello from an extension"}],"display":true,"details":{"k":1}}',
+  '{"type":"label","id":"l1","parentId":"c1","timestamp":"2026-01-31T22:33:36.000Z","targetId":"u1","label":"flagged"}',
+  '{"type":"message","id":"u2","parentId":"l1","timestamp":"2026-01-31T22:33:37.000Z","message":{"role":"user","content":"actually also check the e2e"}}',
+  '{"type":"session_info","id":"s1","parentId":"u2","timestamp":"2026-01-31T22:33:38.000Z","name":"flaky tests"}',
+].join("\n")}\n`;
 
 describe("listPiSessions", () => {
   it("lists v3 sessions with pi's buildSessionInfo semantics", async () => {
@@ -79,11 +89,11 @@ describe("listPiSessions", () => {
       const sessions = await Effect.runPromise(listPiSessions(fs, paths, ["/tmp/pi-workspace"]));
       expect(sessions).toHaveLength(1);
       expect(sessions[0]).toMatchObject({
-        id: "v3sess0001",
         cwd: "/tmp/pi-workspace",
-        name: "flaky tests",
-        messageCount: 3,
         firstMessage: "fix the flaky test",
+        id: "v3sess0001",
+        messageCount: 3,
+        name: "flaky tests",
         path,
       });
     });
@@ -102,13 +112,12 @@ describe("listPiSessions", () => {
 
   it("lists v4 sessions through the header line", async () => {
     await withPiAgentDir(async (root, paths) => {
-      const content =
-        [
-          '{"kind":"header","version":4,"id":"v4sess0001","createdAt":1780500000000,"cwd":"/tmp/v4-workspace"}',
-          '{"kind":"entry","seq":1,"lane":"main","id":"e1","type":"model_change","parentId":null,"timestamp":1780500000001,"provider":"p","modelId":"m"}',
-          '{"kind":"entry","seq":2,"lane":"main","id":"e2","type":"message","parentId":"e1","timestamp":1780500000002,"message":{"role":"user","content":[{"type":"text","text":"hello v4"}]}}',
-          '{"kind":"fact","seq":3,"fact":"name","name":"v4 named"}',
-        ].join("\n") + "\n";
+      const content = `${[
+        '{"kind":"header","version":4,"id":"v4sess0001","createdAt":1780500000000,"cwd":"/tmp/v4-workspace"}',
+        '{"kind":"entry","seq":1,"lane":"main","id":"e1","type":"model_change","parentId":null,"timestamp":1780500000001,"provider":"p","modelId":"m"}',
+        '{"kind":"entry","seq":2,"lane":"main","id":"e2","type":"message","parentId":"e1","timestamp":1780500000002,"message":{"role":"user","content":[{"type":"text","text":"hello v4"}]}}',
+        '{"kind":"fact","seq":3,"fact":"name","name":"v4 named"}',
+      ].join("\n")}\n`;
       await writeSession(
         root,
         "--tmp-v4-workspace--",
@@ -119,11 +128,11 @@ describe("listPiSessions", () => {
       const sessions = await Effect.runPromise(listPiSessions(fs, paths, ["/tmp/v4-workspace"]));
       expect(sessions).toHaveLength(1);
       expect(sessions[0]).toMatchObject({
-        id: "v4sess0001",
         cwd: "/tmp/v4-workspace",
-        name: "v4 named",
-        messageCount: 1,
         firstMessage: "hello v4",
+        id: "v4sess0001",
+        messageCount: 1,
+        name: "v4 named",
       });
     });
   });
@@ -173,7 +182,10 @@ describe("listPiSessions", () => {
       // The project claims its own dir AND subdirectories (sessions started
       // inside apps/web are part of the project); other projects stay out.
       const scoped = await Effect.runPromise(listPiSessions(fs, paths, ["/tmp/pi-workspace"]));
-      expect(scoped.map((s) => s.id).sort()).toEqual(["v3sess0001", "v3sess0003"]);
+      const scopedIds = scoped.map((s) => s.id);
+      expect(scopedIds).toContain("v3sess0001");
+      expect(scopedIds).toContain("v3sess0003");
+      expect(scopedIds).toHaveLength(2);
 
       // The other project sees only its own.
       const other = await Effect.runPromise(listPiSessions(fs, paths, ["/tmp/other"]));
@@ -208,11 +220,10 @@ describe("listPiSessions", () => {
 
   it("keeps pre-cwd sessions (empty header cwd) on their dir match", async () => {
     await withPiAgentDir(async (root, paths) => {
-      const old =
-        [
-          '{"type":"session","version":3,"id":"old000001","timestamp":"2026-01-31T22:00:00.000Z","cwd":""}',
-          '{"type":"message","id":"a","parentId":null,"timestamp":"2026-01-31T22:00:01.000Z","message":{"role":"user","content":"ancient"}}',
-        ].join("\n") + "\n";
+      const old = `${[
+        '{"type":"session","version":3,"id":"old000001","timestamp":"2026-01-31T22:00:00.000Z","cwd":""}',
+        '{"type":"message","id":"a","parentId":null,"timestamp":"2026-01-31T22:00:01.000Z","message":{"role":"user","content":"ancient"}}',
+      ].join("\n")}\n`;
       await writeSession(root, "--tmp-pi-workspace--", "old.jsonl", old);
 
       const sessions = await Effect.runPromise(listPiSessions(fs, paths, ["/tmp/pi-workspace"]));
@@ -240,20 +251,20 @@ describe("listPiSessions", () => {
         // The default root is the deepest common ancestor of the
         // candidates: /tmp/sakupicker shows both projects' parents.
         const opened = await Effect.runPromise(browseProjectDirs(fs, paths, ""));
-        expect(opened.path).toBe(`${FIXTURE_TREE}`);
+        expect(opened.path).toBe(FIXTURE_TREE);
         expect(opened.parent).toBe("/tmp");
         expect(opened.entries).toEqual([
-          { name: "other", path: `${FIXTURE_TREE}/other`, hasPiSessions: true },
-          { name: "tree", path: `${FIXTURE_TREE}/tree`, hasPiSessions: false },
+          { hasPiSessions: true, name: "other", path: `${FIXTURE_TREE}/other` },
+          { hasPiSessions: false, name: "tree", path: `${FIXTURE_TREE}/tree` },
         ]);
 
         // Descend one level: dirs only (the file is filtered), the
         // candidate marked, the rest plain.
         const apps = await Effect.runPromise(browseProjectDirs(fs, paths, `${FIXTURE_TREE}/tree`));
         expect(apps.path).toBe(`${FIXTURE_TREE}/tree`);
-        expect(apps.parent).toBe(`${FIXTURE_TREE}`);
+        expect(apps.parent).toBe(FIXTURE_TREE);
         expect(apps.entries).toEqual([
-          { name: "apps", path: `${FIXTURE_TREE}/tree/apps`, hasPiSessions: false },
+          { hasPiSessions: false, name: "apps", path: `${FIXTURE_TREE}/tree/apps` },
         ]);
 
         // The filesystem root has no parent: no up row.
@@ -261,7 +272,7 @@ describe("listPiSessions", () => {
         expect(atRoot.parent).toBeNull();
         expect(atRoot.entries.some((entry) => entry.name === "tmp")).toBe(true);
       } finally {
-        await Effect.runPromise(fs.remove(FIXTURE_TREE, { recursive: true, force: true }));
+        await Effect.runPromise(fs.remove(FIXTURE_TREE, { force: true, recursive: true }));
       }
     });
   });
@@ -274,12 +285,12 @@ describe("listPiSessions", () => {
       await writeSession(root, "--tmp-sakupicker-only--", "a.jsonl", V3_SESSION);
       try {
         const single = await Effect.runPromise(browseProjectDirs(fs, paths, ""));
-        expect(single.path).toBe(`${FIXTURE_TREE}`);
+        expect(single.path).toBe(FIXTURE_TREE);
         expect(single.entries).toEqual([
-          { name: "only", path: `${FIXTURE_TREE}/only`, hasPiSessions: true },
+          { hasPiSessions: true, name: "only", path: `${FIXTURE_TREE}/only` },
         ]);
       } finally {
-        await Effect.runPromise(fs.remove(FIXTURE_TREE, { recursive: true, force: true }));
+        await Effect.runPromise(fs.remove(FIXTURE_TREE, { force: true, recursive: true }));
       }
     });
   });
@@ -317,10 +328,10 @@ describe("readPiSession (v3)", () => {
       const data = await Effect.runPromise(readPiSession(fs, paths, path));
 
       expect(data).toMatchObject({
-        id: "v3sess0001",
         cwd: "/tmp/pi-workspace",
-        name: "flaky tests",
         firstMessage: "fix the flaky test",
+        id: "v3sess0001",
+        name: "flaky tests",
       });
 
       // Entry mutations: model_change, thinking_level_change, message×3,
@@ -335,19 +346,18 @@ describe("readPiSession (v3)", () => {
       expect(lanes).toHaveLength(1);
 
       // seqs are consecutive from 1 in file order.
-      expect(data.mutations.map((m) => (m.kind === "entry" ? m.entry.seq : m.seq))).toEqual([
-        1, 2, 3, 4, 5, 6, 7, 8, 9,
-      ]);
+      expect(data.mutations.map(mutationSeq)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
 
       // The label and session_info are facts; their children re-parent to
       // the fact's own parent (the fact becomes transparent).
       const labelFact = facts.find((f) => f.kind === "fact" && f.fact === "label");
-      expect(labelFact).toMatchObject({ fact: "label", targetId: "u1", label: "flagged" });
+      expect(labelFact).toMatchObject({ fact: "label", label: "flagged", targetId: "u1" });
       const nameFact = facts.find((f) => f.kind === "fact" && f.fact === "name");
       expect(nameFact).toMatchObject({ fact: "name", name: "flaky tests" });
 
       const u2 = entries.find((e) => e.kind === "entry" && e.entry.id === "u2");
-      expect(u2?.kind === "entry" ? u2.entry.parentId : null).toBe("c1"); // l1 re-parented away
+      // l1 re-parented away
+      expect(u2?.kind === "entry" ? u2.entry.parentId : null).toBe("c1");
       const s1Child = entries.find((e) => e.kind === "entry" && e.entry.id === "u2");
       expect(s1Child?.kind === "entry" ? s1Child.entry.parentId : null).toBe("c1");
 
@@ -355,14 +365,10 @@ describe("readPiSession (v3)", () => {
       const custom = entries.find((e) => e.kind === "entry" && e.entry.id === "c1");
       expect(custom?.kind === "entry" ? custom.entry.type : "").toBe("message");
       const message =
-        custom?.kind === "entry"
-          ? (
-              custom.entry as {
-                message?: { role?: string; customType?: string; display?: boolean };
-              }
-            ).message
+        custom?.kind === "entry" && custom.entry.type === "message"
+          ? custom.entry.message
           : undefined;
-      expect(message).toMatchObject({ role: "custom", customType: "ext.demo", display: true });
+      expect(message).toMatchObject({ customType: "ext.demo", display: true, role: "custom" });
 
       // The final lane fact pins the leaf to the last entry (u2).
       expect(lanes[0]).toMatchObject({ lane: "main", leafId: "u2" });
@@ -371,14 +377,13 @@ describe("readPiSession (v3)", () => {
 
   it("re-parents through consecutive facts", async () => {
     await withPiAgentDir(async (root, paths) => {
-      const content =
-        [
-          '{"type":"session","version":3,"id":"chain0001","timestamp":"2026-01-31T22:00:00.000Z","cwd":"/tmp/chain"}',
-          '{"type":"message","id":"a","parentId":null,"timestamp":"2026-01-31T22:00:01.000Z","message":{"role":"user","content":"one"}}',
-          '{"type":"session_info","id":"f1","parentId":"a","timestamp":"2026-01-31T22:00:02.000Z","name":"first"}',
-          '{"type":"session_info","id":"f2","parentId":"f1","timestamp":"2026-01-31T22:00:03.000Z","name":"second"}',
-          '{"type":"message","id":"b","parentId":"f2","timestamp":"2026-01-31T22:00:04.000Z","message":{"role":"assistant","content":"two"}}',
-        ].join("\n") + "\n";
+      const content = `${[
+        '{"type":"session","version":3,"id":"chain0001","timestamp":"2026-01-31T22:00:00.000Z","cwd":"/tmp/chain"}',
+        '{"type":"message","id":"a","parentId":null,"timestamp":"2026-01-31T22:00:01.000Z","message":{"role":"user","content":"one"}}',
+        '{"type":"session_info","id":"f1","parentId":"a","timestamp":"2026-01-31T22:00:02.000Z","name":"first"}',
+        '{"type":"session_info","id":"f2","parentId":"f1","timestamp":"2026-01-31T22:00:03.000Z","name":"second"}',
+        '{"type":"message","id":"b","parentId":"f2","timestamp":"2026-01-31T22:00:04.000Z","message":{"role":"assistant","content":"two"}}',
+      ].join("\n")}\n`;
       const path = await writeSession(root, "--tmp-chain--", "chain0001.jsonl", content);
       const data = await Effect.runPromise(readPiSession(fs, paths, path));
       const b = data.mutations.find((m) => m.kind === "entry" && m.entry.id === "b");
@@ -391,21 +396,20 @@ describe("readPiSession (v3)", () => {
 
   it("synthesizes retainedTail for compaction entries", async () => {
     await withPiAgentDir(async (root, paths) => {
-      const content =
-        [
-          '{"type":"session","version":3,"id":"comp00001","timestamp":"2026-01-31T22:00:00.000Z","cwd":"/tmp/comp"}',
-          '{"type":"message","id":"a","parentId":null,"timestamp":"2026-01-31T22:00:01.000Z","message":{"role":"user","content":"old 1"}}',
-          '{"type":"message","id":"b","parentId":"a","timestamp":"2026-01-31T22:00:02.000Z","message":{"role":"assistant","content":"old 2"}}',
-          '{"type":"compaction","id":"c","parentId":"b","timestamp":"2026-01-31T22:00:03.000Z","summary":"summarized the old stuff","firstKeptEntryId":"b","tokensBefore":123}',
-          '{"type":"message","id":"d","parentId":"c","timestamp":"2026-01-31T22:00:04.000Z","message":{"role":"user","content":"new 1"}}',
-        ].join("\n") + "\n";
+      const content = `${[
+        '{"type":"session","version":3,"id":"comp00001","timestamp":"2026-01-31T22:00:00.000Z","cwd":"/tmp/comp"}',
+        '{"type":"message","id":"a","parentId":null,"timestamp":"2026-01-31T22:00:01.000Z","message":{"role":"user","content":"old 1"}}',
+        '{"type":"message","id":"b","parentId":"a","timestamp":"2026-01-31T22:00:02.000Z","message":{"role":"assistant","content":"old 2"}}',
+        '{"type":"compaction","id":"c","parentId":"b","timestamp":"2026-01-31T22:00:03.000Z","summary":"summarized the old stuff","firstKeptEntryId":"b","tokensBefore":123}',
+        '{"type":"message","id":"d","parentId":"c","timestamp":"2026-01-31T22:00:04.000Z","message":{"role":"user","content":"new 1"}}',
+      ].join("\n")}\n`;
       const path = await writeSession(root, "--tmp-comp--", "comp00001.jsonl", content);
       const data = await Effect.runPromise(readPiSession(fs, paths, path));
       const compaction = data.mutations.find((m) => m.kind === "entry" && m.entry.id === "c");
       const entry = compaction?.kind === "entry" ? compaction.entry : undefined;
       expect(entry?.type).toBe("compaction");
       // Kept region: firstKeptEntryId (b) → leaf (d): messages "old 2" and "new 1".
-      const tail = (entry as { retainedTail?: { content: unknown }[] } | undefined)?.retainedTail;
+      const tail = entry?.type === "compaction" ? entry.retainedTail : undefined;
       expect(tail).toHaveLength(2);
       expect(tail?.[0]).toMatchObject({ role: "assistant" });
       expect(tail?.[1]).toMatchObject({ role: "user" });
@@ -414,12 +418,11 @@ describe("readPiSession (v3)", () => {
 
   it("rejects a broken parent chain with the offending line", async () => {
     await withPiAgentDir(async (root, paths) => {
-      const content =
-        [
-          '{"type":"session","version":3,"id":"broken001","timestamp":"2026-01-31T22:00:00.000Z","cwd":"/tmp/broken"}',
-          '{"type":"message","id":"a","parentId":null,"timestamp":"2026-01-31T22:00:01.000Z","message":{"role":"user","content":"one"}}',
-          '{"type":"message","id":"b","parentId":"ghost","timestamp":"2026-01-31T22:00:02.000Z","message":{"role":"assistant","content":"two"}}',
-        ].join("\n") + "\n";
+      const content = `${[
+        '{"type":"session","version":3,"id":"broken001","timestamp":"2026-01-31T22:00:00.000Z","cwd":"/tmp/broken"}',
+        '{"type":"message","id":"a","parentId":null,"timestamp":"2026-01-31T22:00:01.000Z","message":{"role":"user","content":"one"}}',
+        '{"type":"message","id":"b","parentId":"ghost","timestamp":"2026-01-31T22:00:02.000Z","message":{"role":"assistant","content":"two"}}',
+      ].join("\n")}\n`;
       const path = await writeSession(root, "--tmp-broken--", "broken001.jsonl", content);
       const outcome = await Effect.runPromise(readPiSession(fs, paths, path).pipe(Effect.result));
       expect(Result.isFailure(outcome)).toBe(true);
@@ -435,14 +438,13 @@ describe("readPiSession (v3)", () => {
 describe("readPiSession (v4)", () => {
   it("adopts a v4 file through pi's own repo, re-pinning lanes", async () => {
     await withPiAgentDir(async (root, paths) => {
-      const content =
-        [
-          '{"kind":"header","version":4,"id":"v4imp0001","createdAt":1780500000000,"cwd":"/tmp/v4-import"}',
-          '{"kind":"entry","seq":1,"lane":"main","id":"e1","type":"model_change","parentId":null,"timestamp":1780500000001,"provider":"p","modelId":"m"}',
-          '{"kind":"entry","seq":2,"lane":"main","id":"e2","type":"message","parentId":"e1","timestamp":1780500000002,"message":{"role":"user","content":[{"type":"text","text":"hello v4"}]}}',
-          '{"kind":"entry","seq":3,"lane":"main","id":"e3","type":"message","parentId":"e2","timestamp":1780500000003,"message":{"role":"assistant","content":[{"type":"text","text":"hi"}]}}',
-          '{"kind":"fact","seq":4,"fact":"name","name":"v4 imported"}',
-        ].join("\n") + "\n";
+      const content = `${[
+        '{"kind":"header","version":4,"id":"v4imp0001","createdAt":1780500000000,"cwd":"/tmp/v4-import"}',
+        '{"kind":"entry","seq":1,"lane":"main","id":"e1","type":"model_change","parentId":null,"timestamp":1780500000001,"provider":"p","modelId":"m"}',
+        '{"kind":"entry","seq":2,"lane":"main","id":"e2","type":"message","parentId":"e1","timestamp":1780500000002,"message":{"role":"user","content":[{"type":"text","text":"hello v4"}]}}',
+        '{"kind":"entry","seq":3,"lane":"main","id":"e3","type":"message","parentId":"e2","timestamp":1780500000003,"message":{"role":"assistant","content":[{"type":"text","text":"hi"}]}}',
+        '{"kind":"fact","seq":4,"fact":"name","name":"v4 imported"}',
+      ].join("\n")}\n`;
       const path = await writeSession(
         root,
         "--tmp-v4-import--",
@@ -451,14 +453,14 @@ describe("readPiSession (v4)", () => {
       );
 
       const data = await Effect.runPromise(readPiSession(fs, paths, path));
-      expect(data).toMatchObject({ id: "v4imp0001", cwd: "/tmp/v4-import", name: "v4 imported" });
+      expect(data).toMatchObject({ cwd: "/tmp/v4-import", id: "v4imp0001", name: "v4 imported" });
       const entries = data.mutations.filter((m) => m.kind === "entry");
       expect(entries).toHaveLength(3);
       // The main lane leaf was carried on entry lines; re-pinned at the end.
       const lanes = data.mutations.filter((m) => m.kind === "lane");
-      expect(lanes).toEqual([{ kind: "lane", seq: 5, lane: "main", leafId: "e3" }]);
+      expect(lanes).toEqual([{ kind: "lane", lane: "main", leafId: "e3", seq: 5 }]);
       // Mutations replay consecutively.
-      const seqs = data.mutations.map((m) => (m.kind === "entry" ? m.entry.seq : m.seq));
+      const seqs = data.mutations.map(mutationSeq);
       expect(seqs).toEqual([1, 2, 3, 4, 5]);
     });
   });

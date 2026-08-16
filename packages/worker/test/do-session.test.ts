@@ -6,20 +6,27 @@
 
 import { describe, expect, it } from "vitest";
 import { NodeFileSystem } from "@effect/platform-node";
-import { Effect, FileSystem, Layer } from "effect";
-import {
-  createSessionBackendConformance,
-  type SessionBackendFixture,
-} from "@earendil-works/pi-agent-core/session/testing";
+import type { Layer } from "effect";
+import { Effect, FileSystem } from "effect";
+import { createSessionBackendConformance } from "@earendil-works/pi-agent-core/session/testing";
+import type { SessionBackendFixture } from "@earendil-works/pi-agent-core/session/testing";
+import type { SessionRepo } from "@earendil-works/pi-agent-core";
 
-import { DoSessionRepo, DoSessionStorage } from "../src/do-session.ts";
-import { KvStore, type KvStoreShape } from "@saku/store";
+import { DoSessionRepo } from "../src/do-session-repo.ts";
+import type { DoSessionMetadata } from "../src/do-session.ts";
+import type { KvEntry, KvStoreApi } from "@saku/store";
+import { KvStore } from "@saku/store";
+import type { SessionMutation } from "../src/session-state.ts";
+
+import { assistantMessage } from "./fakes.ts";
+import { expectPresent } from "./expect.ts";
 
 /** Build a KvStore value from a backend layer (the pi seam is value-shaped). */
-const buildKv = (layer: Layer.Layer<KvStore>) =>
-  Effect.runPromise(
-    Effect.gen(function* () {
-      return yield* KvStore;
+const buildKv = async (layer: Layer.Layer<KvStore>) =>
+  await Effect.runPromise(
+    Effect.gen(function* buildKvValue() {
+      const kv = yield* KvStore;
+      return kv;
     }).pipe(Effect.provide(layer)),
   );
 
@@ -34,6 +41,15 @@ const runConformance = (label: string, factory: () => Promise<SessionBackendFixt
   });
 };
 
+/** The one listed session: every durability case lists a just-created session. */
+const expectSession = async (repo: SessionRepo<DoSessionMetadata>) => {
+  const [metadata] = await repo.list();
+  if (metadata === undefined) {
+    throw new Error("expected the session to be listed");
+  }
+  return metadata;
+};
+
 const memoryFixture = async () => ({
   repository: new DoSessionRepo(await buildKv(KvStore.memory())),
   [Symbol.asyncDispose]: async () => {},
@@ -44,7 +60,7 @@ runConformance("memoryKv", memoryFixture);
 // The file-backed fixture needs the FileSystem service; build its factory
 // once inside a provided context (each case still gets a fresh temp dir).
 const fileFixtureFactory = await Effect.runPromise(
-  Effect.gen(function* () {
+  Effect.gen(function* fileFixtureFactory() {
     const fs = yield* FileSystem.FileSystem;
     return async () => {
       const root = await Effect.runPromise(fs.makeTempDirectory({ prefix: "saku-trail-" }));
@@ -53,7 +69,7 @@ const fileFixtureFactory = await Effect.runPromise(
         repository: new DoSessionRepo(kv),
         [Symbol.asyncDispose]: async () => {
           await Effect.runPromise(
-            fs.remove(root, { recursive: true, force: true }).pipe(Effect.catch(() => Effect.void)),
+            fs.remove(root, { force: true, recursive: true }).pipe(Effect.catch(() => Effect.void)),
           );
         },
       };
@@ -63,39 +79,38 @@ const fileFixtureFactory = await Effect.runPromise(
 
 runConformance("fileKv", fileFixtureFactory);
 
-describe("durability", () => {
-  const withFileKv = <A>(
-    run: (kv: KvStoreShape, fs: FileSystem.FileSystem) => Promise<A>,
-  ) =>
-    Effect.runPromise(
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const root = yield* fs.makeTempDirectory({ prefix: "saku-durability-" });
-        return yield* Effect.gen(function* () {
-          const kv = yield* KvStore;
-          return yield* Effect.tryPromise(() => run(kv, fs)).pipe(
-            Effect.ensuring(
-              fs
-                .remove(root, { recursive: true, force: true })
-                .pipe(Effect.catch(() => Effect.void)),
-            ),
-          );
-        }).pipe(Effect.provide(KvStore.file(fs, root)));
-      }).pipe(Effect.provide(NodeFileSystem.layer)),
-    );
+/** Run a case against a fresh temp-dir file KvStore, torn down afterwards. */
+const withFileKv = async <A>(run: (kv: KvStoreApi, fs: FileSystem.FileSystem) => Promise<A>) =>
+  await Effect.runPromise(
+    Effect.gen(function* withFileKvScoped() {
+      const fs = yield* FileSystem.FileSystem;
+      const root = yield* fs.makeTempDirectory({ prefix: "saku-durability-" });
+      const result = yield* Effect.gen(function* withFileKvRun() {
+        const kv = yield* KvStore;
+        const outcome = yield* Effect.tryPromise(async () => await run(kv, fs)).pipe(
+          Effect.ensuring(
+            fs.remove(root, { force: true, recursive: true }).pipe(Effect.catch(() => Effect.void)),
+          ),
+        );
+        return outcome;
+      }).pipe(Effect.provide(KvStore.file(fs, root)));
+      return result;
+    }).pipe(Effect.provide(NodeFileSystem.layer)),
+  );
 
+describe("durability", () => {
   it("a fresh repo over the same store sees the session (restart)", async () => {
     await withFileKv(async (kv) => {
       const first = new DoSessionRepo(kv);
       const session = await first.create({ id: "restart-me" });
       await session.appendMessage({
+        content: [{ text: "hello", type: "text" }],
         role: "user",
-        content: [{ type: "text", text: "hello" }],
         timestamp: Date.now(),
       });
 
       const second = new DoSessionRepo(kv);
-      const [metadata] = await second.list();
+      const metadata = await expectSession(second);
       expect(metadata.id).toBe("restart-me");
       const reopened = await second.open(metadata);
       const log = await reopened.getLog();
@@ -110,21 +125,21 @@ describe("durability", () => {
       const first = new DoSessionRepo(kv);
       const session = await first.create({ id: "interrupted-me" });
       await session.appendMessage({
+        content: [{ text: "hi", type: "text" }],
         role: "user",
-        content: [{ type: "text", text: "hi" }],
         timestamp: Date.now(),
       });
       // The agent's own operation record, as if the process died mid-run.
       const started = await session.appendRecord({
-        type: "operation_started",
         id: "op-1",
+        intent: { initialMessages: [], kind: "run", originalPrompt: [] },
         lane: "main",
         sourceLeafId: null,
-        intent: { kind: "run", originalPrompt: [], initialMessages: [] },
+        type: "operation_started",
       });
 
       const second = new DoSessionRepo(kv);
-      const [metadata] = await second.list();
+      const metadata = await expectSession(second);
       const reopened = await second.open(metadata);
       const open = await reopened.findOpenOperations("main", { limit: 1 });
       expect(open.map((o) => o.id)).toEqual([started.id]);
@@ -137,42 +152,50 @@ describe("durability", () => {
       // lists keys arbitrarily (the file backend's readdir) must not
       // scramble the replay: the sequence numbers are the only order.
       const id = "scrambled";
-      const put = (seq: number, mutation: unknown) =>
-        Effect.runPromise(
-          kv.put(`session/${id}/log/${String(seq).padStart(12, "0")}`, new TextEncoder().encode(JSON.stringify(mutation))),
+      const put = async (seq: number, mutation: SessionMutation) => {
+        await Effect.runPromise(
+          kv.put(
+            `session/${id}/log/${String(seq).padStart(12, "0")}`,
+            new TextEncoder().encode(JSON.stringify(mutation)),
+          ),
         );
-      await put(3, { kind: "fact", seq: 3, fact: "name", name: "third" });
+      };
+      await put(3, { fact: "name", kind: "fact", name: "third", seq: 3 });
       await put(1, {
-        kind: "entry",
         entry: {
-          type: "message",
           id: "u1",
+          message: { content: [], role: "user", timestamp: 1 },
           parentId: null,
           seq: 1,
           timestamp: 1,
-          message: { role: "user", content: [], timestamp: 1 },
+          type: "message",
         },
+        kind: "entry",
       });
       await put(2, {
-        kind: "entry",
         entry: {
-          type: "message",
           id: "a1",
+          message: assistantMessage(""),
           parentId: "u1",
           seq: 2,
           timestamp: 2,
-          message: { role: "assistant", content: [], timestamp: 2 },
+          type: "message",
         },
+        kind: "entry",
       });
       await Effect.runPromise(
-        kv.put(`session/${id}/meta`, new TextEncoder().encode(JSON.stringify({ id, createdAt: 1, cwd: "" }))),
+        kv.put(
+          `session/${id}/meta`,
+          new TextEncoder().encode(JSON.stringify({ createdAt: 1, cwd: "", id })),
+        ),
       );
 
       const repo = new DoSessionRepo(kv);
-      const [metadata] = await repo.list();
+      const metadata = await expectSession(repo);
       const reopened = await repo.open(metadata);
       expect(await reopened.getName()).toBe("third");
-      expect((await reopened.getLog()).map((item) => item.seq)).toEqual([1, 2, 3]);
+      const replayed = await reopened.getLog();
+      expect(replayed.map((item) => item.seq)).toEqual([1, 2, 3]);
     });
   });
 
@@ -182,55 +205,63 @@ describe("durability", () => {
       // The mutation stream a pi session import produces: three entries, a
       // name fact, and the synthesized main-lane pin (pi-sessions.ts).
       const imported = await repo.import("adopted-thread", {
+        createdAt: 1_780_500_000_000,
         cwd: "/tmp/pi-workspace",
-        createdAt: 1780500000000,
         mutations: [
           {
-            kind: "entry",
             entry: {
-              type: "message",
               id: "u1",
+              message: {
+                content: [{ text: "hi", type: "text" }],
+                role: "user",
+                timestamp: 1_780_500_000_001,
+              },
               parentId: null,
               seq: 1,
-              timestamp: 1780500000001,
-              message: { role: "user", content: [{ type: "text", text: "hi" }], timestamp: 1780500000001 },
+              timestamp: 1_780_500_000_001,
+              type: "message",
             },
+            kind: "entry",
           },
           {
-            kind: "entry",
             entry: {
-              type: "message",
               id: "a1",
+              message: assistantMessage("hello"),
               parentId: "u1",
               seq: 2,
-              timestamp: 1780500000002,
-              message: { role: "assistant", content: [{ type: "text", text: "hello" }], timestamp: 1780500000002 },
+              timestamp: 1_780_500_000_002,
+              type: "message",
             },
+            kind: "entry",
           },
-          { kind: "fact", seq: 3, fact: "name", name: "adopted" },
-          { kind: "lane", seq: 4, lane: "main", leafId: "a1" },
+          { fact: "name", kind: "fact", name: "adopted", seq: 3 },
+          { kind: "lane", lane: "main", leafId: "a1", seq: 4 },
         ],
       });
-      expect((await imported.getMetadata()).cwd).toBe("/tmp/pi-workspace");
+      const importedMeta = await imported.getMetadata();
+      expect(importedMeta.cwd).toBe("/tmp/pi-workspace");
 
       // The host opens the trail by thread id — the import must be visible
       // to a fresh repo as the thread's own session.
       const second = new DoSessionRepo(kv);
-      const [metadata] = await second.list();
+      const metadata = await expectSession(second);
       expect(metadata.id).toBe("adopted-thread");
       const reopened = await second.open(metadata);
       expect(await reopened.getName()).toBe("adopted");
-      expect((await reopened.getLog()).filter((i) => i.kind === "entry")).toHaveLength(2);
+      const log = await reopened.getLog();
+      expect(log.filter((i) => i.kind === "entry")).toHaveLength(2);
 
       // Continuation chains onto the last imported message (the lane pin).
       const appended = await reopened.appendMessage({
+        content: [{ text: "next", type: "text" }],
         role: "user",
-        content: [{ type: "text", text: "next" }],
         timestamp: Date.now(),
       });
-      const [leaf] = await reopened.getLanes();
+      const lanes = await reopened.getLanes();
+      const leaf = expectPresent(lanes[0], "the head lane");
       expect(leaf.leafId).toBe(appended);
-      const [last] = (await reopened.getLog()).slice(-1);
+      const tail = await reopened.getLog();
+      const last = expectPresent(tail.at(-1), "the last log item");
       expect(last.kind === "entry" ? last.entry.parentId : null).toBe("a1");
     });
   });
@@ -240,11 +271,11 @@ describe("durability", () => {
     const repo = new DoSessionRepo(kv);
     const session = await repo.create({ id: "delete-me" });
     await session.appendMessage({
+      content: [{ text: "x", type: "text" }],
       role: "user",
-      content: [{ type: "text", text: "x" }],
       timestamp: Date.now(),
     });
-    const [metadata] = await repo.list();
+    const metadata = await expectSession(repo);
     await repo.delete(metadata);
     expect(await repo.list()).toEqual([]);
     // Idempotent.
@@ -257,20 +288,30 @@ describe("durability", () => {
     const repo = new DoSessionRepo(kv);
     const session = await repo.create({ id: "atomic" });
     await session.appendMessage({
+      content: [{ text: "one", type: "text" }],
       role: "user",
-      content: [{ type: "text", text: "one" }],
       timestamp: Date.now(),
     });
     await session.appendMessage({
+      content: [{ text: "two", type: "text" }],
       role: "user",
-      content: [{ type: "text", text: "two" }],
       timestamp: Date.now(),
     });
     // A crash between mutations leaves a prefix: simulate by deleting the tail.
-    const keys = [...(await Effect.runPromise(kv.list({ prefix: "session/atomic/log/" })))];
-    const last = keys.sort((a, b) => a.key.localeCompare(b.key)).at(-1)!;
-    await Effect.runPromise(kv.delete(last.key));
-    const [metadata] = await repo.list();
+    const entries: readonly KvEntry[] = await Effect.runPromise(
+      kv.list({ prefix: "session/atomic/log/" }),
+    );
+    let lastKey: KvEntry | undefined;
+    for (const entry of entries) {
+      if (lastKey === undefined || entry.key.localeCompare(lastKey.key) > 0) {
+        lastKey = entry;
+      }
+    }
+    if (lastKey === undefined) {
+      throw new Error("expected a log key");
+    }
+    await Effect.runPromise(kv.delete(lastKey.key));
+    const metadata = await expectSession(repo);
     // Replay must still load the remaining prefix.
     const reopened = await repo.open(metadata);
     const log = await reopened.getLog();

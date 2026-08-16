@@ -17,8 +17,7 @@
 import { describe, expect, it } from "vitest";
 import { Option, Schema as S } from "effect";
 import { Url } from "foldkit";
-import fc from "fast-check";
-
+import { array, assert, constantFrom, pre, property, string } from "fast-check";
 import { parseRoute, ThreadRoute, ThreadsRoute } from "./route.ts";
 
 /** Parse a path string into an AppRoute (the fallback never fires). */
@@ -35,26 +34,43 @@ const parse = (path: string) => {
  * reads the segment raw). `?`/`#` are query/fragment and are stripped;
  * `/` and `\` are path separators.
  */
-const ROUTE_SAFE = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.~!$&'()*+,;=:@|[]%";
+const ROUTE_SAFE =
+  "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.~!$&'()*+,;=:@|[]%";
 
 /** Strings drawn from a character pool (`string({ unit })` is v4's `stringOf`). */
 const stringOfChars = (chars: string, constraints?: { minLength?: number; maxLength?: number }) =>
-  fc.string({ unit: fc.constantFrom(...chars.split("")), ...constraints });
+  string({ unit: constantFrom(...Array.from(chars, (char) => char)), ...constraints });
 
 /** The expected parse of `/thread${tail}` for any tail over the pass-through charset. */
 const threadArm = (tail: string) => {
   // The URL parser splits query/fragment off before normalizing the path.
-  const seg = tail.split(/[?#]/, 1)[0] ?? "";
+  const seg = tail.split(/[?#]/u, 1)[0] ?? "";
   // The arm needs a separator right after `thread`; backslash counts
   // (WHATWG path normalization) — `/thread\a` is `/thread/a`.
-  if (seg === "" || (seg[0] !== "/" && seg[0] !== "\\")) return { _tag: "Threads" } as const;
+  if (seg === "" || (!seg.startsWith("/") && !seg.startsWith("\\"))) {
+    return { _tag: "Threads" } as const;
+  }
   const segments = seg
     .slice(1)
-    .replace(/[\\/]+/g, "/")
+    .replaceAll(/[\\/]+/gu, "/")
     .split("/")
     .filter((segment) => segment !== "");
-  return segments.length === 1
-    ? ({ _tag: "Thread", id: segments[0] } as const)
+  // WHATWG dot-segment removal: `.` vanishes, `..` pops the previous
+  // segment (it can't escape the root). The parser sees the normalized
+  // path, so the arm must too.
+  const normalized: string[] = [];
+  for (const segment of segments) {
+    if (segment === ".") {
+      continue;
+    }
+    if (segment === "..") {
+      normalized.pop();
+      continue;
+    }
+    normalized.push(segment);
+  }
+  return normalized.length === 1
+    ? ({ _tag: "Thread", id: normalized[0] } as const)
     : ({ _tag: "Threads" } as const);
 };
 
@@ -64,30 +80,33 @@ describe("parseRoute", () => {
   });
 
   it("preserves any URL-safe id through /thread/:id", () => {
-    fc.assert(
-      fc.property(stringOfChars(ROUTE_SAFE, { minLength: 1, maxLength: 24 }), (id) => {
+    assert(
+      property(stringOfChars(ROUTE_SAFE, { maxLength: 24, minLength: 1 }), (id) => {
+        // A lone `.` or `..` segment is eaten by WHATWG path normalization
+        // (`/thread/.` becomes `/thread`), so no id round-trips through it.
+        pre(id !== "." && id !== "..");
         expect(parse(`/thread/${id}`)).toEqual({ _tag: "Thread", id });
       }),
     );
   });
 
   it("matches the /thread arm exactly when one clean id segment remains", () => {
-    fc.assert(
-      fc.property(stringOfChars(`${ROUTE_SAFE}/\\?#`, { maxLength: 16 }), (tail) => {
+    assert(
+      property(stringOfChars(`${ROUTE_SAFE}/\\?#`, { maxLength: 16 }), (tail) => {
         expect(parse(`/thread${tail}`)).toEqual(threadArm(tail));
       }),
     );
   });
 
   it("falls back to the Threads route for any path whose first segment is not `thread`", () => {
-    fc.assert(
-      fc.property(
-        fc.array(stringOfChars(`${ROUTE_SAFE}/?#`, { minLength: 1, maxLength: 8 }), {
-          minLength: 1,
+    assert(
+      property(
+        array(stringOfChars(`${ROUTE_SAFE}/?#`, { maxLength: 8, minLength: 1 }), {
           maxLength: 4,
+          minLength: 1,
         }),
         (segments) => {
-          fc.pre(segments[0] !== "thread");
+          pre(segments[0] !== "thread");
           expect(parse(`/${segments.join("/")}`)).toEqual({ _tag: "Threads" });
         },
       ),

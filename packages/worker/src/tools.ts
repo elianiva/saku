@@ -13,19 +13,23 @@ import {
   createEditTool,
   createReadTool,
   createWriteTool,
-  type AgentHarnessTool,
-  type ExecutionEnv,
 } from "@earendil-works/pi-agent-core";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type {
+  AgentHarnessTool,
+  AgentTool,
+  ExecutionEnv,
+  ExecutionToolContext,
+} from "@earendil-works/pi-agent-core";
+import type { TSchema } from "@earendil-works/pi-ai";
 
-const adapt = <TContext extends { env: ExecutionEnv }, TDetails>(
-  tool: AgentHarnessTool<TContext, any, TDetails>,
+const adapt = <TParameters extends TSchema, TDetails>(
+  tool: AgentHarnessTool<ExecutionToolContext, TParameters, TDetails>,
   env: ExecutionEnv,
-): AgentTool<any, TDetails> => ({
+): AgentTool<TParameters, TDetails> => ({
   ...tool,
+  execute: async (toolCallId, params, signal, onUpdate) =>
+    await tool.execute(toolCallId, params, signal, onUpdate, { env }),
   label: tool.label ?? tool.name,
-  execute: (toolCallId, params, signal, onUpdate) =>
-    tool.execute(toolCallId, params, signal, onUpdate, { env } as TContext),
 });
 
 /** The standard hand toolset for a thread: read, bash, edit, write. */

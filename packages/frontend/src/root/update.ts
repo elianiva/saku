@@ -15,17 +15,18 @@ import { evo } from "foldkit/struct";
 
 import { connMachine } from "../conn/machine.ts";
 import * as Rail from "../rail/update.ts";
-import * as RailMsg from "../rail/message.ts";
-import { AppRoute } from "../route.ts";
+import type * as RailMsg from "../rail/message.ts";
+import type { AppRoute } from "../route.ts";
 import { LoadStateCmd, LoadTrailCmd } from "../thread/command.ts";
 import * as Thread from "../thread/update.ts";
 import * as ThreadMsg from "../thread/message.ts";
-import { Wire } from "../wire.ts";
+import type { Wire } from "../wire.ts";
 import { NavigateToCmd } from "./command.ts";
-import { GotRailMessage, GotThreadMessage, ThreadChanged, type RootMessage } from "./message.ts";
+import { GotRailMessage, GotThreadMessage, ThreadChanged } from "./message.ts";
+import type { RootMessage } from "./message.ts";
 import type { Model } from "./model.ts";
 
-export type Commands = ReadonlyArray<Command.Command<RootMessage, never, Wire>>;
+export type Commands = readonly Command.Command<RootMessage, never, Wire>[];
 export type UpdateReturn = readonly [Model, Commands];
 
 const none: Commands = [];
@@ -36,15 +37,17 @@ const delegateToRail = (model: Model, railMessage: RailMsg.RailMessage): UpdateR
   const mapped = Command.mapMessages(cmds, (m) => GotRailMessage({ message: m }));
   return Option.match(out, {
     onNone: () => [evo(model, { rail: (_) => nextRail }), mapped],
-    onSome: (out) => {
+    onSome: (surfaced) => {
       // The rail surfaced a navigation fact; the root owns URLs. Deleting
       // the pinned thread leaves the route; opening one pushes its URL.
-      const navigation =
-        out._tag === "OpenedThread"
-          ? [NavigateToCmd({ path: `/thread/${out.id}` })]
-          : model.route._tag === "Thread" && model.route.id === out.id
-            ? [NavigateToCmd({ path: "/" })]
-            : [];
+      let navigation: Commands;
+      if (surfaced._tag === "OpenedThread") {
+        navigation = [NavigateToCmd({ path: `/thread/${surfaced.id}` })];
+      } else if (model.route._tag === "Thread" && model.route.id === surfaced.id) {
+        navigation = [NavigateToCmd({ path: "/" })];
+      } else {
+        navigation = [];
+      }
       return [evo(model, { rail: (_) => nextRail }), [...mapped, ...navigation]];
     },
   });
@@ -56,16 +59,18 @@ const delegateToThread = (model: Model, threadMessage: ThreadMsg.ThreadMessage):
   const mapped = Command.mapMessages(cmds, (m) => GotThreadMessage({ message: m }));
   return Option.match(out, {
     onNone: () => [evo(model, { thread: (_) => nextThread }), mapped],
-    onSome: (out) => {
+    onSome: (surfaced) => {
       // The pane surfaced a navigation fact (a quick start opened a
       // thread, or the new-thread button asked for the welcome); the root
       // owns URLs.
-      const navigation =
-        out._tag === "OpenedThread"
-          ? [NavigateToCmd({ path: `/thread/${out.id}` })]
-          : out._tag === "NewThreadRequested"
-            ? [NavigateToCmd({ path: "/" })]
-            : [];
+      let navigation: Commands;
+      if (surfaced._tag === "OpenedThread") {
+        navigation = [NavigateToCmd({ path: `/thread/${surfaced.id}` })];
+      } else if (surfaced._tag === "NewThreadRequested") {
+        navigation = [NavigateToCmd({ path: "/" })];
+      } else {
+        navigation = [];
+      }
       return [evo(model, { thread: (_) => nextThread }), [...mapped, ...navigation]];
     },
   });
@@ -77,8 +82,8 @@ const applyRoute = (model: Model, route: AppRoute): UpdateReturn => {
   const [nextThread, threadCmds] = Thread.informRouteChanged(model.thread, route);
   return [
     evo(model, {
-      route: (_) => route,
       rail: (_) => Rail.informRouteChanged(model.rail, route),
+      route: (_) => route,
       thread: (_) => nextThread,
     }),
     Command.mapMessages(threadCmds, (m) => GotThreadMessage({ message: m })),
@@ -100,8 +105,7 @@ export const update = (model: Model, message: RootMessage) =>
     M.withReturnType<UpdateReturn>(),
     M.tagsExhaustive({
       ChangedRoute: ({ route }) => applyRoute(model, route),
-      Navigated: () => [model, none],
-      NavigatedTo: () => [model, none],
+      ConnectFailed: (m) => stepConn(model, m),
 
       // A successful connect also clears the wire-error banner. The pane's
       // reads are re-issued on the transition: at boot they race the
@@ -121,41 +125,50 @@ export const update = (model: Model, message: RootMessage) =>
         const reload =
           result._tag === "Transitioned" && model.route._tag === "Thread"
             ? Command.mapMessages(
+                // SAFETY: both commands are thread-scoped (TrailLoaded /
+                // StateLoaded); the annotation widens the literal so
+                // mapMessages types the callback over the union.
                 [
                   LoadTrailCmd({ id: model.route.id }),
                   LoadStateCmd({ id: model.route.id }),
-                ] as ReadonlyArray<Command.Command<ThreadMsg.ThreadMessage, never, Wire>>,
-                (message) => GotThreadMessage({ message }),
+                ] as readonly Command.Command<ThreadMsg.ThreadMessage, never, Wire>[],
+                (threadMessage) => GotThreadMessage({ message: threadMessage }),
               )
             : none;
         return [
-          evo(model, { conn: (_) => result.state, banner: (_) => null }),
+          evo(model, { banner: (_) => null, conn: (_) => result.state }),
           [...(result._tag === "Transitioned" ? result.commands : none), ...reload],
         ];
       },
-      ConnectFailed: (m) => stepConn(model, m),
       ConnectionClosed: (m) => stepConn(model, m),
-      RetryRequested: (m) => stepConn(model, m),
+
+      DismissBanner: () => [evo(model, { banner: (_) => null }), none],
 
       GotRailMessage: ({ message: railMessage }) => delegateToRail(model, railMessage),
       GotThreadMessage: ({ message: threadMessage }) => delegateToThread(model, threadMessage),
 
+      Navigated: () => [model, none],
+      NavigatedTo: () => [model, none],
+
+      RetryRequested: (m) => stepConn(model, m),
+
       // A session event: route it to the pane only when the route pins its
       // thread (the pane never sees other threads' streams).
-      WireEvent: ({ threadId, event }) =>
-        model.route._tag === "Thread" && model.route.id === threadId
-          ? delegateToThread(model, ThreadMsg.SessionEvent({ event }))
-          : [model, none],
+      ServerErrorNotice: ({ message: notice }) => [evo(model, { banner: (_) => notice }), none],
       // The registry broadcast: the rail upserts; the pane refreshes its
       // header info when the broadcast is its thread.
       ThreadChanged: ({ thread }) => {
         const [withRail, cmds] = delegateToRail(model, ThreadChanged({ thread }));
-        if (model.thread.id !== thread.id) return [withRail, cmds];
+        if (model.thread.id !== thread.id) {
+          return [withRail, cmds];
+        }
         const [next, threadCmds] = delegateToThread(withRail, ThreadMsg.ThreadChanged({ thread }));
         return [next, [...cmds, ...threadCmds]];
       },
 
-      ServerErrorNotice: ({ message }) => [evo(model, { banner: (_) => message }), none],
-      DismissBanner: () => [evo(model, { banner: (_) => null }), none],
+      WireEvent: ({ threadId, event }) =>
+        model.route._tag === "Thread" && model.route.id === threadId
+          ? delegateToThread(model, ThreadMsg.SessionEvent({ event }))
+          : [model, none],
     }),
   );

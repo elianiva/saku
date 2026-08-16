@@ -45,6 +45,7 @@ const iconNodes = {
   arrowLeft: ArrowLeft,
   arrowRight: ArrowRight,
   arrowUp: ArrowUp,
+  box: Box,
   brain: Brain,
   check: Check,
   chevronDown: ChevronDown,
@@ -68,7 +69,6 @@ const iconNodes = {
   plus: Plus,
   refreshCw: RefreshCw,
   shuffle: Shuffle,
-  box: Box,
   square: Square,
   squareCheck: SquareCheck,
   trash2: Trash2,
@@ -86,16 +86,21 @@ export interface IconOptions {
 const renderIconNode = <Message>(h: HtmlBuilder<Message>, [tag, sourceAttrs]: IconNode[number]) => {
   const attrs = Object.entries(sourceAttrs).map(([key, value]) => h.Attribute(key, String(value)));
   switch (tag) {
-    case "circle":
+    case "circle": {
       return h.circle(attrs, []);
-    case "line":
+    }
+    case "line": {
       return h.line(attrs, []);
-    case "path":
+    }
+    case "path": {
       return h.path(attrs, []);
-    case "rect":
+    }
+    case "rect": {
       return h.rect(attrs, []);
-    default:
+    }
+    default: {
       throw new Error(`Unsupported Lucide SVG element: ${tag}`);
+    }
   }
 };
 

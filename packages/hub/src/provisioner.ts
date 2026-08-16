@@ -29,10 +29,12 @@
  */
 
 import { Effect, Option, Result, Schedule, Schema } from "effect";
-import { RemoteEnv, nodeSocket, type EnvHandle } from "@saku/env";
+import { RemoteEnv, nodeSocket } from "@saku/env";
+import type { EnvHandle } from "@saku/env";
 import { HubError, messageOf } from "./hub-error.ts";
 import type { HubRecord } from "./registry.ts";
-import { pollUntilReady, type BoxApiShape, type BoxInfo } from "./box.ts";
+import { pollUntilReady } from "./box.ts";
+import type { BoxApiContract, BoxInfo } from "./box.ts";
 
 /** A fresh env protocol token (the daemon's credential). */
 const randomToken = () => {
@@ -99,12 +101,12 @@ export const boxInstallCommand = () =>
   ].join(" ");
 
 export interface ProvisionerDeps {
-  readonly boxApi: BoxApiShape;
+  readonly boxApi: BoxApiContract;
   /** The env daemon bundle (one self-contained file). Test seam. */
-  readonly readBundle: () => Effect.Effect<string, HubError, never>;
+  readonly readBundle: () => Effect.Effect<string, HubError>;
   /** The env protocol token minted per box (test seam; random by default). */
   readonly envToken?: () => string;
-  readonly log?: (message: string) => Effect.Effect<void, never, never>;
+  readonly log?: (message: string) => Effect.Effect<void>;
 }
 
 export interface EnvProvisioner {
@@ -117,35 +119,38 @@ export interface EnvProvisioner {
   readonly ensure: (
     thread: HubRecord,
     handle: Option.Option<EnvHandle>,
-  ) => Effect.Effect<Option.Option<EnvHandle>, HubError, never>;
+  ) => Effect.Effect<Option.Option<EnvHandle>, HubError>;
   /** Release the env: stop the Box (idle-stop trigger, thread deletion). */
   readonly release: (
     threadId: string,
     handle: Option.Option<EnvHandle>,
-  ) => Effect.Effect<void, HubError, never>;
+  ) => Effect.Effect<void, HubError>;
 }
 
 /** Poll options with the provisioner's log when set (exactOptional-safe). */
 const pollOptions = (deps: ProvisionerDeps) => (deps.log === undefined ? {} : { log: deps.log });
 
-const toHubError = (context: string) => (error: unknown) =>
+const toHubError = (context: string) => (cause: unknown) =>
   new HubError({
+    cause,
     kind: "provisioner",
-    message: `${context}: ${error instanceof Error ? error.message : String(error)}`,
-    cause: error,
+    message: `${context}: ${cause instanceof Error ? cause.message : String(cause)}`,
   });
 
 /** Probe an env URL with the protocol's hello; answers = ready. */
-const probeDaemon = Effect.fn("probeDaemon")(function* (url: string, token: string) {
-  const env = new RemoteEnv({ url, token, socket: nodeSocket });
+const probeDaemon = Effect.fn("probeDaemon")(function* probeDaemon(url: string, token: string) {
+  const env = new RemoteEnv({ socket: nodeSocket, token, url });
   // The rejection reason is unknown (never `as Error`): the failure arm
   // below messages it via messageOf.
   const outcome = yield* Effect.tryPromise({
-    try: () => env.connect().then(() => env.close()),
     catch: (error) => error,
+    try: async () => {
+      await env.connect();
+      env.close();
+    },
   }).pipe(Effect.result);
   if (Result.isFailure(outcome)) {
-    return yield* Effect.fail(
+    yield* Effect.fail(
       new HubError({
         kind: "provisioner",
         message: `env daemon did not answer at ${url}: ${messageOf(outcome.failure)}`,
@@ -154,11 +159,52 @@ const probeDaemon = Effect.fn("probeDaemon")(function* (url: string, token: stri
   }
 });
 
+// Aliased so the TaggedError class declaration below stays a plain call
+// (`new` breaks the schema typecheck — `TaggedError` is a function
+// returning a class, not a class).
+const taggedError = Schema.TaggedError;
+
+/** The host.url read found nothing (the wrapper hasn't written it yet). */
+class HostUrlPending extends taggedError<HostUrlPending>()("HostUrlPending", {}) {}
+
+/** Read the box's host.url, retrying until the wrapper has written it. */
+const readHostUrl = Effect.fn("readHostUrl")(function* readHostUrl(
+  deps: ProvisionerDeps,
+  boxId: string,
+) {
+  const fail = toHubError(`box ${boxId} host.url read failed`);
+  const attempt = Effect.gen(function* attempt() {
+    const content = yield* deps.boxApi
+      .readFile(boxId, `${BOX_ENV_DIR}/host.url`)
+      .pipe(Effect.mapError(fail));
+    const url = content.trim().split("\n")[0] ?? "";
+    if (url.length > 0) {
+      return url;
+    }
+    return yield* Effect.fail(new HostUrlPending());
+  });
+  return yield* attempt.pipe(
+    // Poll every second until the deadline (Schedule.spaced + upTo, the
+    // box.ts pollUntilReady idiom: interruptible, deadline-bounded). Only
+    // the not-yet-written failure is retried — read failures pass through.
+    Effect.retry({
+      schedule: Schedule.spaced("1 seconds").pipe(Schedule.upTo({ duration: "30 seconds" })),
+      while: (error) => error._tag === "HostUrlPending",
+    }),
+    // The schedule gave up: the wrapper never wrote the URL. Today's message, kept.
+    Effect.catchTag("HostUrlPending", () =>
+      Effect.fail(
+        new HubError({ kind: "provisioner", message: `box ${boxId} never wrote host.url` }),
+      ),
+    ),
+  );
+});
+
 /**
  * Bootstrap the daemon into a fresh box: bundle + unit + node, then the
  * install command, then read the host URL and probe it.
  */
-const bootstrapBox = Effect.fn("bootstrapBox")(function* (
+const bootstrapBox = Effect.fn("bootstrapBox")(function* bootstrapBox(
   deps: ProvisionerDeps,
   thread: HubRecord,
   box: BoxInfo,
@@ -194,42 +240,11 @@ const bootstrapBox = Effect.fn("bootstrapBox")(function* (
   // The wrapper writes host.url shortly after systemd starts it.
   const url = yield* readHostUrl(deps, box.id);
   yield* probeDaemon(url, envToken);
-  return { url, token: envToken, boxId: box.id };
-});
-
-/** The host.url read found nothing (the wrapper hasn't written it yet). */
-class HostUrlPending extends Schema.TaggedError<HostUrlPending>()("HostUrlPending", {}) {}
-
-/** Read the box's host.url, retrying until the wrapper has written it. */
-const readHostUrl = Effect.fn("readHostUrl")(function* (deps: ProvisionerDeps, boxId: string) {
-  const fail = toHubError(`box ${boxId} host.url read failed`);
-  const attempt = Effect.gen(function* () {
-    const content = yield* deps.boxApi
-      .readFile(boxId, `${BOX_ENV_DIR}/host.url`)
-      .pipe(Effect.mapError(fail));
-    const url = content.trim().split("\n")[0] ?? "";
-    if (url.length > 0) return url;
-    return yield* Effect.fail(new HostUrlPending());
-  });
-  return yield* attempt.pipe(
-    // Poll every second until the deadline (Schedule.spaced + upTo, the
-    // box.ts pollUntilReady idiom: interruptible, deadline-bounded). Only
-    // the not-yet-written failure is retried — read failures pass through.
-    Effect.retry({
-      schedule: Schedule.spaced("1 seconds").pipe(Schedule.upTo({ duration: "30 seconds" })),
-      while: (error) => error._tag === "HostUrlPending",
-    }),
-    // The schedule gave up: the wrapper never wrote the URL. Today's message, kept.
-    Effect.catchTag("HostUrlPending", () =>
-      Effect.fail(
-        new HubError({ kind: "provisioner", message: `box ${boxId} never wrote host.url` }),
-      ),
-    ),
-  );
+  return { boxId: box.id, token: envToken, url };
 });
 
 /** Resume a stopped box: wake it, wait, re-probe (re-read the URL if it moved). */
-const resumeBox = Effect.fn("resumeBox")(function* (
+const resumeBox = Effect.fn("resumeBox")(function* resumeBox(
   deps: ProvisionerDeps,
   thread: HubRecord,
   handle: EnvHandle,
@@ -244,16 +259,18 @@ const resumeBox = Effect.fn("resumeBox")(function* (
   yield* pollUntilReady(deps.boxApi, handle.boxId, pollOptions(deps)).pipe(Effect.mapError(fail));
   // systemd restarts the daemon on resume; the URL should be the same one.
   const probe = yield* probeDaemon(handle.url, handle.token).pipe(Effect.result);
-  if (Result.isSuccess(probe)) return handle;
+  if (Result.isSuccess(probe)) {
+    return handle;
+  }
   const url = yield* readHostUrl(deps, handle.boxId);
   yield* probeDaemon(url, handle.token);
   return { ...handle, url };
 });
 
 /** The Box provisioner: `Provisioner.make(deps)` builds the env seam. */
-export class Provisioner {
-  static readonly make = (deps: ProvisionerDeps) => {
-    const ensure: EnvProvisioner["ensure"] = Effect.fn("ensure")(function* (thread, handle) {
+export const Provisioner = {
+  make: (deps: ProvisionerDeps) => {
+    const ensure: EnvProvisioner["ensure"] = Effect.fn("ensure")(function* ensure(thread, handle) {
       if (thread.mode !== "sandbox") {
         // Local threads are served by the local env daemon (M3: the
         // transitional worker daemon serves them in-process); no handle.
@@ -265,11 +282,11 @@ export class Provisioner {
       }
       const box = yield* deps.boxApi
         .createBox({
-          type: "default",
-          // No wall-clock auto-stop: idle-stop is the saku policy (ADR 0003).
-          ttlSeconds: null,
           // The thread id tags the box (platform guide: identify boxes).
           env: { SAKU_THREAD_ID: thread.id },
+          // No wall-clock auto-stop: idle-stop is the saku policy (ADR 0003).
+          ttlSeconds: null,
+          type: "default",
         })
         .pipe(
           Effect.mapError(toHubError(`box creation failed for thread ${thread.id.slice(0, 8)}`)),
@@ -281,20 +298,22 @@ export class Provisioner {
       return Option.some(provisioned);
     });
 
-    const release: EnvProvisioner["release"] = Effect.fn("release")(function* (threadId, handle) {
-      if (Option.isNone(handle) || handle.value.boxId === null) {
-        // Local envs never stop (ADR 0003).
-        return;
-      }
-      yield* deps.boxApi
-        .stop(handle.value.boxId)
-        .pipe(
-          Effect.mapError(
-            toHubError(`box ${handle.value.boxId} stop failed (thread ${threadId.slice(0, 8)})`),
-          ),
-        );
-    });
+    const release: EnvProvisioner["release"] = Effect.fn("release")(
+      function* release(threadId, handle) {
+        if (Option.isNone(handle) || handle.value.boxId === null) {
+          // Local envs never stop (ADR 0003).
+          return;
+        }
+        yield* deps.boxApi
+          .stop(handle.value.boxId)
+          .pipe(
+            Effect.mapError(
+              toHubError(`box ${handle.value.boxId} stop failed (thread ${threadId.slice(0, 8)})`),
+            ),
+          );
+      },
+    );
 
     return { ensure, release };
-  };
-}
+  },
+};

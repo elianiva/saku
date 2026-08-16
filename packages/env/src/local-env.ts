@@ -19,119 +19,141 @@
 
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, resolve, sep } from "node:path";
-import { Data, Effect, FileSystem, Match, Option, Result } from "effect";
-import {
-  ExecutionError,
-  FileError,
-  err,
-  ok,
-  type ExecutionEnv,
-  type FileInfo,
-  type Result as PiResult,
-  type ShellExecOptions,
+import pathModule from "node:path";
+import type { FileSystem } from "effect";
+import { Effect, Match, Option, Result } from "effect";
+import type { PlatformError } from "effect/PlatformError";
+import { ExecutionError, FileError, err, ok } from "@earendil-works/pi-agent-core";
+import type {
+  ExecutionEnv,
+  FileInfo,
+  Result as PiResult,
+  ShellExecOptions,
 } from "@earendil-works/pi-agent-core";
 
-/** Dig a node errno code out of a PlatformError (or a raw ErrnoException). */
-const errnoCode = (error: unknown) => {
-  if (typeof error !== "object" || error === null) return undefined;
-  const e = error as {
-    _tag?: string;
-    reason?: { _tag?: string; cause?: unknown };
-    cause?: { code?: string };
-  };
-  if (e._tag === "PlatformError" && e.reason !== undefined) {
-    return Match.value(e.reason).pipe(
-      Match.withReturnType<string | undefined>(),
-      Match.when({ _tag: "NotFound" }, () => "ENOENT"),
-      Match.when({ _tag: "PermissionDenied" }, () => "EACCES"),
-      Match.when({ _tag: "BadResource" }, (reason) => {
-        const code = (reason.cause as NodeJS.ErrnoException | undefined)?.code;
-        return code === "EISDIR" || code === "ENOTDIR" ? code : undefined;
-      }),
-      Match.orElse(() => undefined),
-    );
-  }
-  if (e._tag === "NotFound") return "ENOENT";
-  if (e._tag === "PermissionDenied") return "EACCES";
-  return (
-    (error as NodeJS.ErrnoException).code ?? (e.cause as NodeJS.ErrnoException | undefined)?.code
+/** Dig a node errno code out of a PlatformError (the daemon's FileSystem failures). */
+const errnoCode = (error: PlatformError): string | undefined =>
+  Match.value(error.reason).pipe(
+    Match.withReturnType<string | undefined>(),
+    Match.when({ _tag: "NotFound" }, () => "ENOENT"),
+    Match.when({ _tag: "PermissionDenied" }, () => "EACCES"),
+    Match.when({ _tag: "BadResource" }, (reason): string | undefined => {
+      const { cause } = reason;
+      if (
+        cause instanceof Error &&
+        "code" in cause &&
+        (cause.code === "EISDIR" || cause.code === "ENOTDIR")
+      ) {
+        return cause.code;
+      }
+      return undefined;
+    }),
+    Match.orElse((): string | undefined => undefined),
   );
-};
 
-const mapFileError = (path: string, error: unknown) => {
+/** Map a FileSystem failure to pi's FileError, preserving the node errno code. */
+const mapFileError = (path: string, error: PlatformError) => {
   const code = errnoCode(error);
   return Match.value(code).pipe(
     Match.withReturnType<FileError>(),
-    Match.when("ENOENT", () =>
-      new FileError("not_found", `no such file or directory: ${path}`, path, asError(error)),
+    Match.when(
+      "ENOENT",
+      () => new FileError("not_found", `no such file or directory: ${path}`, path, error),
     ),
-    Match.whenOr("EACCES", "EPERM", () =>
-      new FileError("permission_denied", `permission denied: ${path}`, path, asError(error)),
+    Match.whenOr(
+      "EACCES",
+      "EPERM",
+      () => new FileError("permission_denied", `permission denied: ${path}`, path, error),
     ),
-    Match.when("EISDIR", () =>
-      new FileError("is_directory", `is a directory: ${path}`, path, asError(error)),
+    Match.when(
+      "EISDIR",
+      () => new FileError("is_directory", `is a directory: ${path}`, path, error),
     ),
-    Match.when("ENOTDIR", () =>
-      new FileError("not_directory", `not a directory: ${path}`, path, asError(error)),
+    Match.when(
+      "ENOTDIR",
+      () => new FileError("not_directory", `not a directory: ${path}`, path, error),
     ),
-    Match.when("EINVAL", () =>
-      new FileError("invalid", `invalid path: ${path}`, path, asError(error)),
-    ),
-    Match.orElse(() =>
-      new FileError("unknown", `filesystem error: ${String(error)}`, path, asError(error)),
-    ),
+    Match.when("EINVAL", () => new FileError("invalid", `invalid path: ${path}`, path, error)),
+    Match.orElse(() => new FileError("unknown", `filesystem error: ${String(error)}`, path, error)),
   );
 };
-
-const asError = (error: unknown) =>
-  error instanceof Error
-    ? error
-    : error === undefined
-      ? undefined
-      : new Data.Error({ message: String(error) });
 
 /**
  * Resolve a path against the workspace root: absolute paths pass through
  * (node's `resolve` handles them), relative ones anchor at the workspace.
  */
-const absolute = (cwd: string, path: string) => resolve(cwd, path);
+const absolute = (cwd: string, path: string) => pathModule.resolve(cwd, path);
 
+/** True when the payload is text; the FileSystem methods branch on this. */
+const isText = (content: string | Uint8Array): content is string => typeof content === "string";
+
+/** Encode text content, pass bytes through. */
 const toBytes = (content: string | Uint8Array) =>
-  typeof content === "string" ? new TextEncoder().encode(content) : content;
+  isText(content) ? new TextEncoder().encode(content) : content;
+
+/** Resolve a command's cwd against the workspace (absolute paths pass through). */
+const resolveCwd = (workspace: string, cwd: string) =>
+  pathModule.isAbsolute(cwd) ? cwd : pathModule.resolve(workspace, cwd);
+
+/**
+ * The child's environment: the daemon's env (unless `inheritEnv: false`),
+ * then the connection's extras, then the per-call env.
+ */
+const buildEnv = (
+  extraEnv: Record<string, string>,
+  env: Record<string, string> | undefined,
+  inherit: boolean,
+): NodeJS.ProcessEnv => {
+  const merged: NodeJS.ProcessEnv = {};
+  if (inherit) {
+    Object.assign(merged, process.env);
+  }
+  Object.assign(merged, extraEnv, env);
+  return merged;
+};
+
+/** The temp-file options the daemon forwards (makeTempFile's shape). */
+interface TempFileOptions {
+  directory: string;
+  prefix?: string;
+  suffix?: string;
+}
 
 /**
  * Kind + size/mtime for one path. Total: symlink reads and stats are
  * themselves effect-fallbacks, so callers never see a throw. One
  * composed effect — the promise boundary is crossed once per call.
  */
-const describeEntry = (fs: FileSystem.FileSystem, path: string) =>
-  Effect.runPromise(
-    Effect.gen(function* () {
+const describeEntry = async (fs: FileSystem.FileSystem, path: string) =>
+  await Effect.runPromise(
+    Effect.gen(function* describe() {
       const isLink = yield* Effect.isSuccess(fs.readLink(path));
-      if (isLink)
+      if (isLink) {
         return {
-          name: path.split(sep).pop() ?? path,
-          path,
           kind: "symlink" as const,
-          size: 0,
           mtimeMs: 0,
-        };
-      const info = yield* fs.stat(path).pipe(Effect.catch(() => Effect.succeed(undefined)));
-      if (info === undefined)
-        return {
-          name: path.split(sep).pop() ?? path,
+          name: path.split(pathModule.sep).pop() ?? path,
           path,
-          kind: "file" as const,
           size: 0,
-          mtimeMs: 0,
         };
+      }
+      const stat = yield* fs.stat(path).pipe(Effect.result);
+      if (Result.isFailure(stat)) {
+        return {
+          kind: "file" as const,
+          mtimeMs: 0,
+          name: path.split(pathModule.sep).pop() ?? path,
+          path,
+          size: 0,
+        };
+      }
+      const info = stat.success;
       return {
-        name: path.split(sep).pop() ?? path,
-        path,
         kind: info.type === "Directory" ? ("directory" as const) : ("file" as const),
-        size: Number(info.size),
         mtimeMs: Option.isSome(info.mtime) ? info.mtime.value.getTime() : 0,
+        name: path.split(pathModule.sep).pop() ?? path,
+        path,
+        size: Number(info.size),
       };
     }),
   );
@@ -154,12 +176,14 @@ export class LocalEnv implements ExecutionEnv {
     this.extraEnv = extraEnv;
   }
 
-  absolutePath(path: string): Promise<PiResult<string, FileError>> {
-    return Promise.resolve(ok(absolute(this.cwd, path)));
+  async absolutePath(path: string): Promise<PiResult<string, FileError>> {
+    return await Promise.resolve(ok(absolute(this.cwd, path)));
   }
 
-  joinPath(parts: string[]): Promise<PiResult<string, FileError>> {
-    return Promise.resolve(ok(join(...parts)));
+  async joinPath(parts: string[]): Promise<PiResult<string, FileError>> {
+    // joinPath is pure; the instance stays pinned to its workspace via `cwd`.
+    void this.cwd;
+    return await Promise.resolve(ok(pathModule.join(...parts)));
   }
 
   async readTextFile(path: string): Promise<PiResult<string, FileError>> {
@@ -179,7 +203,7 @@ export class LocalEnv implements ExecutionEnv {
       this.fs.readFileString(absolute(this.cwd, path)).pipe(Effect.result),
     );
     if (Result.isFailure(outcome)) {
-      if (options?.abortSignal?.aborted) {
+      if (options?.abortSignal?.aborted === true) {
         return err(new FileError("aborted", `aborted reading ${path}`, path));
       }
       return err(mapFileError(path, outcome.failure));
@@ -196,7 +220,7 @@ export class LocalEnv implements ExecutionEnv {
       this.fs.readFile(absolute(this.cwd, path)).pipe(Effect.result),
     );
     if (Result.isFailure(outcome)) {
-      if (signal?.aborted) {
+      if (signal?.aborted === true) {
         return err(new FileError("aborted", `aborted reading ${path}`, path));
       }
       return err(mapFileError(path, outcome.failure));
@@ -208,30 +232,34 @@ export class LocalEnv implements ExecutionEnv {
     const target = absolute(this.cwd, path);
     const outcome = await Effect.runPromise(
       this.fs
-        .makeDirectory(dirname(target), { recursive: true })
+        .makeDirectory(pathModule.dirname(target), { recursive: true })
         .pipe(
           Effect.andThen(
-            typeof content === "string"
+            isText(content)
               ? this.fs.writeFileString(target, content)
               : this.fs.writeFile(target, content),
           ),
         )
         .pipe(Effect.result),
     );
-    return Result.isSuccess(outcome) ? ok(undefined) : err(mapFileError(path, outcome.failure));
+    return Result.isSuccess(outcome)
+      ? { ok: true, value: undefined }
+      : err(mapFileError(path, outcome.failure));
   }
 
   async appendFile(path: string, content: string | Uint8Array): Promise<PiResult<void, FileError>> {
     const target = absolute(this.cwd, path);
     const outcome = await Effect.runPromise(
       Effect.scoped(
-        this.fs.makeDirectory(dirname(target), { recursive: true }).pipe(
+        this.fs.makeDirectory(pathModule.dirname(target), { recursive: true }).pipe(
           Effect.andThen(this.fs.open(target, { flag: "a" })),
           Effect.andThen((file) => file.writeAll(toBytes(content))),
         ),
       ).pipe(Effect.result),
     );
-    return Result.isSuccess(outcome) ? ok(undefined) : err(mapFileError(path, outcome.failure));
+    return Result.isSuccess(outcome)
+      ? { ok: true, value: undefined }
+      : err(mapFileError(path, outcome.failure));
   }
 
   async renameFile(
@@ -244,14 +272,14 @@ export class LocalEnv implements ExecutionEnv {
         .pipe(Effect.result),
     );
     return Result.isSuccess(outcome)
-      ? ok(undefined)
+      ? { ok: true, value: undefined }
       : err(mapFileError(sourcePath, outcome.failure));
   }
 
   async fileInfo(path: string): Promise<PiResult<FileInfo, FileError>> {
     const outcome = await Effect.runPromise(
       // describeEntry is total; a rejection would be a defect (orDie).
-      Effect.tryPromise(() => describeEntry(this.fs, absolute(this.cwd, path))).pipe(
+      Effect.tryPromise(async () => await describeEntry(this.fs, absolute(this.cwd, path))).pipe(
         Effect.orDie,
         Effect.result,
       ),
@@ -265,16 +293,16 @@ export class LocalEnv implements ExecutionEnv {
     const dir = absolute(this.cwd, path);
     const outcome = await Effect.runPromise(this.fs.readDirectory(dir).pipe(Effect.result));
     if (Result.isFailure(outcome)) {
-      if (signal?.aborted) {
+      if (signal?.aborted === true) {
         return err(new FileError("aborted", `aborted listing ${path}`, path));
       }
       return err(mapFileError(path, outcome.failure));
     }
     const entries = await Promise.all(
       outcome.success.map(async (name) => {
-        const entryPath = join(dir, name);
+        const entryPath = pathModule.join(dir, name);
         // describeEntry is total; racing removals surface as an entry without size/mtime.
-        return describeEntry(this.fs, entryPath);
+        return await describeEntry(this.fs, entryPath);
       }),
     );
     return ok(entries);
@@ -307,7 +335,9 @@ export class LocalEnv implements ExecutionEnv {
         .makeDirectory(absolute(this.cwd, path), { recursive: options?.recursive ?? true })
         .pipe(Effect.result),
     );
-    return Result.isSuccess(outcome) ? ok(undefined) : err(mapFileError(path, outcome.failure));
+    return Result.isSuccess(outcome)
+      ? { ok: true, value: undefined }
+      : err(mapFileError(path, outcome.failure));
   }
 
   async remove(
@@ -317,12 +347,14 @@ export class LocalEnv implements ExecutionEnv {
     const outcome = await Effect.runPromise(
       this.fs
         .remove(absolute(this.cwd, path), {
-          recursive: options?.recursive ?? false,
           force: options?.force ?? false,
+          recursive: options?.recursive ?? false,
         })
         .pipe(Effect.result),
     );
-    return Result.isSuccess(outcome) ? ok(undefined) : err(mapFileError(path, outcome.failure));
+    return Result.isSuccess(outcome)
+      ? { ok: true, value: undefined }
+      : err(mapFileError(path, outcome.failure));
   }
 
   async createTempDir(prefix = "tmp-"): Promise<PiResult<string, FileError>> {
@@ -338,135 +370,146 @@ export class LocalEnv implements ExecutionEnv {
     prefix?: string;
     suffix?: string;
   }): Promise<PiResult<string, FileError>> {
-    const outcome = await Effect.runPromise(
-      this.fs
-        .makeTempFile({
-          directory: tmpdir(),
-          ...(options?.prefix === undefined ? {} : { prefix: options.prefix }),
-          ...(options?.suffix === undefined ? {} : { suffix: options.suffix }),
-        })
-        .pipe(Effect.result),
-    );
+    const fileOptions: TempFileOptions = { directory: tmpdir() };
+    if (options?.prefix !== undefined) {
+      fileOptions.prefix = options.prefix;
+    }
+    if (options?.suffix !== undefined) {
+      fileOptions.suffix = options.suffix;
+    }
+    const outcome = await Effect.runPromise(this.fs.makeTempFile(fileOptions).pipe(Effect.result));
     return Result.isSuccess(outcome)
       ? ok(outcome.success)
       : err(new FileError("unknown", `failed to create temp file: ${String(outcome.failure)}`));
   }
 
   async cleanup() {
-    // Nothing to release.
+    // Nothing to release; the FileSystem service is caller-owned.
+    await Promise.resolve(this.cwd);
   }
 
   async exec(
     command: string,
     options?: ShellExecOptions,
-  ) {
-    const cwd =
-      options?.cwd === undefined
-        ? this.cwd
-        : isAbsolute(options.cwd)
-          ? options.cwd
-          : resolve(this.cwd, options.cwd);
-    const env = {
-      ...(options?.inheritEnv === false ? {} : process.env),
-      ...this.extraEnv,
-      ...options?.env,
-    };
+  ): Promise<PiResult<{ stdout: string; stderr: string; exitCode: number }, ExecutionError>> {
+    const cwd = options?.cwd === undefined ? this.cwd : resolveCwd(this.cwd, options.cwd);
+    const env = buildEnv(this.extraEnv, options?.env, options?.inheritEnv !== false);
     const shell = process.platform === "win32" ? "cmd.exe" : "/bin/sh";
     const shellArgs = process.platform === "win32" ? ["/d", "/s", "/c", command] : ["-c", command];
 
     const child = spawn(shell, shellArgs, {
       cwd,
+      detached: process.platform !== "win32",
       env,
       stdio: ["ignore", "pipe", "pipe"],
-      // A new process group on POSIX: abort/timeout must kill the whole
-      // tree, not just the shell — `sh -c "sleep 2 && …"` leaves the
-      // grandchild holding the stdio pipes, so a shell-only kill hangs the
-      // exec until the grandchild exits on its own.
-      detached: process.platform !== "win32",
     });
-    return new Promise<
-      PiResult<{ stdout: string; stderr: string; exitCode: number }, ExecutionError>
-    >((resolveResult) => {
-      let stdout = "";
-      let stderr = "";
-      let timedOut = false;
-      const timeoutMs = options?.timeout === undefined ? undefined : options.timeout * 1000;
-      const killTree = () => {
-        if (process.platform === "win32") {
-          // Windows has no process groups; taskkill /T is the tree kill.
-          if (child.pid !== undefined) {
-            spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+    return await Effect.runPromise(
+      Effect.callback<
+        PiResult<{ stdout: string; stderr: string; exitCode: number }, ExecutionError>
+      >((resume) => {
+        const resolveResult = (
+          result: PiResult<{ stdout: string; stderr: string; exitCode: number }, ExecutionError>,
+        ) => {
+          resume(Effect.succeed(result));
+        };
+        let stdout = "";
+        let stderr = "";
+        let timedOut = false;
+        const timeoutMs = options?.timeout === undefined ? undefined : options.timeout * 1000;
+        const killTree = () => {
+          if (process.platform === "win32") {
+            // Windows has no process groups; taskkill /T is the tree kill.
+            if (child.pid !== undefined) {
+              spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+            }
+            return;
           }
-          return;
-        }
-        if (child.pid === undefined) return;
-        try {
-          process.kill(-child.pid, "SIGTERM");
-        } catch {
-          // The group is already gone (the child exited); nothing to kill.
-          child.kill("SIGTERM");
-        }
-      };
-      const timer =
-        timeoutMs === undefined
-          ? undefined
-          : setTimeout(() => {
-              timedOut = true;
-              killTree();
-            }, timeoutMs);
-      const onAbort = () => {
-        killTree();
-      };
-      options?.abortSignal?.addEventListener("abort", onAbort, { once: true });
+          if (child.pid === undefined) {
+            return;
+          }
+          try {
+            process.kill(-child.pid, "SIGTERM");
+          } catch {
+            // The group is already gone (the child exited); nothing to kill.
+            child.kill("SIGTERM");
+          }
+        };
+        const timer =
+          timeoutMs === undefined
+            ? undefined
+            : setTimeout(() => {
+                timedOut = true;
+                killTree();
+              }, timeoutMs);
+        const onAbort = () => {
+          killTree();
+        };
+        options?.abortSignal?.addEventListener("abort", onAbort, { once: true });
 
-      const fail = (error: ExecutionError) => {
-        if (timer !== undefined) clearTimeout(timer);
-        options?.abortSignal?.removeEventListener("abort", onAbort);
-        resolveResult(err(error));
-      };
+        const fail = (error: ExecutionError) => {
+          if (timer !== undefined) {
+            clearTimeout(timer);
+          }
+          options?.abortSignal?.removeEventListener("abort", onAbort);
+          resolveResult(err(error));
+        };
 
-      child.stdout?.on("data", (chunk: Buffer) => {
-        const text = chunk.toString("utf8");
-        stdout += text;
-        const invoked = Result.try(() => options?.onStdout?.(text));
-        if (Result.isFailure(invoked)) {
-          fail(new ExecutionError("callback_error", `onStdout failed: ${String(invoked.failure)}`));
-        }
-      });
-      child.stderr?.on("data", (chunk: Buffer) => {
-        const text = chunk.toString("utf8");
-        stderr += text;
-        const invoked = Result.try(() => options?.onStderr?.(text));
-        if (Result.isFailure(invoked)) {
-          fail(new ExecutionError("callback_error", `onStderr failed: ${String(invoked.failure)}`));
-        }
-      });
-      child.on("error", (error) => {
-        fail(
-          new ExecutionError("spawn_error", `failed to spawn ${shell}: ${error.message}`, error),
-        );
-      });
-      child.on("close", (code, signal) => {
-        if (timer !== undefined) clearTimeout(timer);
-        options?.abortSignal?.removeEventListener("abort", onAbort);
-        if (timedOut) {
-          resolveResult(
-            err(new ExecutionError("timeout", `command timed out after ${options?.timeout}s`)),
+        child.stdout?.on("data", (chunk: Buffer) => {
+          const text = chunk.toString("utf-8");
+          stdout += text;
+          const invoked = Result.try(() => options?.onStdout?.(text));
+          if (Result.isFailure(invoked)) {
+            fail(
+              new ExecutionError("callback_error", `onStdout failed: ${String(invoked.failure)}`),
+            );
+          }
+        });
+        child.stderr?.on("data", (chunk: Buffer) => {
+          const text = chunk.toString("utf-8");
+          stderr += text;
+          const invoked = Result.try(() => options?.onStderr?.(text));
+          if (Result.isFailure(invoked)) {
+            fail(
+              new ExecutionError("callback_error", `onStderr failed: ${String(invoked.failure)}`),
+            );
+          }
+        });
+        child.on("error", (error) => {
+          fail(
+            new ExecutionError("spawn_error", `failed to spawn ${shell}: ${error.message}`, error),
           );
-          return;
-        }
-        if (options?.abortSignal?.aborted) {
-          resolveResult(err(new ExecutionError("aborted", "command aborted")));
-          return;
-        }
-        if (signal !== null && signal !== undefined && code === null) {
-          resolveResult(
-            err(new ExecutionError("aborted", `command terminated by signal ${signal}`)),
-          );
-          return;
-        }
-        resolveResult(ok({ stdout, stderr, exitCode: code ?? -1 }));
-      });
-    });
+        });
+        child.on("close", (code, signal) => {
+          if (timer !== undefined) {
+            clearTimeout(timer);
+          }
+          options?.abortSignal?.removeEventListener("abort", onAbort);
+          if (timedOut) {
+            resolveResult(
+              err(new ExecutionError("timeout", `command timed out after ${options?.timeout}s`)),
+            );
+            return;
+          }
+          if (options?.abortSignal?.aborted === true) {
+            resolveResult(err(new ExecutionError("aborted", "command aborted")));
+            return;
+          }
+          if (signal !== null && signal !== undefined && code === null) {
+            resolveResult(
+              err(new ExecutionError("aborted", `command terminated by signal ${signal}`)),
+            );
+            return;
+          }
+          resolveResult(ok({ exitCode: code ?? -1, stderr, stdout }));
+        });
+        // The child's events settle the outcome; release the timer and the abort listener.
+        return Effect.sync(() => {
+          if (timer !== undefined) {
+            clearTimeout(timer);
+          }
+          options?.abortSignal?.removeEventListener("abort", onAbort);
+        });
+      }),
+    );
   }
 }

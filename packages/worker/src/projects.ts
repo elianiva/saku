@@ -14,16 +14,18 @@
  * now).
  */
 
-import { resolve } from "node:path";
-import { Effect, FileSystem, Option, Schema } from "effect";
+import nodePath from "node:path";
+import type { FileSystem } from "effect";
+import { Effect, Option, Schema } from "effect";
 
-import { KvStore, type KvStoreShape } from "@saku/store";
-import type { PathsShape } from "./paths.ts";
+import { KvStore } from "@saku/store";
+import type { KvStoreApi } from "@saku/store";
+import type { PathsLayout } from "./paths.ts";
 
 /** One added project: the resolved absolute cwd and when it was added. */
 export const ProjectRecordSchema = Schema.Struct({
-  path: Schema.String,
   addedAt: Schema.Number,
+  path: Schema.String,
 });
 export type ProjectRecord = Schema.Schema.Type<typeof ProjectRecordSchema>;
 
@@ -37,68 +39,75 @@ const DOC_KEY = "projects.json";
 const decodeDoc = Schema.decodeUnknownSync(ProjectsDocSchema);
 
 /** The store's view of the document: missing OR corrupt reads as empty. */
-const readDoc = (kv: KvStoreShape) =>
+const readDoc = (kv: KvStoreApi) =>
   kv.get(DOC_KEY).pipe(
     Effect.flatMap((bytes) =>
       Option.match(bytes, {
-        onNone: () => Effect.succeed({ projects: [] as readonly ProjectRecord[] }),
+        onNone: () => Effect.succeed({ projects: [] }),
         onSome: (value) =>
           Effect.try({
-            try: () => JSON.parse(new TextDecoder().decode(value)) as unknown,
             catch: (error) => error,
+            try: () => {
+              const parsed: unknown = JSON.parse(new TextDecoder().decode(value));
+              return parsed;
+            },
           }).pipe(
             Effect.flatMap((parsed) => Effect.sync(() => decodeDoc(parsed))),
-            Effect.catch(() => Effect.succeed({ projects: [] as readonly ProjectRecord[] })),
+            Effect.catchEager(() => Effect.succeed({ projects: [] })),
           ),
       }),
     ),
   );
 
-const writeDoc = (kv: KvStoreShape, projects: readonly ProjectRecord[]) =>
+const writeDoc = (kv: KvStoreApi, projects: readonly ProjectRecord[]) =>
   kv.put(DOC_KEY, new TextEncoder().encode(`${JSON.stringify({ projects })}\n`));
 
 /** The added projects, oldest first. */
-export const listProjects = Effect.fn("listProjects")(function* (
+export const listProjects = Effect.fn("listProjects")(function* listProjects(
   fs: FileSystem.FileSystem,
-  paths: PathsShape,
-): Effect.fn.Return<readonly ProjectRecord[], never, never> {
-  const doc = yield* Effect.gen(function* () {
+  paths: PathsLayout,
+): Effect.fn.Return<readonly ProjectRecord[]> {
+  const doc = yield* Effect.gen(function* doc() {
     const kv = yield* KvStore;
     return yield* readDoc(kv);
   }).pipe(Effect.provide(KvStore.file(fs, paths.sakuDir)));
-  return [...doc.projects].sort((a, b) => a.addedAt - b.addedAt);
+  return [...doc.projects].toSorted((a, b) => a.addedAt - b.addedAt);
 });
 
 /** Add a project: the path is resolved (absolute), re-adding is a no-op. */
-export const addProject = Effect.fn("addProject")(function* (
+export const addProject = Effect.fn("addProject")(function* addProject(
   fs: FileSystem.FileSystem,
-  paths: PathsShape,
+  paths: PathsLayout,
   input: string,
-): Effect.fn.Return<ProjectRecord, never, never> {
-  const path = resolve(input);
-  return yield* Effect.gen(function* () {
+): Effect.fn.Return<ProjectRecord> {
+  const path = nodePath.resolve(input);
+  return yield* Effect.gen(function* applyAdd() {
     const kv = yield* KvStore;
     const doc = yield* readDoc(kv);
     const existing = doc.projects.find((project) => project.path === path);
-    if (existing !== undefined) return existing;
-    const project: ProjectRecord = { path, addedAt: Date.now() };
+    if (existing !== undefined) {
+      return existing;
+    }
+    const project: ProjectRecord = { addedAt: Date.now(), path };
     yield* writeDoc(kv, [...doc.projects, project]);
     return project;
   }).pipe(Effect.provide(KvStore.file(fs, paths.sakuDir)));
 });
 
 /** Remove a project from the window; a no-op when it was never added. */
-export const removeProject = Effect.fn("removeProject")(function* (
+export const removeProject = Effect.fn("removeProject")(function* removeProject(
   fs: FileSystem.FileSystem,
-  paths: PathsShape,
+  paths: PathsLayout,
   input: string,
-): Effect.fn.Return<void, never, never> {
-  const path = resolve(input);
-  yield* Effect.gen(function* () {
+): Effect.fn.Return<void> {
+  const path = nodePath.resolve(input);
+  yield* Effect.gen(function* applyRemove() {
     const kv = yield* KvStore;
     const doc = yield* readDoc(kv);
     const remaining = doc.projects.filter((project) => project.path !== path);
-    if (remaining.length === doc.projects.length) return;
+    if (remaining.length === doc.projects.length) {
+      return;
+    }
     yield* writeDoc(kv, remaining);
   }).pipe(Effect.provide(KvStore.file(fs, paths.sakuDir)));
 });

@@ -14,8 +14,8 @@ export const ConsoleRole = S.Literals(["frontend", "cli"]);
 export type ConsoleRole = S.Schema.Type<typeof ConsoleRole>;
 
 export const Hello = S.TaggedStruct("hello", {
-  token: S.String,
   role: ConsoleRole,
+  token: S.String,
   version: S.String,
 });
 export type Hello = S.Schema.Type<typeof Hello>;

@@ -14,28 +14,59 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Effect, Schema } from "effect";
-import fc from "fast-check";
+import { assert, asyncModelRun, asyncProperty } from "fast-check";
 
 import {
   Hello,
   WIRE_VERSION,
-  decodeFrame,
   WireClient,
+  decodeFrame,
+  isSocketMessage,
   parseFrame,
   serializeFrame,
-  WireError,
-  type WireClientShape,
-  type WorkerClientOptions,
 } from "../src/index.ts";
-import { MOCK_MODEL, startHubFixture, TEST_TOKEN, type HubFixture } from "./hub-fixture.ts";
+import type { JsonValue, WireClientApi, WorkerClientOptions } from "../src/index.ts";
+import { MOCK_MODEL, startHubFixture, TEST_TOKEN } from "./hub-fixture.ts";
+import type { HubFixture } from "./hub-fixture.ts";
+import { LifecycleModel, lifecycleCommands } from "./thread-model.ts";
+import type { ThreadEntry } from "./thread-model.ts";
+
+// Aliased so the TaggedError class declaration below stays a plain call
+// (`new` breaks the schema typecheck — `TaggedError` is a function
+// returning a class, not a class).
+const tagged = Schema.TaggedError;
 
 /** The test file's own failure type (house style: tagged, even in tests). */
-class TestError extends Schema.TaggedError<TestError>()("TestError", {
+class TestError extends tagged<TestError>()("TestError", {
   kind: Schema.Literals(["raw_open_failed"]),
   message: Schema.String,
 }) {}
 
-const wait = (ms = 50) => new Promise((resolve) => setTimeout(resolve, ms));
+/** Prompts containing this text take 300ms on the fixture (timeout tests). */
+const SLOW_PROMPT = "slow";
+
+/** The callback payload for events that carry none. */
+const NO_PAYLOAD = undefined;
+
+/** The fixture's simulated run latency, in a wait. */
+const wait = async (ms = 50) => {
+  await Effect.runPromise(Effect.sleep(ms));
+};
+
+/**
+ * Wait until the predicate holds (or the budget is spent) — the
+ * event-delivery assertions poll on observable state instead of wiring
+ * promise callbacks.
+ */
+const until = (predicate: () => boolean, tries = 50, delay = "20 millis") =>
+  Effect.gen(function* poll() {
+    for (let i = 0; i < tries; i += 1) {
+      if (predicate()) {
+        return;
+      }
+      yield* Effect.sleep(delay);
+    }
+  });
 
 let hub: HubFixture;
 let seq = 0;
@@ -49,38 +80,67 @@ afterEach(async () => {
   await Effect.runPromise(hub.close());
 });
 
-const connect = (options?: Partial<WorkerClientOptions>) =>
-  Effect.runPromise(WireClient.make({ url: hub.url, token: TEST_TOKEN, role: "cli", ...options }));
+const connect = async (options?: Partial<WorkerClientOptions>) =>
+  await Effect.runPromise(
+    WireClient.make({ role: "cli", token: TEST_TOKEN, url: hub.url, ...options }),
+  );
 
-const newThread = async (client: WireClientShape, name = `thread ${++seq}`) => {
-  const thread = await Effect.runPromise(client.createThread(name, { cwd: "/tmp/work" }));
+const newThread = async (client: WireClientApi, name?: string) => {
+  const thread = await Effect.runPromise(
+    client.createThread(name ?? `thread ${(seq += 1)}`, { cwd: "/tmp/work" }),
+  );
   return thread.id;
 };
 
 /** A raw (non-wire-client) WebSocket for the server-robustness tests. */
 const rawClient = async () => {
   const socket = new WebSocket(hub.url);
-  await new Promise<void>((resolve, reject) => {
-    socket.onopen = () => resolve();
-    socket.onerror = () =>
-      reject(new TestError({ kind: "raw_open_failed", message: "raw client could not open" }));
-  });
+  await Effect.runPromise(
+    Effect.callback<undefined, TestError>((resume) => {
+      socket.addEventListener(
+        "open",
+        () => {
+          resume(Effect.succeed(NO_PAYLOAD));
+        },
+        { once: true },
+      );
+      socket.addEventListener(
+        "error",
+        () => {
+          resume(
+            Effect.fail(
+              new TestError({ kind: "raw_open_failed", message: "raw client could not open" }),
+            ),
+          );
+        },
+        { once: true },
+      );
+      return Effect.void;
+    }),
+  );
   return socket;
 };
 
 /** Collect the frames a raw socket receives, decoded. */
 const collectFrames = (socket: WebSocket) => {
-  const frames: unknown[] = [];
-  socket.onmessage = (message) => frames.push(parseFrame(decodeFrame(message.data)));
+  const frames: (JsonValue | undefined)[] = [];
+  socket.addEventListener("message", (message) => {
+    const data: unknown = message.data;
+    if (isSocketMessage(data)) {
+      frames.push(parseFrame(decodeFrame(data)));
+    }
+  });
   return frames;
 };
 
 /** Whether a decoded frame is a tagged object (has a `_tag` discriminant). */
-const isTaggedFrame = (frame: unknown): frame is { readonly _tag: string } =>
+const isTaggedFrame = (
+  frame: JsonValue | undefined,
+): frame is JsonValue & { readonly _tag: string } =>
   typeof frame === "object" && frame !== null && "_tag" in frame;
 
 /** The `_tag` of a decoded frame, for order-insensitive assertions. */
-const tagOf = (frame: unknown) => (isTaggedFrame(frame) ? frame._tag : undefined);
+const tagOf = (frame: JsonValue | undefined) => (isTaggedFrame(frame) ? frame._tag : undefined);
 
 describe("handshake", () => {
   it("completes and reports the wire version", async () => {
@@ -125,10 +185,10 @@ describe("thread lifecycle", () => {
     const threads = await Effect.runPromise(client.listThreads());
     expect(threads).toHaveLength(1);
     expect(threads[0]).toMatchObject({
-      name: "alpha",
       cwd: "/tmp/work",
-      state: "idle",
       env: "ready",
+      name: "alpha",
+      state: "idle",
     });
 
     const got = await Effect.runPromise(client.getThread(id));
@@ -146,7 +206,9 @@ describe("thread lifecycle", () => {
     const client = await connect();
     await Effect.runPromise(client.connect());
     const changes: string[] = [];
-    client.on("thread_changed", (thread) => changes.push(thread.name));
+    client.on("thread_changed", (thread) => {
+      changes.push(thread.name);
+    });
 
     await Effect.runPromise(client.createThread("first", {}));
     await Effect.runPromise(client.createThread("second", {}));
@@ -197,7 +259,9 @@ describe("session commands", () => {
     const id = await newThread(client);
 
     const events: string[] = [];
-    client.on("event", ({ event }) => events.push(event.type));
+    client.on("event", ({ event }) => {
+      events.push(event.type);
+    });
 
     await Effect.runPromise(client.prompt(id, "hello"));
     expect(events).toEqual(["entry_appended", "settled"]);
@@ -205,7 +269,7 @@ describe("session commands", () => {
     const { entries, tailSeq, leafId } = await Effect.runPromise(client.getEntries(id));
     expect(entries).toHaveLength(1);
     expect(tailSeq).toBe(1);
-    expect(leafId).toBe(entries[0]!.id);
+    expect(leafId).toBe(entries[0].id);
 
     const state = await Effect.runPromise(client.getState(id));
     expect(state.state).toBe("idle");
@@ -279,8 +343,8 @@ describe("session commands", () => {
     const id = await newThread(client);
     await Effect.runPromise(client.prompt(id, "first"));
     const { entries } = await Effect.runPromise(client.getEntries(id));
-    const leaf = await Effect.runPromise(client.branch(id, entries[0]!.id));
-    expect(leaf).toBe(entries[0]!.id);
+    const leaf = await Effect.runPromise(client.branch(id, entries[0].id));
+    expect(leaf).toBe(entries[0].id);
     await expect(Effect.runPromise(client.branch(id, "e99"))).rejects.toMatchObject({
       code: "command_failed",
     });
@@ -301,9 +365,11 @@ describe("session commands", () => {
     expect(compact.tokensBefore).toBe(0);
     await Effect.runPromise(client.setAutoCompaction(id, true));
     await Effect.runPromise(client.setSessionName(id, "my session"));
-    expect((await Effect.runPromise(client.getState(id))).name).toBe("my session");
+    const named = await Effect.runPromise(client.getState(id));
+    expect(named.name).toBe("my session");
     await Effect.runPromise(client.setThinkingLevel(id, "high"));
-    expect((await Effect.runPromise(client.getState(id))).thinkingLevel).toBe("high");
+    const leveled = await Effect.runPromise(client.getState(id));
+    expect(leveled.thinkingLevel).toBe("high");
     await Effect.runPromise(client.abort(id));
 
     // Dispatch proof: every command kind reached its handler, in order.
@@ -379,17 +445,22 @@ describe("projects", () => {
     const client = await connect();
     await Effect.runPromise(client.connect());
 
-    for (const attempt of [
-      () => Effect.runPromise(client.listProjects()),
-      () => Effect.runPromise(client.addProject("/tmp/work")),
-      () => Effect.runPromise(client.removeProject("/tmp/work")),
-      () => Effect.runPromise(client.browseProjectDirs("")),
-    ]) {
-      await expect(attempt()).rejects.toMatchObject({
-        code: "command_failed",
-        message: "projects are served by the local daemon, not the hub",
-      });
-    }
+    const attempts = [
+      async () => await Effect.runPromise(client.listProjects()),
+      async () => await Effect.runPromise(client.addProject("/tmp/work")),
+      async () => {
+        await Effect.runPromise(client.removeProject("/tmp/work"));
+      },
+      async () => await Effect.runPromise(client.browseProjectDirs("")),
+    ];
+    await Promise.all(
+      attempts.map(async (attempt) => {
+        await expect(attempt()).rejects.toMatchObject({
+          code: "command_failed",
+          message: "projects are served by the local daemon, not the hub",
+        });
+      }),
+    );
     await Effect.runPromise(client.disconnect());
   });
 });
@@ -405,23 +476,21 @@ describe("fan-out", () => {
     const seenA: string[] = [];
     const seenB: string[] = [];
     a.on("event", ({ threadId, event }) => {
-      if (threadId === id) seenA.push(event.type);
+      if (threadId === id) {
+        seenA.push(event.type);
+      }
     });
-    // b's delivery is async on its own actor; wait for both events.
-    const bSettled = new Promise<void>((resolve) => {
-      const off = b.on("event", ({ threadId, event }) => {
-        if (threadId !== id) return;
-        seenB.push(event.type);
-        if (seenB.length === 2) {
-          off();
-          resolve();
-        }
-      });
+    b.on("event", ({ threadId, event }) => {
+      if (threadId !== id) {
+        return;
+      }
+      seenB.push(event.type);
     });
 
     await Effect.runPromise(a.prompt(id, "hello"));
     expect(seenA).toEqual(["entry_appended", "settled"]);
-    await bSettled;
+    // b's delivery is async on its own actor; wait for both events.
+    await Effect.runPromise(until(() => seenB.length === 2));
     expect(seenB).toEqual(["entry_appended", "settled"]);
     await Effect.runPromise(a.disconnect());
     await Effect.runPromise(b.disconnect());
@@ -433,16 +502,14 @@ describe("fan-out", () => {
     await Effect.runPromise(a.connect());
     await Effect.runPromise(b.connect());
 
-    const fanned = new Promise<void>((resolve) => {
-      const off = b.on("thread_changed", (thread) => {
-        if (thread.name === "fanned") {
-          off();
-          resolve();
-        }
-      });
+    let fannedSeen = false;
+    b.on("thread_changed", (thread) => {
+      if (thread.name === "fanned") {
+        fannedSeen = true;
+      }
     });
     await Effect.runPromise(a.createThread("fanned", {}));
-    await fanned;
+    await Effect.runPromise(until(() => fannedSeen));
     await Effect.runPromise(a.disconnect());
     await Effect.runPromise(b.disconnect());
   });
@@ -450,7 +517,7 @@ describe("fan-out", () => {
 
 describe("request/response correlation", () => {
   it("correlates interleaved responses to their requests", async () => {
-    const client = await connect({ requestTimeoutMs: 5_000 });
+    const client = await connect({ requestTimeoutMs: 5000 });
     await Effect.runPromise(client.connect());
     const a = await newThread(client, "slow thread");
     const b = await newThread(client, "fast thread");
@@ -458,8 +525,12 @@ describe("request/response correlation", () => {
     const seenA: string[] = [];
     const seenB: string[] = [];
     client.on("event", ({ threadId, event }) => {
-      if (threadId === a) seenA.push(event.type);
-      if (threadId === b) seenB.push(event.type);
+      if (threadId === a) {
+        seenA.push(event.type);
+      }
+      if (threadId === b) {
+        seenB.push(event.type);
+      }
     });
 
     // B's run settles well before A's slow run; both responses must still
@@ -479,9 +550,11 @@ describe("request/response correlation", () => {
 
     const names = ["a", "b", "c", "d", "e"];
     const threads = await Promise.all(
-      names.map((name) => Effect.runPromise(client.createThread(name, { cwd: "/tmp" }))),
+      names.map(
+        async (name) => await Effect.runPromise(client.createThread(name, { cwd: "/tmp" })),
+      ),
     );
-    expect(threads.map((thread) => thread.name).sort()).toEqual([...names].sort());
+    expect(new Set(threads.map((thread) => thread.name))).toEqual(new Set(names));
     await Effect.runPromise(client.disconnect());
   });
 });
@@ -498,7 +571,7 @@ describe("client behavior", () => {
   });
 
   it("fails pending requests when the connection drops", async () => {
-    const client = await connect({ requestTimeoutMs: 5_000 });
+    const client = await connect({ requestTimeoutMs: 5000 });
     await Effect.runPromise(client.connect());
     const id = await newThread(client);
 
@@ -510,16 +583,15 @@ describe("client behavior", () => {
   });
 
   it("fails pending requests and closes clients when the server closes", async () => {
-    const client = await connect({ requestTimeoutMs: 5_000 });
+    const client = await connect({ requestTimeoutMs: 5000 });
     await Effect.runPromise(client.connect());
     const id = await newThread(client);
 
     const pending = Effect.runPromise(client.prompt(id, SLOW_PROMPT));
     await wait(50);
-    const closed = new Promise<void>((resolve) => client.on("close", () => resolve()));
     await Effect.runPromise(hub.close());
     await expect(pending).rejects.toMatchObject({ code: "disconnected" });
-    await closed;
+    await Effect.runPromise(until(() => !client.isConnected));
     expect(client.isConnected).toBe(false);
     await Effect.runPromise(client.disconnect());
   });
@@ -527,22 +599,20 @@ describe("client behavior", () => {
   it("reconnects with backoff and re-hellos", async () => {
     const client = await connect({ reconnect: true });
     let hellos = 0;
-    client.on("hello_ok", () => hellos++);
-    const firstHello = new Promise<void>((resolve) => client.on("hello_ok", () => resolve()));
+    client.on("hello_ok", () => {
+      hellos += 1;
+    });
     // The reconnect loop (connect + wait-for-close + retry) runs in the background.
     void Effect.runFork(client.start());
-    await firstHello;
+    await Effect.runPromise(until(() => client.isConnected));
     expect(client.isConnected).toBe(true);
 
-    const closed = new Promise<void>((resolve) => client.on("close", () => resolve()));
     await Effect.runPromise(hub.dropAll());
-    await closed;
+    await Effect.runPromise(until(() => !client.isConnected));
     expect(client.isConnected).toBe(false);
 
     // The loop re-establishes the connection with backoff.
-    for (let i = 0; i < 50 && !client.isConnected; i++) {
-      await wait(100);
-    }
+    await Effect.runPromise(until(() => client.isConnected, 50, "100 millis"));
     expect(client.isConnected).toBe(true);
     expect(hellos).toBeGreaterThanOrEqual(2);
     await Effect.runPromise(client.listThreads());
@@ -553,7 +623,9 @@ describe("client behavior", () => {
     const client = await connect();
     await Effect.runPromise(client.connect());
     const errors: string[] = [];
-    client.on("error", ({ message }) => errors.push(message));
+    client.on("error", ({ message }) => {
+      errors.push(message);
+    });
 
     await Effect.runPromise(hub.sendRaw("this is not json\n"));
     await wait();
@@ -567,7 +639,7 @@ describe("server robustness", () => {
     const socket = await rawClient();
     const frames = collectFrames(socket);
 
-    socket.send(serializeFrame({ _tag: "command", id: "x1", command: { _tag: "list_threads" } }));
+    socket.send(serializeFrame({ _tag: "command", command: { _tag: "list_threads" }, id: "x1" }));
     await wait();
     expect(frames).toContainEqual({ _tag: "error", message: "hello first" });
     socket.close();
@@ -583,7 +655,7 @@ describe("server robustness", () => {
 
     // The connection survives: a hello still completes.
     socket.send(
-      serializeFrame(Hello.make({ token: TEST_TOKEN, role: "cli", version: WIRE_VERSION })),
+      serializeFrame(Hello.make({ role: "cli", token: TEST_TOKEN, version: WIRE_VERSION })),
     );
     await wait();
     expect(frames.map(tagOf)).toContain("hello_ok");
@@ -605,221 +677,36 @@ describe("server robustness", () => {
     const frames = collectFrames(socket);
 
     socket.send(
-      serializeFrame(Hello.make({ token: TEST_TOKEN, role: "cli", version: WIRE_VERSION })),
+      serializeFrame(Hello.make({ role: "cli", token: TEST_TOKEN, version: WIRE_VERSION })),
     );
     await wait();
     expect(frames.map(tagOf)).toContain("hello_ok");
 
-    socket.send(serializeFrame({ _tag: "command", id: "x2", command: { _tag: "get_state" } }));
+    socket.send(serializeFrame({ _tag: "command", command: { _tag: "get_state" }, id: "x2" }));
     await wait();
     expect(frames).toContainEqual({
       _tag: "response",
+      error: "session command without a threadId",
       id: "x2",
       ok: false,
-      error: "session command without a threadId",
     });
     socket.close();
   });
 });
 
-/** The model-based thread lifecycle test (property-based): arbitrary op
- *  sequences against the real server, checked against an in-memory registry
- *  model. Commands reference threads by a symbolic name drawn from a small
- *  pool, so the known-thread arms (rename/get/delete of a created thread)
- *  are hit as often as the unknown-thread failures. A symbol may name
- *  several threads (duplicate creates): the model stacks them and the
- *  commands act on the newest — the registry truth stays exact.
- *  One fixture serves every run; the model is seeded from the registry's
- *  current state so runs compose.
- */
-
-interface ThreadEntry {
-  readonly id: string;
-  readonly name: string;
-}
-
-/** The in-memory registry the commands are checked against. */
-class LifecycleModel {
-  /** Symbol → the threads created under it, newest last. */
-  readonly stacks = new Map<string, ThreadEntry[]>();
-  /** Every live thread by id — the registry truth. */
-  readonly all = new Map<string, ThreadEntry>();
-
-  current(symbol: string): ThreadEntry | undefined {
-    const stack = this.stacks.get(symbol);
-    return stack?.[stack.length - 1];
-  }
-}
-
-/** An id that can never resolve: real ids are 32-char hex, this is not. */
-const bogusId = (symbol: string) => `nope-${symbol}`;
-
-/** The symbol pool: small so later commands hit earlier creates. */
-const symbolArb = fc.constantFrom("a", "b", "c", "d", "e", "z", "y", "x");
-
-class CreateThreadCommand implements fc.AsyncCommand<LifecycleModel, WireClientShape> {
-  constructor(
-    readonly symbol: string,
-    readonly name: string,
-    readonly cwd: string | null,
-  ) {}
-
-  check = () => true;
-
-  async run(model: LifecycleModel, real: WireClientShape) {
-    const thread = await Effect.runPromise(
-      real.createThread(this.name, this.cwd === null ? {} : { cwd: this.cwd }),
-    );
-    expect(thread).toMatchObject({
-      name: this.name,
-      cwd: this.cwd,
-      mode: "local",
-      state: "idle",
-      env: "ready",
-    });
-    const entry: ThreadEntry = { id: thread.id, name: this.name };
-    const stack = model.stacks.get(this.symbol);
-    if (stack === undefined) model.stacks.set(this.symbol, [entry]);
-    else stack.push(entry);
-    model.all.set(entry.id, entry);
-  }
-
-  toString() {
-    return `create(${JSON.stringify(this.symbol)}, ${JSON.stringify(this.name)})`;
-  }
-}
-
-class RenameThreadCommand implements fc.AsyncCommand<LifecycleModel, WireClientShape> {
-  constructor(
-    readonly symbol: string,
-    readonly name: string,
-  ) {}
-
-  check = () => true;
-
-  async run(model: LifecycleModel, real: WireClientShape) {
-    const entry = model.current(this.symbol);
-    const id = entry?.id ?? bogusId(this.symbol);
-    if (entry === undefined || this.name.trim() === "") {
-      // Unknown symbol, or the registry rejects blank renames.
-      await expect(Effect.runPromise(real.renameThread(id, this.name))).rejects.toMatchObject({
-        code: "command_failed",
-      });
-      return;
-    }
-    const renamed = await Effect.runPromise(real.renameThread(entry.id, this.name));
-    expect(renamed.name).toBe(this.name.trim());
-    entry.name = this.name.trim();
-  }
-
-  toString() {
-    return `rename(${JSON.stringify(this.symbol)}, ${JSON.stringify(this.name)})`;
-  }
-}
-
-class GetThreadCommand implements fc.AsyncCommand<LifecycleModel, WireClientShape> {
-  constructor(readonly symbol: string) {}
-
-  check = () => true;
-
-  async run(model: LifecycleModel, real: WireClientShape) {
-    const entry = model.current(this.symbol);
-    if (entry === undefined) {
-      await expect(Effect.runPromise(real.getThread(bogusId(this.symbol)))).rejects.toMatchObject({
-        code: "command_failed",
-      });
-      return;
-    }
-    const got = await Effect.runPromise(real.getThread(entry.id));
-    expect(got.id).toBe(entry.id);
-    expect(got.name).toBe(entry.name);
-  }
-
-  toString() {
-    return `get(${JSON.stringify(this.symbol)})`;
-  }
-}
-
-class DeleteThreadCommand implements fc.AsyncCommand<LifecycleModel, WireClientShape> {
-  constructor(readonly symbol: string) {}
-
-  check = () => true;
-
-  async run(model: LifecycleModel, real: WireClientShape) {
-    const entry = model.current(this.symbol);
-    if (entry === undefined) {
-      await expect(
-        Effect.runPromise(real.deleteThread(bogusId(this.symbol))),
-      ).rejects.toMatchObject({
-        code: "command_failed",
-      });
-      return;
-    }
-    await Effect.runPromise(real.deleteThread(entry.id));
-    model.stacks.get(this.symbol)!.pop();
-    model.all.delete(entry.id);
-  }
-
-  toString() {
-    return `delete(${JSON.stringify(this.symbol)})`;
-  }
-}
-
-class ListThreadsCommand implements fc.AsyncCommand<LifecycleModel, WireClientShape> {
-  check = () => true;
-
-  async run(model: LifecycleModel, real: WireClientShape) {
-    const threads = await Effect.runPromise(real.listThreads());
-    const byId = new Map(threads.map((thread) => [thread.id, thread]));
-    expect([...byId.keys()].sort()).toEqual([...model.all.keys()].sort());
-    for (const entry of model.all.values()) {
-      expect(byId.get(entry.id)?.name).toBe(entry.name);
-    }
-  }
-
-  toString() {
-    return "list()";
-  }
-}
-
-const lifecycleCommands = () =>
-  fc.commands(
-    [
-      fc
-        .record({
-          symbol: symbolArb,
-          name: fc.string({ maxLength: 12 }),
-          cwd: fc.oneof(fc.constant(null), fc.string({ maxLength: 12 })),
-        })
-        .map(({ symbol, name, cwd }) => new CreateThreadCommand(symbol, name, cwd)),
-      fc
-        .record({
-          symbol: symbolArb,
-          // Blank names are common: the registry rejects them (a real
-          // contract arm, not a corner case).
-          name: fc.oneof(fc.constant(""), fc.constant("   "), fc.string({ maxLength: 12 })),
-        })
-        .map(({ symbol, name }) => new RenameThreadCommand(symbol, name)),
-      fc.record({ symbol: symbolArb }).map(({ symbol }) => new GetThreadCommand(symbol)),
-      fc.record({ symbol: symbolArb }).map(({ symbol }) => new DeleteThreadCommand(symbol)),
-      fc.constant(new ListThreadsCommand()),
-    ],
-    { maxCommands: 15 },
-  );
-
 describe("thread lifecycle (model-based)", () => {
   it("any op sequence keeps the registry consistent with the model", async () => {
     // One fixture serves every run; the model is re-seeded from the
     // registry's current state so the runs compose.
-    const hub = await Effect.runPromise(startHubFixture());
+    const fixture = await Effect.runPromise(startHubFixture());
     const client = await Effect.runPromise(
-      WireClient.make({ url: hub.url, token: TEST_TOKEN, role: "cli" }),
+      WireClient.make({ role: "cli", token: TEST_TOKEN, url: fixture.url }),
     );
     await Effect.runPromise(client.connect());
     try {
-      await fc.assert(
-        fc.asyncProperty(lifecycleCommands(), async (cmds) => {
-          await fc.asyncModelRun(async () => {
+      await assert(
+        asyncProperty(lifecycleCommands(), async (cmds) => {
+          await asyncModelRun(async () => {
             const model = new LifecycleModel();
             const threads = await Effect.runPromise(client.listThreads());
             for (const thread of threads) {
@@ -833,10 +720,7 @@ describe("thread lifecycle (model-based)", () => {
       );
     } finally {
       await Effect.runPromise(client.disconnect());
-      await Effect.runPromise(hub.close());
+      await Effect.runPromise(fixture.close());
     }
   });
 });
-
-/** Prompts containing this text take 300ms on the fixture (timeout tests). */
-const SLOW_PROMPT = "slow";

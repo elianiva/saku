@@ -37,12 +37,10 @@ import {
   SetThinkingLevelResponse,
   SteerResponse,
   THINKING_LEVELS,
-  type ResponsePayload,
-  type SessionCommand,
-  type WireModelInfo,
 } from "@saku/wire";
+import type { ResponsePayload, SessionCommand, WireModelInfo } from "@saku/wire";
 
-import { SessionHost, SessionHostError } from "./session-host.ts";
+import type { SessionHost, SessionHostError } from "./session-host.ts";
 
 /** The host-resolution seam the dispatch runs on (daemon and thread DO). */
 export interface SessionCommandDeps<E> {
@@ -51,7 +49,7 @@ export interface SessionCommandDeps<E> {
   /** The live host if the session already exists; None for never-started threads. */
   readonly readOnlyHost: (threadId: string) => Effect.Effect<Option.Option<SessionHost>, E>;
   /** `catalog.available()` already projected to wire info. */
-  readonly availableModels: () => Effect.Effect<readonly WireModelInfo[], never, never>;
+  readonly availableModels: () => Effect.Effect<readonly WireModelInfo[]>;
 }
 
 /**
@@ -62,49 +60,30 @@ export interface SessionCommandDeps<E> {
 export const runSessionCommand = <E>(
   deps: SessionCommandDeps<E>,
   threadId: string,
-  command: SessionCommand,
+  wireCommand: SessionCommand,
 ) =>
-  Match.value(command).pipe(
-    Match.withReturnType<Effect.Effect<ResponsePayload, E | SessionHostError, never>>(),
+  Match.value(wireCommand).pipe(
+    Match.withReturnType<Effect.Effect<ResponsePayload, E | SessionHostError>>(),
     Match.tagsExhaustive({
-      // Reads: served without a session host where possible.
-      get_entries: (command) =>
-        deps.readOnlyHost(threadId).pipe(
-          Effect.flatMap(
-            Option.match({
-              onNone: () =>
-                Effect.succeed(GetEntriesResponse.make({ entries: [], tailSeq: 0, leafId: null })),
-              onSome: (host) =>
-                host
-                  .getEntries(command.sinceSeq)
-                  .pipe(
-                    Effect.map(({ entries, tailSeq, leafId }) =>
-                      GetEntriesResponse.make({ entries, tailSeq, leafId }),
-                    ),
-                  ),
-            }),
-          ),
+      abort: () =>
+        deps.hostFor(threadId).pipe(
+          Effect.flatMap((host) => host.abort()),
+          Effect.as(AbortResponse.make({})),
         ),
-      get_state: () =>
-        deps.readOnlyHost(threadId).pipe(
-          Effect.flatMap(
-            Option.match({
-              onNone: () =>
-                Effect.succeed(
-                  GetStateResponse.make({
-                    state: {
-                      sessionId: null,
-                      state: "idle",
-                      tailSeq: 0,
-                      model: null,
-                      thinkingLevel: "off",
-                    },
-                  }),
-                ),
-              onSome: (host) =>
-                host.getState().pipe(Effect.map((state) => GetStateResponse.make({ state }))),
-            }),
-          ),
+      branch: (command) =>
+        deps.hostFor(threadId).pipe(
+          Effect.flatMap((host) => host.branch(command.entryId)),
+          Effect.map((leafId) => BranchResponse.make({ leafId })),
+        ),
+      compact: (command) =>
+        deps.hostFor(threadId).pipe(
+          Effect.flatMap((host) => host.compact(command.customInstructions)),
+          Effect.map((result) => CompactResponse.make({ result })),
+        ),
+      follow_up: (command) =>
+        deps.hostFor(threadId).pipe(
+          Effect.flatMap((host) => host.followUp(command.text)),
+          Effect.as(FollowUpResponse.make({})),
         ),
       get_available_models: () =>
         deps
@@ -127,72 +106,89 @@ export const runSessionCommand = <E>(
             }),
           ),
         ),
-
-      // Mutating commands: the thread starts here (ADR 0004).
-      prompt: (command) =>
-        deps.hostFor(threadId).pipe(
-          Effect.flatMap((host) => host.prompt(command.text, command.images)),
-          Effect.as(PromptResponse.make({})),
-        ),
-      steer: (command) =>
-        deps.hostFor(threadId).pipe(
-          Effect.flatMap((host) => host.steer(command.text)),
-          Effect.as(SteerResponse.make({})),
-        ),
-      follow_up: (command) =>
-        deps.hostFor(threadId).pipe(
-          Effect.flatMap((host) => host.followUp(command.text)),
-          Effect.as(FollowUpResponse.make({})),
-        ),
-      abort: () =>
-        deps.hostFor(threadId).pipe(
-          Effect.flatMap((host) => host.abort()),
-          Effect.as(AbortResponse.make({})),
-        ),
-      set_steering_mode: (command) =>
-        deps.hostFor(threadId).pipe(
-          Effect.flatMap((host) => host.setSteeringMode(command.mode)),
-          Effect.as(SetSteeringModeResponse.make({})),
-        ),
-      set_follow_up_mode: (command) =>
-        deps.hostFor(threadId).pipe(
-          Effect.flatMap((host) => host.setFollowUpMode(command.mode)),
-          Effect.as(SetFollowUpModeResponse.make({})),
-        ),
-      compact: (command) =>
-        deps.hostFor(threadId).pipe(
-          Effect.flatMap((host) => host.compact(command.customInstructions)),
-          Effect.map((result) => CompactResponse.make({ result })),
-        ),
-      set_auto_compaction: (command) =>
-        deps.hostFor(threadId).pipe(
-          Effect.flatMap((host) => host.setAutoCompaction(command.enabled)),
-          Effect.as(SetAutoCompactionResponse.make({})),
-        ),
-      set_model: (command) =>
-        deps.hostFor(threadId).pipe(
-          Effect.flatMap((host) => host.setModel(command.provider, command.modelId)),
-          Effect.map((model) => SetModelResponse.make({ model })),
-        ),
-      set_thinking_level: (command) =>
-        deps.hostFor(threadId).pipe(
-          Effect.flatMap((host) => host.setThinkingLevel(command.level)),
-          Effect.map((level) => SetThinkingLevelResponse.make({ level })),
-        ),
-      branch: (command) =>
-        deps.hostFor(threadId).pipe(
-          Effect.flatMap((host) => host.branch(command.entryId)),
-          Effect.map((leafId) => BranchResponse.make({ leafId })),
+      // Reads: served without a session host where possible.
+      get_entries: (command) =>
+        deps.readOnlyHost(threadId).pipe(
+          Effect.flatMap(
+            Option.match({
+              onNone: () =>
+                Effect.succeed(GetEntriesResponse.make({ entries: [], leafId: null, tailSeq: 0 })),
+              onSome: (host) =>
+                host
+                  .getEntries(command.sinceSeq)
+                  .pipe(
+                    Effect.map(({ entries, tailSeq, leafId }) =>
+                      GetEntriesResponse.make({ entries, leafId, tailSeq }),
+                    ),
+                  ),
+            }),
+          ),
         ),
       get_session_stats: () =>
         deps.hostFor(threadId).pipe(
           Effect.flatMap((host) => host.getSessionStats()),
           Effect.map((stats) => GetSessionStatsResponse.make({ stats })),
         ),
+      get_state: () =>
+        deps.readOnlyHost(threadId).pipe(
+          Effect.flatMap(
+            Option.match({
+              onNone: () =>
+                Effect.succeed(
+                  GetStateResponse.make({
+                    state: {
+                      model: null,
+                      sessionId: null,
+                      state: "idle",
+                      tailSeq: 0,
+                      thinkingLevel: "off",
+                    },
+                  }),
+                ),
+              onSome: (host) =>
+                host.getState().pipe(Effect.map((state) => GetStateResponse.make({ state }))),
+            }),
+          ),
+        ),
+      prompt: (command) =>
+        deps.hostFor(threadId).pipe(
+          Effect.flatMap((host) => host.prompt(command.text, command.images)),
+          Effect.as(PromptResponse.make({})),
+        ),
+      set_auto_compaction: (command) =>
+        deps.hostFor(threadId).pipe(
+          Effect.flatMap((host) => host.setAutoCompaction(command.enabled)),
+          Effect.as(SetAutoCompactionResponse.make({})),
+        ),
+      set_follow_up_mode: (command) =>
+        deps.hostFor(threadId).pipe(
+          Effect.flatMap((host) => host.setFollowUpMode(command.mode)),
+          Effect.as(SetFollowUpModeResponse.make({})),
+        ),
+      set_model: (command) =>
+        deps.hostFor(threadId).pipe(
+          Effect.flatMap((host) => host.setModel(command.provider, command.modelId)),
+          Effect.map((model) => SetModelResponse.make({ model })),
+        ),
       set_session_name: (command) =>
         deps.hostFor(threadId).pipe(
           Effect.flatMap((host) => host.setSessionName(command.name)),
           Effect.as(SetSessionNameResponse.make({})),
+        ),
+      set_steering_mode: (command) =>
+        deps.hostFor(threadId).pipe(
+          Effect.flatMap((host) => host.setSteeringMode(command.mode)),
+          Effect.as(SetSteeringModeResponse.make({})),
+        ),
+      set_thinking_level: (command) =>
+        deps.hostFor(threadId).pipe(
+          Effect.flatMap((host) => host.setThinkingLevel(command.level)),
+          Effect.map((level) => SetThinkingLevelResponse.make({ level })),
+        ),
+      steer: (command) =>
+        deps.hostFor(threadId).pipe(
+          Effect.flatMap((host) => host.steer(command.text)),
+          Effect.as(SteerResponse.make({})),
         ),
     }),
   );

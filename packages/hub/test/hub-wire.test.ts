@@ -8,6 +8,7 @@
  * half; this suite keeps the hub's protocol behavior deterministic.
  */
 
+import { setTimeout as sleep } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
 import { Effect, Exit, Result, Schema, Scope } from "effect";
@@ -19,14 +20,14 @@ import {
   WireClient,
   parseFrame,
   serializeFrame,
-  type ThreadInfo,
-  type WireClientShape,
-  type WorkerClientOptions,
+  Hello,
+  WireCommand,
 } from "@saku/wire";
-import { Hello, WireCommand } from "@saku/wire";
+import type { JsonValue, ThreadInfo, WireClientApi, WorkerClientOptions } from "@saku/wire";
 
 import { HubError, Hub, HubRegistry, HubServer, SkillsStore } from "../src/index.ts";
-import { scriptedProvisioner, scriptedWorker, type ScriptedWorker } from "./mock-worker.ts";
+import { scriptedProvisioner, scriptedWorker } from "./mock-worker.ts";
+import type { ScriptedWorker } from "./mock-worker.ts";
 
 const TEST_TOKEN = "hub-test-secret";
 
@@ -41,22 +42,22 @@ let seq = 0;
 
 beforeEach(async () => {
   world = await Effect.runPromise(
-    Effect.gen(function* () {
+    Effect.gen(function* buildWorld() {
       const scope = yield* Scope.make();
       const registry = yield* HubRegistry.make().pipe(Effect.provide(KvStore.memory()));
       const skills = yield* SkillsStore.make().pipe(Effect.provide(KvStore.memory()));
       const worker = scriptedWorker();
       const hub = yield* Hub.make({
+        provisioner: scriptedProvisioner({ fail: true }),
         registry,
         skills,
         workerRef: worker.ref,
-        provisioner: scriptedProvisioner({ fail: true }),
       });
       worker.attach(hub.events);
       const server = yield* HubServer.make({ hub, token: TEST_TOKEN }).pipe(
         Effect.provideService(Scope.Scope, scope),
       );
-      return { url: server.url, worker, scope };
+      return { scope, url: server.url, worker };
     }),
   );
   seq = 0;
@@ -66,47 +67,74 @@ afterEach(async () => {
   await Effect.runPromise(Scope.close(world.scope, Exit.void));
 });
 
-const connect = (options?: Partial<WorkerClientOptions>) =>
-  Effect.runPromise(
-    WireClient.make({ url: world.url, token: TEST_TOKEN, role: "cli", ...options }),
+const connect = async (options?: Partial<WorkerClientOptions>) =>
+  await Effect.runPromise(
+    WireClient.make({ role: "cli", token: TEST_TOKEN, url: world.url, ...options }),
   );
 
-const newThread = async (client: WireClientShape, name = `thread ${++seq}`) =>
-  Effect.runPromise(client.createThread(name));
+const newThread = async (client: WireClientApi, name?: string) => {
+  seq += 1;
+  const threadName = name ?? `thread ${seq}`;
+  return await Effect.runPromise(client.createThread(threadName));
+};
 
 /** A raw socket (no client machinery) for protocol-level assertions. */
-const rawSocket = (): Promise<WebSocket> =>
-  new Promise((resolve, reject) => {
+const rawSocket = () =>
+  Effect.callback<WebSocket, Error>((resume) => {
     const socket = new WebSocket(world.url);
-    socket.on("open", () => resolve(socket));
-    socket.on("error", reject);
+    socket.on("open", () => {
+      resume(Effect.succeed(socket));
+    });
+    socket.on("error", (error) => {
+      resume(Effect.fail(error));
+    });
   });
 
+/** The frame fields this suite's protocol assertions read. */
+interface FrameLog {
+  readonly _tag: string;
+  readonly error?: JsonValue;
+  readonly message?: JsonValue;
+  readonly ok?: boolean;
+}
+
+/** Narrow a parsed frame to the object shape the assertions read. */
+const isFrameLog = (value: JsonValue | undefined): value is JsonValue & FrameLog =>
+  value !== undefined && typeof value === "object" && value !== null;
+
 /** Collect every frame the server sends on a raw socket, from now on. */
-const frameLog = (socket: WebSocket): Promise<Array<Record<string, unknown>>> => {
-  const frames: Array<Record<string, unknown>> = [];
+const frameLog = async (socket: WebSocket) => {
+  const frames: FrameLog[] = [];
   socket.on("message", (data) => {
     const parsed = Result.try(() => parseFrame(decodeFrame(data)));
-    if (Result.isSuccess(parsed) && parsed.success !== undefined) {
-      frames.push(parsed.success as Record<string, unknown>);
+    if (Result.isSuccess(parsed) && isFrameLog(parsed.success)) {
+      frames.push(parsed.success);
     }
   });
-  return new Promise((resolve) => setTimeout(() => resolve(frames), 150));
+  await sleep(150);
+  return frames;
 };
 
 /** Poll until `fn` holds (the hub's event forks land asynchronously). */
-class TestError extends Schema.TaggedError<TestError>()("TestError", {
+// Aliased so the TaggedError class declaration below stays a plain call
+// (`new` breaks the schema typecheck — `TaggedError` is a function
+// returning a class, not a class).
+const tagged = Schema.TaggedError;
+class TestError extends tagged<TestError>()("TestError", {
   message: Schema.String,
 }) {}
 
-const waitFor = async (fn: () => boolean, timeoutMs = 2000) => {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (fn()) return;
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-  throw new TestError({ message: "condition not met" });
-};
+const waitFor = (fn: () => boolean, timeoutMs = 2000) =>
+  Effect.gen(function* poll() {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (fn()) {
+        return;
+      }
+      yield* Effect.sleep("5 millis");
+    }
+    yield* Effect.fail(new TestError({ message: "condition not met" }));
+  });
 
 describe("handshake", () => {
   it("completes and reports the wire version", async () => {
@@ -134,9 +162,9 @@ describe("handshake", () => {
   });
 
   it("rejects commands before hello", async () => {
-    const socket = await rawSocket();
+    const socket = await Effect.runPromise(rawSocket());
     const frames = frameLog(socket);
-    socket.send(serializeFrame(WireCommand.make({ id: "r1", command: { _tag: "list_threads" } })));
+    socket.send(serializeFrame(WireCommand.make({ command: { _tag: "list_threads" }, id: "r1" })));
     const log = await frames;
     expect(log.some((frame) => frame._tag === "error" && frame.message === "hello first")).toBe(
       true,
@@ -152,24 +180,31 @@ describe("thread lifecycle over the wire", () => {
     await Effect.runPromise(a.connect());
     await Effect.runPromise(b.connect());
     const changed: ThreadInfo[] = [];
-    a.on("thread_changed", (thread) => changed.push(thread));
-    b.on("thread_changed", (thread) => changed.push(thread));
+    a.on("thread_changed", (thread) => {
+      changed.push(thread);
+    });
+    b.on("thread_changed", (thread) => {
+      changed.push(thread);
+    });
 
     const thread = await newThread(a, "alpha");
-    expect(thread).toMatchObject({ name: "alpha", mode: "local", env: "ready" });
+    expect(thread).toMatchObject({ env: "ready", mode: "local", name: "alpha" });
     expect(world.worker.created).toEqual([thread.id]);
-    await waitFor(() => changed.length === 2); // both consoles saw the create
+    // Both consoles saw the create.
+    await Effect.runPromise(waitFor(() => changed.length === 2));
 
-    expect((await Effect.runPromise(a.listThreads())).map((t) => t.id)).toEqual([thread.id]);
-    expect((await Effect.runPromise(b.getThread(thread.id))).id).toBe(thread.id);
+    const listed = await Effect.runPromise(a.listThreads());
+    expect(listed.map((t) => t.id)).toEqual([thread.id]);
+    const fetched = await Effect.runPromise(b.getThread(thread.id));
+    expect(fetched.id).toBe(thread.id);
 
     const renamed = await Effect.runPromise(a.renameThread(thread.id, "beta"));
     expect(renamed.name).toBe("beta");
-    await waitFor(() => changed.length === 4);
+    await Effect.runPromise(waitFor(() => changed.length === 4));
     expect(changed.at(-1)?.name).toBe("beta");
 
     await Effect.runPromise(b.deleteThread(thread.id));
-    await waitFor(() => changed.length === 6);
+    await Effect.runPromise(waitFor(() => changed.length === 6));
     expect(world.worker.deleted).toEqual([thread.id]);
     expect(await Effect.runPromise(a.listThreads())).toHaveLength(0);
   });
@@ -190,12 +225,20 @@ describe("session commands over the wire", () => {
     const b = await connect();
     await Effect.runPromise(a.connect());
     await Effect.runPromise(b.connect());
-    const sessionEvents: Array<{ threadId: string; event: { type: string } }> = [];
-    const changed: Array<{ id: string; state: string; tailSeq: number }> = [];
-    a.on("event", (e) => sessionEvents.push(e));
-    b.on("event", (e) => sessionEvents.push(e));
-    a.on("thread_changed", (thread) => changed.push(thread));
-    b.on("thread_changed", (thread) => changed.push(thread));
+    const sessionEvents: { threadId: string; event: { type: string } }[] = [];
+    const changed: { id: string; state: string; tailSeq: number }[] = [];
+    a.on("event", (e) => {
+      sessionEvents.push(e);
+    });
+    b.on("event", (e) => {
+      sessionEvents.push(e);
+    });
+    a.on("thread_changed", (thread) => {
+      changed.push(thread);
+    });
+    b.on("thread_changed", (thread) => {
+      changed.push(thread);
+    });
 
     const thread = await newThread(a, "runner");
     world.worker.onCommand((threadId, command) => {
@@ -208,9 +251,9 @@ describe("session commands over the wire", () => {
       world.worker.emit(
         threadId,
         {
+          entry: { id: "e1", text: command.text, type: "user_message" },
           type: "entry_appended",
-          entry: { id: "e1", type: "user_message", text: command.text },
-        } as never,
+        },
         3,
       );
       world.worker.emit(threadId, { type: "settled" }, 3);
@@ -220,17 +263,19 @@ describe("session commands over the wire", () => {
     await Effect.runPromise(a.prompt(thread.id, "hello"));
 
     // Both consoles see both session events (4 total) and the run's reports.
-    await waitFor(() => sessionEvents.length === 4);
-    await waitFor(() => changed.some((t) => t.id === thread.id && t.state === "working"));
-    await waitFor(() => changed.some((t) => t.id === thread.id && t.state === "idle"));
-    expect(sessionEvents.map((e) => e.event.type).sort()).toEqual([
-      "entry_appended",
-      "entry_appended",
-      "settled",
-      "settled",
-    ]);
+    await Effect.runPromise(waitFor(() => sessionEvents.length === 4));
+    await Effect.runPromise(
+      waitFor(() => changed.some((t) => t.id === thread.id && t.state === "working")),
+    );
+    await Effect.runPromise(
+      waitFor(() => changed.some((t) => t.id === thread.id && t.state === "idle")),
+    );
+    const eventTypes = sessionEvents.map((e) => e.event.type);
+    expect(eventTypes.filter((type) => type === "entry_appended")).toHaveLength(2);
+    expect(eventTypes.filter((type) => type === "settled")).toHaveLength(2);
     // The last broadcast carries the run's tailSeq.
-    const last = changed.filter((t) => t.id === thread.id).at(-1);
+    const ofThread = changed.filter((t) => t.id === thread.id);
+    const last = ofThread.at(-1);
     expect(last?.state).toBe("idle");
     expect(last?.tailSeq).toBe(3);
   });
@@ -239,7 +284,9 @@ describe("session commands over the wire", () => {
     const client = await connect();
     await Effect.runPromise(client.connect());
     const changed: ThreadInfo[] = [];
-    client.on("thread_changed", (thread) => changed.push(thread));
+    client.on("thread_changed", (thread) => {
+      changed.push(thread);
+    });
 
     // A sandbox thread: the env axis starts stopped (lazy provisioning).
     const sandbox = await Effect.runPromise(client.createThread("sandboxed", { mode: "sandbox" }));
@@ -251,20 +298,22 @@ describe("session commands over the wire", () => {
       code: "command_failed",
       message: "sandbox provisioning failed (scripted)",
     });
-    await waitFor(() => changed.some((t) => t.id === sandbox.id && t.env === "error"));
+    await Effect.runPromise(
+      waitFor(() => changed.some((t) => t.id === sandbox.id && t.env === "error")),
+    );
     // Reads bypass the gate: browsing a failed sandbox still answers.
     const state = await Effect.runPromise(client.getState(sandbox.id));
     expect(state.state).toBe("idle");
   });
 
   it("rejects a session command without a threadId", async () => {
-    const socket = await rawSocket();
+    const socket = await Effect.runPromise(rawSocket());
     const frames = frameLog(socket);
     socket.send(
-      serializeFrame(Hello.make({ token: TEST_TOKEN, role: "cli", version: WIRE_VERSION })),
+      serializeFrame(Hello.make({ role: "cli", token: TEST_TOKEN, version: WIRE_VERSION })),
     );
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    socket.send(serializeFrame(WireCommand.make({ id: "r2", command: { _tag: "get_state" } })));
+    await sleep(50);
+    socket.send(serializeFrame(WireCommand.make({ command: { _tag: "get_state" }, id: "r2" })));
     const log = await frames;
     expect(
       log.some(

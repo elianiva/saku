@@ -33,7 +33,8 @@
  * seam (`do-session.ts`), not here — no promise crosses this file.
  */
 
-import { Array, Context, Effect, FileSystem, Layer, Option } from "effect";
+import type { FileSystem } from "effect";
+import { Array, Context, Effect, Layer, Option } from "effect";
 
 import { isNotFound } from "./platform-error.ts";
 
@@ -43,134 +44,23 @@ export interface KvEntry {
 }
 
 /** The storage shape. DO storage adapters implement this (CF: trivially). */
-export interface KvStoreShape {
-  readonly get: (key: string) => Effect.Effect<Option.Option<Uint8Array>, never>;
-  readonly put: (key: string, value: Uint8Array) => Effect.Effect<void, never>;
-  readonly delete: (key: string) => Effect.Effect<void, never>;
-  readonly list: (options: { prefix: string }) => Effect.Effect<readonly KvEntry[], never>;
+export interface KvStoreApi {
+  readonly get: (key: string) => Effect.Effect<Option.Option<Uint8Array>>;
+  readonly put: (key: string, value: Uint8Array) => Effect.Effect<void>;
+  readonly delete: (key: string) => Effect.Effect<void>;
+  readonly list: (options: { prefix: string }) => Effect.Effect<readonly KvEntry[]>;
 }
 
 /** The `DurableObjectStorage` surface we need (from cloudflare:workers). */
 export interface DoStorageLike {
-  readonly get: (key: string) => Promise<unknown>;
-  readonly put: (key: string, value: unknown) => Promise<void>;
+  readonly get: (key: string) => Promise<Uint8Array | undefined>;
+  readonly put: (key: string, value: Uint8Array) => Promise<void>;
   readonly delete: (key: string) => Promise<boolean>;
   readonly deleteAll: () => Promise<void>;
   readonly list: (options?: { prefix?: string }) => Promise<Map<string, unknown>>;
 }
 
-/**
- * The storage service: `yield* KvStore` where a durable seam is needed,
- * and provide one of the backend layers at the boundary. Each backend's
- * implementation lives in its static factory (the `KvCache.layerFrom`
- * shape); only pure helpers sit below.
- */
-export class KvStore extends Context.Service<KvStore, KvStoreShape>()("KvStore") {
-  /**
-   * In-memory backend (tests, in-process daemons). Each build is a fresh
-   * store; two provides never share state.
-   */
-  static memory() {
-    return Layer.sync(KvStore, () => {
-      const map = new Map<string, Uint8Array>();
-      return {
-        get: (key) => Effect.succeed(Option.fromUndefinedOr(map.get(key))),
-        put: (key, value) =>
-          Effect.sync(() => {
-            map.set(key, new Uint8Array(value));
-          }),
-        delete: (key) =>
-          Effect.sync(() => {
-            map.delete(key);
-          }),
-        list: ({ prefix }) =>
-          Effect.succeed(
-            [...map.entries()]
-              .filter(([key]) => key.startsWith(prefix))
-              .map(([key, value]) => ({ key, value: new Uint8Array(value) })),
-          ),
-      };
-    });
-  }
-
-  /**
-   * File backend: one file per key under `root`, over the given FileSystem.
-   * Writes go to `key + ".tmp"` and rename over the destination, so a crash
-   * mid-write leaves either the old or the new value, never a partial one.
-   */
-  static file(fs: FileSystem.FileSystem, root: string) {
-    return Layer.sync(KvStore, () => ({
-      get: (key) =>
-        fs.readFileString(keyPath(root, key)).pipe(
-          Effect.map((text) => Option.some(encode(text))),
-          // A missing key is `Option.none`; any other storage defect dies —
-          // the seam's failure posture is "defects kill the caller".
-          Effect.catchEager((error) =>
-            isNotFound(error) ? Effect.succeed(Option.none()) : Effect.die(error),
-          ),
-        ),
-      put: Effect.fn("put")(
-        function* (key: string, value: Uint8Array) {
-          const path = keyPath(root, key);
-          const tmp = `${path}.tmp`;
-          yield* fs.makeDirectory(dirname(path), { recursive: true });
-          yield* fs.writeFile(tmp, value);
-          yield* fs.rename(tmp, path);
-        },
-        (effect) => effect.pipe(Effect.orDie),
-      ),
-      delete: (key) =>
-        fs.remove(keyPath(root, key), { force: true }).pipe(Effect.catchEager(() => Effect.void)),
-      list: ({ prefix }) =>
-        listFiles(fs, root, root, "").pipe(
-          Effect.flatMap((files) =>
-            Effect.forEach(
-              files.filter((file) => file.key.startsWith(prefix)),
-              (file) =>
-                fs.readFileString(file.path).pipe(
-                  Effect.map((text) => ({ key: file.key, value: encode(text) })),
-                  Effect.catchEager(() => Effect.succeed({ key: file.key, value: encode("") })),
-                ),
-            ),
-          ),
-        ),
-    }));
-  }
-
-  /**
-   * Durable Object storage backend (the platform boundary; Cloudflare and
-   * celld). The DO's promise API is the platform boundary: each call
-   * crosses with `Effect.tryPromise` and `Effect.orDie` — the KvStore
-   * channel is `never`, so a rejected DO promise is a defect that kills
-   * the caller, which is exactly what DO storage does unadapted.
-   */
-  static doStorage(storage: DoStorageLike) {
-    return Layer.sync(KvStore, () => ({
-      get: (key) =>
-        Effect.tryPromise(async () => {
-          const value = await storage.get(key);
-          return value instanceof Uint8Array ? Option.some(value) : Option.none();
-        }).pipe(Effect.orDie),
-      put: (key, value) => Effect.tryPromise(() => storage.put(key, value)).pipe(Effect.orDie),
-      delete: (key) =>
-        Effect.tryPromise(async () => {
-          await storage.delete(key);
-        }).pipe(Effect.orDie),
-      list: ({ prefix }) =>
-        Effect.tryPromise(async () => {
-          const entries = await storage.list({ prefix });
-          const out: KvEntry[] = [];
-          for (const [key, value] of entries) {
-            if (value instanceof Uint8Array) out.push({ key, value });
-          }
-          return out;
-        }).pipe(Effect.orDie),
-    }));
-  }
-}
-
-const encode = (value: string | Uint8Array) =>
-  typeof value === "string" ? new TextEncoder().encode(value) : value;
+const encode = (text: string) => new TextEncoder().encode(text);
 
 /** Keys are stored verbatim under the root; nested keys get directories. */
 const keyPath = (root: string, key: string) => `${root}/${key}`;
@@ -183,12 +73,11 @@ const keyPath = (root: string, key: string) => `${root}/${key}`;
  */
 const listFiles = (
   fs: FileSystem.FileSystem,
-  root: string,
   dir: string,
   prefix: string,
-): Effect.Effect<readonly { key: string; path: string }[], never> =>
+): Effect.Effect<readonly { key: string; path: string }[]> =>
   fs.readDirectory(dir).pipe(
-    Effect.catchEager(() => Effect.succeed([] as string[])),
+    Effect.catchEager(() => Effect.succeed([])),
     Effect.flatMap((names) =>
       Effect.forEach(
         names,
@@ -200,8 +89,12 @@ const listFiles = (
             // as absent — the whole subtree contributes nothing.
             Effect.option,
             Effect.flatMap((stat) => {
-              if (Option.isNone(stat)) return Effect.succeed([]);
-              if (stat.value.type === "Directory") return listFiles(fs, root, path, `${key}/`);
+              if (Option.isNone(stat)) {
+                return Effect.succeed([]);
+              }
+              if (stat.value.type === "Directory") {
+                return listFiles(fs, path, `${key}/`);
+              }
               return Effect.succeed([{ key, path }]);
             }),
           );
@@ -213,3 +106,118 @@ const listFiles = (
   );
 
 const dirname = (path: string) => path.slice(0, path.lastIndexOf("/")) || path;
+
+/**
+ * The storage service: `yield* KvStore` where a durable seam is needed,
+ * and provide one of the backend layers at the boundary. Each backend's
+ * implementation lives in its static factory (the `KvCache.layerFrom`
+ * shape); only pure helpers sit below.
+ */
+export class KvStore extends Context.Service<KvStore, KvStoreApi>()("KvStore") {
+  /**
+   * In-memory backend (tests, in-process daemons). Each build is a fresh
+   * store; two provides never share state.
+   */
+  static memory() {
+    return Layer.sync(KvStore, () => {
+      const map = new Map<string, Uint8Array>();
+      return {
+        delete: (key) =>
+          Effect.sync(() => {
+            map.delete(key);
+          }),
+        get: (key) => Effect.succeed(Option.fromUndefinedOr(map.get(key))),
+        list: ({ prefix }) =>
+          Effect.succeed(
+            [...map.entries()]
+              .filter(([key]) => key.startsWith(prefix))
+              .map(([key, value]) => ({ key, value: new Uint8Array(value) })),
+          ),
+        put: (key, value) =>
+          Effect.sync(() => {
+            map.set(key, new Uint8Array(value));
+          }),
+      };
+    });
+  }
+
+  /**
+   * File backend: one file per key under `root`, over the given FileSystem.
+   * Writes go to `key + ".tmp"` and rename over the destination, so a crash
+   * mid-write leaves either the old or the new value, never a partial one.
+   */
+  static file(fs: FileSystem.FileSystem, root: string) {
+    return Layer.sync(KvStore, () => ({
+      delete: (key) =>
+        fs.remove(keyPath(root, key), { force: true }).pipe(Effect.catchEager(() => Effect.void)),
+      get: (key) =>
+        fs.readFileString(keyPath(root, key)).pipe(
+          Effect.map((text) => Option.some(encode(text))),
+          // A missing key is `Option.none`; any other storage defect dies —
+          // the seam's failure posture is "defects kill the caller".
+          Effect.catchEager((failure) =>
+            isNotFound(failure) ? Effect.succeed(Option.none()) : Effect.die(failure),
+          ),
+        ),
+      list: ({ prefix }) =>
+        listFiles(fs, root, "").pipe(
+          Effect.flatMap((files) =>
+            Effect.forEach(
+              files.filter((file) => file.key.startsWith(prefix)),
+              (file) =>
+                fs.readFileString(file.path).pipe(
+                  Effect.map((text) => ({ key: file.key, value: encode(text) })),
+                  Effect.catchEager(() => Effect.succeed({ key: file.key, value: encode("") })),
+                ),
+            ),
+          ),
+        ),
+      put: Effect.fn("put")(
+        function* put(key: string, value: Uint8Array) {
+          const path = keyPath(root, key);
+          const tmp = `${path}.tmp`;
+          yield* fs.makeDirectory(dirname(path), { recursive: true });
+          yield* fs.writeFile(tmp, value);
+          yield* fs.rename(tmp, path);
+        },
+        (effect) => effect.pipe(Effect.orDie),
+      ),
+    }));
+  }
+
+  /**
+   * Durable Object storage backend (the platform boundary; Cloudflare and
+   * celld). The DO's promise API is the platform boundary: each call
+   * crosses with `Effect.tryPromise` and `Effect.orDie` — the KvStore
+   * channel is `never`, so a rejected DO promise is a defect that kills
+   * the caller, which is exactly what DO storage does unadapted.
+   */
+  static doStorage(storage: DoStorageLike) {
+    return Layer.sync(KvStore, () => ({
+      delete: (key) =>
+        Effect.tryPromise(async () => {
+          await storage.delete(key);
+        }).pipe(Effect.orDie),
+      get: (key) =>
+        Effect.tryPromise(async () => {
+          const value = await storage.get(key);
+          return value instanceof Uint8Array ? Option.some(value) : Option.none();
+        }).pipe(Effect.orDie),
+      list: ({ prefix }) =>
+        Effect.tryPromise(async () => {
+          const entries = await storage.list({ prefix });
+          const out: KvEntry[] = [];
+          for (const [key, value] of entries) {
+            if (value instanceof Uint8Array) {
+              out.push({ key, value });
+            }
+          }
+          return out;
+        }).pipe(Effect.orDie),
+      put: (key, value) =>
+        Effect.tryPromise(async () => {
+          await storage.put(key, value);
+        }).pipe(Effect.orDie),
+    }));
+  }
+}

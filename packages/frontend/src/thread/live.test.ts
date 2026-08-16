@@ -16,23 +16,74 @@
  */
 
 import { describe, expect, it } from "vitest";
-import fc from "fast-check";
-
-import { emptyLiveRegion, foldLive, Trail, type Live } from "./live.ts";
-import type { EntryProjection, MessageProjection, SessionEventProjection } from "./projection.ts";
+import { Schema as S } from "effect";
+import type { Arbitrary, JsonValue } from "fast-check";
+import {
+  array,
+  assert,
+  boolean,
+  constant,
+  constantFrom,
+  integer,
+  jsonValue,
+  oneof,
+  option,
+  pre,
+  property,
+  record,
+  string,
+  uniqueArray,
+} from "fast-check";
+import { emptyLiveRegion, foldLive, Trail } from "./live.ts";
+import type { Live } from "./live.ts";
+import type { EntryProjection, SessionEventProjection } from "./projection.ts";
 
 /** The fold's initial state: trail idle, nothing streamed. */
-const initial = () => ({ trail: Trail.Idle(), live: emptyLiveRegion() });
+const initial = () => ({ live: emptyLiveRegion(), trail: Trail.Idle() });
+
+/** The single tool row of the captured-args test, failing when absent. */
+const toolRow = (state: Live) => {
+  const [row] = state.live.tools;
+  if (row === undefined) {
+    throw new Error("expected tool c1");
+  }
+  return row;
+};
+
+/** A message content block, typed structurally (the projection's ContentBlock). */
+interface ContentBlock {
+  readonly text?: string | undefined;
+  readonly thinking?: string | undefined;
+  readonly type?: string | undefined;
+}
+
+/** A message's content: a plain string or a block list (the projection's union). */
+type MessageContent = string | readonly ContentBlock[] | undefined;
+
+/** Any payload a tool update/end could carry: absent, a string, or JSON.
+ * Typed as the projection's own payload type (effect's `Json`) so the
+ * emitted tool events are directly foldable. */
+type ToolPayload = Extract<
+  SessionEventProjection,
+  { readonly _tag: "tool_execution_update" }
+>["partialResult"];
+
+const isString = <T>(value: T): value is Extract<T, string> => typeof value === "string";
+
+const isBlocks = (content: MessageContent): content is readonly ContentBlock[] =>
+  Array.isArray(content);
 
 /** The defensive id cast, re-derived: absent ids compare equal. */
-const idOf = (id: string | undefined) => (typeof id === "string" ? id : "");
+const idOf = (id: string | undefined) => (isString(id) ? id : "");
 
 /** The joined text content of a message, re-derived from the module contract. */
-const textOf = (content: MessageProjection["content"]): string => {
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
+const textOf = (content: MessageContent): string => {
+  if (isString(content)) {
+    return content;
+  }
+  if (isBlocks(content)) {
     return content
-      .map((block) => (block.type === "text" && typeof block.text === "string" ? block.text : ""))
+      .map((block) => (block.type === "text" && isString(block.text) ? block.text : ""))
       .join("")
       .trim();
   }
@@ -40,12 +91,12 @@ const textOf = (content: MessageProjection["content"]): string => {
 };
 
 /** The joined thinking content of a message, re-derived from the module contract. */
-const thinkingOf = (content: MessageProjection["content"]): string => {
-  if (!Array.isArray(content)) return "";
+const thinkingOf = (content: MessageContent): string => {
+  if (!isBlocks(content)) {
+    return "";
+  }
   return content
-    .map((block) =>
-      block.type === "thinking" && typeof block.thinking === "string" ? block.thinking : "",
-    )
+    .map((block) => (block.type === "thinking" && isString(block.thinking) ? block.thinking : ""))
     .join("")
     .trim();
 };
@@ -54,87 +105,101 @@ const thinkingOf = (content: MessageProjection["content"]): string => {
 // Generators
 // ---------------------------------------------------------------------------
 
-const entryArb: fc.Arbitrary<EntryProjection> = fc.record({
-  id: fc.option(fc.string({ maxLength: 12 }), { nil: undefined }),
-  seq: fc.option(fc.integer(), { nil: undefined }),
-  type: fc.option(fc.constantFrom("message", "toolResult", "user_message"), { nil: undefined }),
+const entryArb: Arbitrary<EntryProjection> = record({
+  id: option(string({ maxLength: 12 }), { nil: undefined }),
+  seq: option(integer(), { nil: undefined }),
+  type: option(constantFrom("message", "toolResult", "user_message"), { nil: undefined }),
 });
 
-const trailArb: fc.Arbitrary<Live["trail"]> = fc.oneof(
-  fc.constant(Trail.Idle()),
-  fc
-    .record({ entries: fc.array(entryArb, { maxLength: 4 }), tailSeq: fc.integer() })
-    .map((data) => Trail.Success({ data })),
-  fc.constant(Trail.Failure({ error: "boom" })),
+const trailArb: Arbitrary<Live["trail"]> = oneof(
+  constant(Trail.Idle()),
+  record({ entries: array(entryArb, { maxLength: 4 }), tailSeq: integer() }).map((data) =>
+    Trail.Success({ data }),
+  ),
+  constant(Trail.Failure({ error: "boom" })),
 );
 
-const liveArb: fc.Arbitrary<Live["live"]> = fc.record({
-  message: fc.option(fc.string({ maxLength: 24 }), { nil: undefined }),
-  thinking: fc.option(fc.string({ maxLength: 24 }), { nil: undefined }),
-  tools: fc.array(
-    fc.record({
-      callId: fc.string({ maxLength: 12 }),
-      name: fc.string({ maxLength: 12 }),
-      state: fc.constantFrom("running", "done", "failed"),
+const liveArb: Arbitrary<Live["live"]> = record({
+  message: option(string({ maxLength: 24 }), { nil: undefined }),
+  notice: option(string({ maxLength: 24 }), { nil: undefined }),
+  thinking: option(string({ maxLength: 24 }), { nil: undefined }),
+  tools: array(
+    record({
+      callId: string({ maxLength: 12 }),
+      name: string({ maxLength: 12 }),
+      state: constantFrom("running", "done", "failed"),
     }),
     { maxLength: 3 },
   ),
-  notice: fc.option(fc.string({ maxLength: 24 }), { nil: undefined }),
 });
 
-const stateArb: fc.Arbitrary<Live> = fc.record({ trail: trailArb, live: liveArb });
+const stateArb: Arbitrary<Live> = record({ live: liveArb, trail: trailArb });
 
-const blockArb = fc.record({
-  type: fc.option(fc.constantFrom("text", "thinking", "toolCall"), { nil: undefined }),
-  text: fc.option(fc.string({ maxLength: 24 }), { nil: undefined }),
-  thinking: fc.option(fc.string({ maxLength: 24 }), { nil: undefined }),
+const blockArb = record({
+  text: option(string({ maxLength: 24 }), { nil: undefined }),
+  thinking: option(string({ maxLength: 24 }), { nil: undefined }),
+  type: option(constantFrom("text", "thinking", "toolCall"), { nil: undefined }),
 });
 
-const contentArb = fc.oneof(
-  fc.string({ maxLength: 24 }),
-  fc.array(blockArb, { maxLength: 4 }),
+const contentArb = oneof(string({ maxLength: 24 }), array(blockArb, { maxLength: 4 }));
+
+const messageEventArb = oneof(
+  record({
+    _tag: constant("message_start" as const),
+    message: record({ content: option(contentArb, { nil: undefined }) }),
+  }),
+  record({
+    _tag: constant("message_update" as const),
+    message: record({ content: option(contentArb, { nil: undefined }) }),
+  }),
+  record({
+    _tag: constant("message_end" as const),
+    message: record({ content: option(contentArb, { nil: undefined }) }),
+  }),
 );
 
-const messageEventArb = fc.oneof(
-  fc
-    .record({
-      _tag: fc.constant("message_start" as const),
-      message: fc.record({ content: fc.option(contentArb, { nil: undefined }) }),
-    }),
-  fc
-    .record({
-      _tag: fc.constant("message_update" as const),
-      message: fc.record({ content: fc.option(contentArb, { nil: undefined }) }),
-    }),
-  fc
-    .record({
-      _tag: fc.constant("message_end" as const),
-      message: fc.record({ content: fc.option(contentArb, { nil: undefined }) }),
-    }),
-);
+/** A JSON value JSON text can round-trip losslessly (no `-0`, which
+ * `JSON.stringify` renders as `"0"`). The wire's display contract is the
+ * JSON text round-trip, so such payloads are outside its domain. */
+const isLosslessJson = (value: JsonValue | undefined): value is JsonValue => {
+  if (value === undefined) {
+    return false;
+  }
+  if (typeof value === "number") {
+    return !Object.is(value, -0);
+  }
+  if (Array.isArray(value)) {
+    return value.every(isLosslessJson);
+  }
+  if (typeof value === "object" && value !== null) {
+    return Object.values(value).every(isLosslessJson);
+  }
+  return true;
+};
 
 /** Any payload a tool update/end could carry, within the lossless display budget. */
-const payloadArb = fc.oneof(
-  fc.constant(undefined),
-  fc.string({ maxLength: 100 }),
-  fc.jsonValue({ maxDepth: 2 }),
+const payloadArb: Arbitrary<ToolPayload> = oneof(
+  string({ maxLength: 100 }),
+  // fast-check's JsonValue is its own type; the projection's payload type is
+  // effect's Json — the schema decode is the boundary between them. Values
+  // JSON cannot round-trip losslessly (-0) are excluded up front.
+  jsonValue({ maxDepth: 2 })
+    .filter(isLosslessJson)
+    .map((value) => S.decodeUnknownSync(S.Json)(value)),
 );
 
 interface ToolRun {
   readonly callId: string;
   readonly name: string;
-  readonly updates: readonly unknown[];
-  readonly end: { readonly result: unknown; readonly isError: boolean } | undefined;
+  readonly updates: readonly ToolPayload[];
+  readonly end: { readonly result: ToolPayload; readonly isError: boolean } | undefined;
 }
 
-const toolRunArb: fc.Arbitrary<ToolRun> = fc.record({
-  callId: fc.string({ minLength: 1, maxLength: 4 }),
-  name: fc.string({ maxLength: 16 }),
-  updates: fc.array(payloadArb, { maxLength: 3 }),
-  end: fc.option(
-    fc.record({ result: payloadArb, isError: fc.boolean() }),
-    { nil: undefined },
-  ),
+const toolRunArb: Arbitrary<ToolRun> = record({
+  callId: string({ maxLength: 4, minLength: 1 }),
+  end: option(record({ isError: boolean(), result: payloadArb }), { nil: undefined }),
+  name: string({ maxLength: 16 }),
+  updates: array(payloadArb, { maxLength: 3 }),
 });
 
 /** The event stream a set of tool runs produces (start, updates, end). */
@@ -143,17 +208,17 @@ const toolEvents = (runs: readonly ToolRun[]) =>
     { _tag: "tool_execution_start" as const, toolCallId: run.callId, toolName: run.name },
     ...run.updates.map((partialResult) => ({
       _tag: "tool_execution_update" as const,
-      toolCallId: run.callId,
       partialResult,
+      toolCallId: run.callId,
     })),
     ...(run.end === undefined
       ? []
       : [
           {
             _tag: "tool_execution_end" as const,
-            toolCallId: run.callId,
-            result: run.end.result,
             isError: run.end.isError,
+            result: run.end.result,
+            toolCallId: run.callId,
           },
         ]),
   ]);
@@ -168,8 +233,8 @@ const compactionStart = (reason: "manual" | "threshold" | "overflow") => ({
 });
 const compactionEnd: SessionEventProjection = {
   _tag: "compaction_end",
-  reason: "manual",
   aborted: false,
+  reason: "manual",
 };
 const unhandled: SessionEventProjection = {
   _tag: "unhandled",
@@ -178,13 +243,14 @@ const unhandled: SessionEventProjection = {
 
 describe("message stream", () => {
   it("folds any message stream with last-write-wins, empty-preserves semantics", () => {
-    fc.assert(
-      fc.property(stateArb, fc.array(messageEventArb, { maxLength: 8 }), (state, events) => {
-        let message = state.live.message;
-        let thinking = state.live.thinking;
+    assert(
+      property(stateArb, array(messageEventArb, { maxLength: 8 }), (state, events) => {
+        let current = state;
+        let { message } = current.live;
+        let { thinking } = current.live;
         for (const event of events) {
-          const next = foldLive(state, event);
-          expect(next.trail).toEqual(state.trail);
+          const next = foldLive(current, event);
+          expect(next.trail).toEqual(current.trail);
           const text = textOf(event.message.content);
           const think = thinkingOf(event.message.content);
           if (event._tag === "message_update") {
@@ -196,7 +262,7 @@ describe("message stream", () => {
           }
           expect(next.live.message).toBe(message);
           expect(next.live.thinking).toBe(thinking);
-          state = next;
+          current = next;
         }
       }),
     );
@@ -205,58 +271,52 @@ describe("message stream", () => {
 
 describe("tool execution", () => {
   it("tracks parallel tools per call id, last event wins, display is lossless", () => {
-    fc.assert(
-      fc.property(
-        fc.uniqueArray(toolRunArb, { maxLength: 4, selector: (run) => run.callId }),
-        (runs) => {
-          let state: Live = initial();
-          for (const event of toolEvents(runs)) {
-            const next = foldLive(state, event);
-            state = next;
+    assert(
+      property(uniqueArray(toolRunArb, { maxLength: 4, selector: (run) => run.callId }), (runs) => {
+        let state: Live = initial();
+        for (const event of toolEvents(runs)) {
+          state = foldLive(state, event);
+        }
+        // One row per run, in start order.
+        expect(state.live.tools.map((tool) => tool.callId)).toEqual(runs.map((run) => run.callId));
+        for (let i = 0; i < runs.length; i += 1) {
+          const run = runs[i];
+          const row = state.live.tools[i];
+          if (run === undefined || row === undefined) {
+            throw new Error(`expected a tool row at ${i}`);
           }
-          // One row per run, in start order.
-          expect(state.live.tools.map((tool) => tool.callId)).toEqual(
-            runs.map((run) => run.callId),
-          );
-          for (let i = 0; i < runs.length; i++) {
-            const run = runs[i]!;
-            const row = state.live.tools[i]!;
-            // The name is pinned at start.
-            expect(row.name).toBe(run.name);
-            if (run.end === undefined) {
-              expect(row.state).toBe("running");
-              expect(row.result).toBeUndefined();
+          // The name is pinned at start.
+          expect(row.name).toBe(run.name);
+          if (run.end === undefined) {
+            expect(row.state).toBe("running");
+            expect(row.result).toBeUndefined();
+          } else {
+            expect(row.state).toBe(run.end.isError ? "failed" : "done");
+            if (isString(run.end.result)) {
+              expect(row.result).toBe(run.end.result);
             } else {
-              expect(row.state).toBe(run.end.isError ? "failed" : "done");
-              if (typeof run.end.result === "string") {
-                expect(row.result).toBe(run.end.result);
-              } else {
-                fc.pre(
-                  run.end.result !== undefined &&
-                    JSON.stringify(run.end.result).length <= 400,
-                );
-                expect(JSON.parse(row.result ?? "")).toEqual(run.end.result);
-              }
-            }
-            // The partial is the last update's payload, displayed losslessly;
-            // absent when no update ever landed. A landed update with an
-            // undefined payload displays as the empty string.
-            if (run.updates.length === 0) {
-              expect(row.partial).toBeUndefined();
-            } else {
-              const lastUpdate = run.updates[run.updates.length - 1]!;
-              if (lastUpdate === undefined) {
-                expect(row.partial).toBe("");
-              } else if (typeof lastUpdate === "string") {
-                expect(row.partial).toBe(lastUpdate);
-              } else {
-                fc.pre(JSON.stringify(lastUpdate).length <= 400);
-                expect(JSON.parse(row.partial ?? "")).toEqual(lastUpdate);
-              }
+              pre(run.end.result !== undefined && JSON.stringify(run.end.result).length <= 400);
+              expect(JSON.parse(row.result ?? "")).toEqual(run.end.result);
             }
           }
-        },
-      ),
+          // The partial is the last update's payload, displayed losslessly;
+          // absent when no update ever landed. A landed update with an
+          // undefined payload displays as the empty string.
+          if (run.updates.length === 0) {
+            expect(row.partial).toBeUndefined();
+          } else {
+            const lastUpdate = run.updates.at(-1);
+            if (lastUpdate === undefined) {
+              expect(row.partial).toBe("");
+            } else if (isString(lastUpdate)) {
+              expect(row.partial).toBe(lastUpdate);
+            } else {
+              pre(JSON.stringify(lastUpdate).length <= 400);
+              expect(JSON.parse(row.partial ?? "")).toEqual(lastUpdate);
+            }
+          }
+        }
+      }),
     );
   });
 
@@ -264,71 +324,79 @@ describe("tool execution", () => {
     let state: Live = initial();
     state = foldLive(state, {
       _tag: "tool_execution_start",
+      args: { command: "ls" },
       toolCallId: "c1",
       toolName: "bash",
-      args: { command: "ls" },
     });
-    expect(state.live.tools[0]!.args).toEqual({ command: "ls" });
+    expect(toolRow(state).args).toEqual({ command: "ls" });
     // An update without args keeps the start's args.
     state = foldLive(state, {
       _tag: "tool_execution_update",
-      toolCallId: "c1",
       partialResult: "…",
+      toolCallId: "c1",
     });
-    expect(state.live.tools[0]!.args).toEqual({ command: "ls" });
+    expect(toolRow(state).args).toEqual({ command: "ls" });
     // An update with args refreshes them (pi streams the accumulating args).
     state = foldLive(state, {
       _tag: "tool_execution_update",
-      toolCallId: "c1",
       args: { command: "ls -la" },
       partialResult: "…",
+      toolCallId: "c1",
     });
-    expect(state.live.tools[0]!.args).toEqual({ command: "ls -la" });
+    expect(toolRow(state).args).toEqual({ command: "ls -la" });
     // The args survive the end event.
     state = foldLive(state, {
       _tag: "tool_execution_end",
-      toolCallId: "c1",
       isError: false,
       result: "total 0",
+      toolCallId: "c1",
     });
-    expect(state.live.tools[0]!.args).toEqual({ command: "ls -la" });
+    expect(toolRow(state).args).toEqual({ command: "ls -la" });
   });
 
   it("leaves the tools untouched for an unknown call id", () => {
-    fc.assert(
-      fc.property(stateArb, fc.string({ minLength: 1, maxLength: 6 }), fc.boolean(), (state, callId, isError) => {
-        const updated = foldLive(state, {
-          _tag: "tool_execution_update",
-          toolCallId: callId,
-          partialResult: "x",
-        });
-        expect(updated).toEqual(state);
-        const ended = foldLive(state, {
-          _tag: "tool_execution_end",
-          toolCallId: callId,
-          isError,
-          result: "y",
-        });
-        expect(ended).toEqual(state);
-      }),
+    assert(
+      property(
+        stateArb,
+        string({ maxLength: 6, minLength: 1 }),
+        boolean(),
+        (state, callId, isError) => {
+          // The call id must not collide with a run already in the state —
+          // the fold would target that run instead of staying untouched.
+          pre(!state.live.tools.some((tool) => tool.callId === callId));
+          const updated = foldLive(state, {
+            _tag: "tool_execution_update",
+            partialResult: "x",
+            toolCallId: callId,
+          });
+          expect(updated).toEqual(state);
+          const ended = foldLive(state, {
+            _tag: "tool_execution_end",
+            isError,
+            result: "y",
+            toolCallId: callId,
+          });
+          expect(ended).toEqual(state);
+        },
+      ),
     );
   });
 });
 
 describe("entry_appended", () => {
   it("grows the trail, bumps tailSeq, and dedupes against the last entry", () => {
-    fc.assert(
-      fc.property(
-        fc.record({
-          entries: fc.array(entryArb, { maxLength: 4 }),
-          tailSeq: fc.integer(),
+    assert(
+      property(
+        record({
+          entries: array(entryArb, { maxLength: 4 }),
+          tailSeq: integer(),
         }),
         liveArb,
         entryArb,
         (data, live, incoming) => {
-          const state: Live = { trail: Trail.Success({ data }), live };
+          const state: Live = { live, trail: Trail.Success({ data }) };
           const next = foldLive(state, entryAppended(incoming));
-          const last = data.entries[data.entries.length - 1];
+          const last = data.entries.at(-1);
           const same = last !== undefined && idOf(last.id) === idOf(incoming.id);
           if (same) {
             expect(next).toEqual(state);
@@ -357,12 +425,12 @@ describe("entry_appended", () => {
   });
 
   it("is a no-op while the trail is not loaded", () => {
-    fc.assert(
-      fc.property(
-        fc.oneof(fc.constant(Trail.Idle()), fc.constant(Trail.Failure({ error: "boom" }))),
+    assert(
+      property(
+        oneof(constant(Trail.Idle()), constant(Trail.Failure({ error: "boom" }))),
         entryArb,
         (trail, incoming) => {
-          const state: Live = { trail, live: emptyLiveRegion() };
+          const state: Live = { live: emptyLiveRegion(), trail };
           const next = foldLive(state, entryAppended(incoming));
           expect(next).toEqual(state);
         },
@@ -371,11 +439,11 @@ describe("entry_appended", () => {
   });
 
   it("never lowers tailSeq across a stream of appends", () => {
-    fc.assert(
-      fc.property(fc.array(entryArb, { maxLength: 10 }), fc.integer(), (entries, startSeq) => {
+    assert(
+      property(array(entryArb, { maxLength: 10 }), integer(), (entries, startSeq) => {
         let state: Live = {
-          trail: Trail.Success({ data: { entries: [], tailSeq: startSeq } }),
           live: emptyLiveRegion(),
+          trail: Trail.Success({ data: { entries: [], tailSeq: startSeq } }),
         };
         let previous = startSeq;
         for (const entry of entries) {
@@ -393,8 +461,8 @@ describe("entry_appended", () => {
 
 describe("settled, compaction, and unknown events", () => {
   it("settled clears the whole live region and keeps the trail", () => {
-    fc.assert(
-      fc.property(stateArb, (state) => {
+    assert(
+      property(stateArb, (state) => {
         const next = foldLive(state, { _tag: "settled" });
         expect(next.live).toEqual({ tools: [] });
         expect(next.trail).toEqual(state.trail);
@@ -403,10 +471,10 @@ describe("settled, compaction, and unknown events", () => {
   });
 
   it("shows the compaction notice per reason and clears it on completion", () => {
-    fc.assert(
-      fc.property(
+    assert(
+      property(
         stateArb,
-        fc.constantFrom("manual" as const, "threshold" as const, "overflow" as const),
+        constantFrom("manual" as const, "threshold" as const, "overflow" as const),
         (state, reason) => {
           const started = foldLive(state, compactionStart(reason));
           expect(started.live.notice).toBe(`compacting (${reason})`);
@@ -418,8 +486,8 @@ describe("settled, compaction, and unknown events", () => {
   });
 
   it("degrades unknown events to a no-op", () => {
-    fc.assert(
-      fc.property(stateArb, (state) => {
+    assert(
+      property(stateArb, (state) => {
         const next = foldLive(state, unhandled);
         expect(next).toEqual(state);
       }),

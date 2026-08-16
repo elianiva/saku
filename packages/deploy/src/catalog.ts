@@ -1,7 +1,7 @@
 /**
- * The deployment's model catalog (catalog.ts): `ModelCatalogShape` for a
- * thread DO — the shared construction (`createModelCatalog` in
- * @saku/worker) with the auth source resolved from the deployment's
+ * The deployment's model catalog (catalog.ts): `ModelCatalogApi` for a
+ * thread DO — the shared construction (`createModelCatalog` in the
+ * worker package) with the auth source resolved from the deployment's
  * bindings. This module is a thin binding-reader: the provider
  * registration, the `SAKU_FAKE_MODEL` scripted fixture, and the shape
  * live in exactly one place (worker/model-catalog-factory.ts).
@@ -19,20 +19,31 @@
  * tests (no LLM key required).
  */
 
-import { createModelCatalog, type ModelCatalogShape } from "@saku/worker/isolate";
+import { createModelCatalog } from "@saku/worker/isolate";
 import type { AuthContext } from "@earendil-works/pi-ai";
 
-import type { DeploymentEnv } from "./env.ts";
+import type { DeploymentEnv, DeploymentVars } from "./env.ts";
+import { isNonEmptyString } from "./env.ts";
+
+/** The vars pi can probe by name; mirrors `DeploymentVars` (auth needs the names at runtime). */
+const DEPLOYMENT_VARS = [
+  "SAKU_ENV_PROVISIONER",
+  "SAKU_ENV_URL",
+  "SAKU_ENV_TOKEN",
+  "SAKU_IDLE_STOP_MS",
+  "SAKU_FAKE_MODEL",
+] as const satisfies readonly (keyof DeploymentVars)[];
 
 /** pi's builtin providers read their env vars through the auth context. */
 const deploymentAuthContext = (env: DeploymentEnv): AuthContext => ({
   env: async (name) => {
-    const value = (env as unknown as Record<string, unknown>)[name];
-    return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+    const key = DEPLOYMENT_VARS.find((varName) => varName === name);
+    const value = key === undefined ? undefined : env[key];
+    return await Promise.resolve(isNonEmptyString(value) ? value : undefined);
   },
   // No filesystem in a DO: file probes answer "no" (the default context's
   // node:fs import also fails soft there — this is the honest answer).
-  fileExists: async () => false,
+  fileExists: async () => await Promise.resolve(false),
 });
 
 /** Build the thread DO's catalog from the deployment's bindings. */

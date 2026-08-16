@@ -9,34 +9,38 @@
 
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import path from "node:path";
 
 import { NodeFileSystem } from "@effect/platform-node";
-import { Effect, FileSystem, Schema } from "effect";
+import { Effect, FileSystem, Option, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { Paths, PathsTest } from "../src/paths.ts";
-import { ThreadRecord, ThreadRecordSchema, DECODE_THREAD_RECORD } from "../src/registry-record.ts";
+import type { ThreadRecord } from "../src/registry-record.ts";
+import { ThreadRecordSchema, DECODE_THREAD_RECORD } from "../src/registry-record.ts";
 import { ThreadRegistry, ThreadRegistryTest } from "../src/registry.ts";
+import { expectPresent } from "./expect.ts";
 
-const recordOf = (id: string) => ({
-  id,
-  name: "round trip",
-  cwd: "/tmp",
-  mode: "local",
-  createdAt: 1234,
-  sessionId: null,
-  nameAuto: true,
+const recordOf = (id: string): ThreadRecord => ({
   archivedAt: null,
+  createdAt: 1234,
+  cwd: "/tmp",
+  id,
+  mode: "local",
+  name: "round trip",
+  nameAuto: true,
+  sessionId: null,
 });
 
 /** Write a record file exactly as the registry persists it (`threads/<id>/thread.json`). */
-const writeRecordFile = Effect.fn("writeRecordFile")(function* (record: ThreadRecord) {
+const writeRecordFile = Effect.fn("writeRecordFile")(function* writeRecordFile(
+  record: ThreadRecord,
+) {
   const fs = yield* FileSystem.FileSystem;
   const paths = yield* Paths;
-  const dir = join(paths.threadsDir, record.id);
+  const dir = path.join(paths.threadsDir, record.id);
   yield* fs.makeDirectory(dir, { recursive: true });
-  yield* fs.writeFileString(join(dir, "thread.json"), `${JSON.stringify(record, null, 2)}\n`);
+  yield* fs.writeFileString(path.join(dir, "thread.json"), `${JSON.stringify(record, null, 2)}\n`);
 });
 
 /**
@@ -46,8 +50,11 @@ const writeRecordFile = Effect.fn("writeRecordFile")(function* (record: ThreadRe
  * `ThreadRegistryTest`): the disk tests' bodies read `Paths` directly, and
  * the same `home` pins both instances to one layout.
  */
-const runRegistry = <A, E, R>(body: Effect.Effect<A, E, R>, home?: string) =>
-  Effect.runPromise(
+const runRegistry = async <A, E>(
+  body: Effect.Effect<A, E, ThreadRegistry | FileSystem.FileSystem | Paths>,
+  home?: string,
+) =>
+  await Effect.runPromise(
     Effect.provide(NodeFileSystem.layer)(
       Effect.provide(PathsTest(home))(Effect.provide(ThreadRegistryTest(home))(body)),
     ),
@@ -55,28 +62,28 @@ const runRegistry = <A, E, R>(body: Effect.Effect<A, E, R>, home?: string) =>
 
 describe("registry disk round-trip", () => {
   it("decodes a persisted record from disk on boot", async () => {
-    const home = await mkdtemp(join(tmpdir(), "saku-registry-decode-"));
+    const home = await mkdtemp(path.join(tmpdir(), "saku-registry-decode-"));
     try {
       const record = recordOf("a".repeat(32));
       // Boot 1 writes the record. The registry layer builds at its provide
       // site, so a write in the same boot would land after the boot load
       // (the in-memory index is loaded once, at layer build).
       await runRegistry(
-        Effect.gen(function* () {
+        Effect.gen(function* seed() {
           yield* writeRecordFile(record);
         }),
         home,
       );
       // Boot 2 (a restarted daemon) decodes the record from disk.
       const threads = await runRegistry(
-        Effect.gen(function* () {
+        Effect.gen(function* threads() {
           return yield* ThreadRegistry.pipe(Effect.flatMap((registry) => registry.list()));
         }),
         home,
       );
       expect(threads).toEqual([{ ...record, nameAuto: true }]);
     } finally {
-      await rm(home, { recursive: true, force: true });
+      await rm(home, { force: true, recursive: true });
     }
   });
 
@@ -84,12 +91,12 @@ describe("registry disk round-trip", () => {
     // A reload is a second boot over the same layout, so the home is pinned
     // (a fresh scoped home would be recreated per boot — exactly what a
     // restart must NOT see).
-    const home = await mkdtemp(join(tmpdir(), "saku-registry-reload-"));
+    const home = await mkdtemp(path.join(tmpdir(), "saku-registry-reload-"));
     try {
       const created = await runRegistry(
-        Effect.gen(function* () {
+        Effect.gen(function* created() {
           const registry = yield* ThreadRegistry;
-          return yield* registry.create(recordOf("b".repeat(32)));
+          return yield* registry.create({ cwd: "/tmp", mode: "local", name: "round trip" });
         }),
         home,
       );
@@ -97,32 +104,32 @@ describe("registry disk round-trip", () => {
 
       // A fresh boot (a restarted daemon) reloads from disk.
       const threads = await runRegistry(
-        Effect.gen(function* () {
+        Effect.gen(function* threads() {
           return yield* ThreadRegistry.pipe(Effect.flatMap((registry) => registry.list()));
         }),
         home,
       );
       expect(threads).toHaveLength(1);
-      expect(threads[0]!.name).toBe("round trip");
+      expect(expectPresent(threads[0], "the reloaded thread").name).toBe("round trip");
     } finally {
-      await rm(home, { recursive: true, force: true });
+      await rm(home, { force: true, recursive: true });
     }
   });
 
   it("skips corrupt records without failing the boot", async () => {
-    const home = await mkdtemp(join(tmpdir(), "saku-registry-corrupt-"));
+    const home = await mkdtemp(path.join(tmpdir(), "saku-registry-corrupt-"));
     try {
       const good = recordOf("c".repeat(32));
       const corruptId = "d".repeat(32);
       // Boot 1 seeds the layout: one good record, one corrupt file.
       await runRegistry(
-        Effect.gen(function* () {
+        Effect.gen(function* seed() {
           yield* writeRecordFile(good);
           const fs = yield* FileSystem.FileSystem;
           const paths = yield* Paths;
-          yield* fs.makeDirectory(join(paths.threadsDir, corruptId), { recursive: true });
+          yield* fs.makeDirectory(path.join(paths.threadsDir, corruptId), { recursive: true });
           yield* fs.writeFileString(
-            join(paths.threadsDir, corruptId, "thread.json"),
+            path.join(paths.threadsDir, corruptId, "thread.json"),
             "not json at all",
           );
         }),
@@ -130,14 +137,14 @@ describe("registry disk round-trip", () => {
       );
       // Boot 2 loads the good record and skips the corrupt file.
       const threads = await runRegistry(
-        Effect.gen(function* () {
+        Effect.gen(function* threads() {
           return yield* ThreadRegistry.pipe(Effect.flatMap((registry) => registry.list()));
         }),
         home,
       );
       expect(threads).toEqual([{ ...good, nameAuto: true }]);
     } finally {
-      await rm(home, { recursive: true, force: true });
+      await rm(home, { force: true, recursive: true });
     }
   });
 
@@ -150,75 +157,79 @@ describe("registry disk round-trip", () => {
   });
 
   it("decodes records written before archive as active (missing archivedAt)", async () => {
-    const home = await mkdtemp(join(tmpdir(), "saku-registry-legacy-"));
+    const home = await mkdtemp(path.join(tmpdir(), "saku-registry-legacy-"));
     try {
-      const legacy = recordOf("9".repeat(32));
-      delete (legacy as Partial<typeof legacy>).archivedAt;
+      const { archivedAt: _archivedAt, ...legacy } = recordOf("9".repeat(32));
       // Boot 1 seeds the layout with a pre-archive record.
       await runRegistry(
-        Effect.gen(function* () {
-          yield* writeRecordFile(legacy as ThreadRecord);
+        Effect.gen(function* seed() {
+          yield* writeRecordFile(legacy);
         }),
         home,
       );
       // Boot 2 (a restarted daemon) reads it back as active (archivedAt null).
       const threads = await runRegistry(
-        Effect.gen(function* () {
+        Effect.gen(function* threads() {
           return yield* ThreadRegistry.pipe(Effect.flatMap((registry) => registry.list()));
         }),
         home,
       );
-      expect(threads[0]!.archivedAt).toBeNull();
-      expect(threads[0]!.name).toBe("round trip");
+      expect(expectPresent(threads[0], "the legacy thread").archivedAt).toBeNull();
+      expect(expectPresent(threads[0], "the legacy thread").name).toBe("round trip");
     } finally {
-      await rm(home, { recursive: true, force: true });
+      await rm(home, { force: true, recursive: true });
     }
   });
 
   it("archives and unarchives, and the archive survives a reload", async () => {
-    const home = await mkdtemp(join(tmpdir(), "saku-registry-archive-"));
+    const home = await mkdtemp(path.join(tmpdir(), "saku-registry-archive-"));
     try {
       const created = await runRegistry(
-        Effect.gen(function* () {
+        Effect.gen(function* created() {
           const registry = yield* ThreadRegistry;
-          return yield* registry.create(recordOf("7".repeat(32)));
+          return yield* registry.create({ cwd: "/tmp", mode: "local", name: "round trip" });
         }),
         home,
       );
-      const id = created.id;
+      const { id } = created;
       const archived = await runRegistry(
-        Effect.gen(function* () {
+        Effect.gen(function* archived() {
           const registry = yield* ThreadRegistry;
+          // The archive answers Option<ThreadRecord>.
           const result = yield* registry.archive(id);
-          return result; // Option<ThreadRecord>
+          return result;
         }),
         home,
       );
-      expect(archived._tag).toBe("Some");
+      if (!Option.isSome(archived)) {
+        throw new Error("expected the archive to answer Some");
+      }
       expect(archived.value.archivedAt).not.toBeNull();
 
       // A fresh boot (a restarted daemon) keeps the archive flag.
       const reloaded = await runRegistry(
-        Effect.gen(function* () {
+        Effect.gen(function* reloaded() {
           return yield* ThreadRegistry.pipe(Effect.flatMap((registry) => registry.list()));
         }),
         home,
       );
-      expect(reloaded[0]!.archivedAt).not.toBeNull();
+      expect(expectPresent(reloaded[0], "the archived thread").archivedAt).not.toBeNull();
 
       const unarchived = await runRegistry(
-        Effect.gen(function* () {
+        Effect.gen(function* unarchived() {
           const registry = yield* ThreadRegistry;
           return yield* registry.unarchive(id);
         }),
         home,
       );
-      expect(unarchived._tag).toBe("Some");
+      if (!Option.isSome(unarchived)) {
+        throw new Error("expected the unarchive to answer Some");
+      }
       expect(unarchived.value.archivedAt).toBeNull();
 
       // Archiving an unknown thread answers None.
       const missing = await runRegistry(
-        Effect.gen(function* () {
+        Effect.gen(function* missing() {
           const registry = yield* ThreadRegistry;
           return yield* registry.archive("8".repeat(32));
         }),
@@ -226,7 +237,7 @@ describe("registry disk round-trip", () => {
       );
       expect(missing._tag).toBe("None");
     } finally {
-      await rm(home, { recursive: true, force: true });
+      await rm(home, { force: true, recursive: true });
     }
   });
 });

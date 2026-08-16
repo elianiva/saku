@@ -12,20 +12,34 @@ import { Schema } from "effect";
 // The canonical user-facing message helper lives in the wire's server core
 // (wire/src/server-core.ts); the hub re-exports it rather than re-defining it.
 export { messageOf } from "@saku/wire/server";
+// Aliased so the TaggedError class declaration below stays a plain call
+// (oxlint's throw-new-error would demand `new`, which breaks the schema
+// typecheck — `TaggedError` is a function returning a class, not a class).
+const tagged = Schema.TaggedError;
 
 /** The hub error categories (`HubError.kind`). */
 export type HubErrorKind =
-  | "registry" // thread lookups/record failures surfaced as hub errors
-  | "worker" // workerRef forwarding/create failures
-  | "provisioner" // env ensure/release failures
-  | "resolution" // unknown/ambiguous thread input
-  | "skills" // unknown skill
-  | "pi_sessions" // local-daemon-only commands (the hub never sees ~/.pi)
-  | "projects" // local-daemon-only commands (the window's scope lives on the machine)
-  | "command" // command validation (empty name, missing threadId)
-  | "startup"; // the hub's wire server failed to come up
+  // thread lookups/record failures surfaced as hub errors
+  | "registry"
+  // workerRef forwarding/create failures
+  | "worker"
+  // env ensure/release failures
+  | "provisioner"
+  // unknown/ambiguous thread input
+  | "resolution"
+  // unknown skill
+  | "skills"
+  // local-daemon-only commands (the hub never sees ~/.pi)
+  | "pi_sessions"
+  // local-daemon-only commands (the window's scope lives on the machine)
+  | "projects"
+  // command validation (empty name, missing threadId)
+  | "command"
+  // the hub's wire server failed to come up
+  | "startup";
 
-export class HubError extends Schema.TaggedError<HubError>()("HubError", {
+export class HubError extends tagged<HubError>()("HubError", {
+  cause: Schema.optional(Schema.Unknown),
   kind: Schema.Literals([
     "registry",
     "worker",
@@ -38,5 +52,4 @@ export class HubError extends Schema.TaggedError<HubError>()("HubError", {
     "startup",
   ]),
   message: Schema.String,
-  cause: Schema.optional(Schema.Unknown),
 }) {}

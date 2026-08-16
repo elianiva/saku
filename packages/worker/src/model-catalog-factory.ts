@@ -2,7 +2,7 @@
  * The shared catalog construction (model-catalog-factory.ts): the one
  * place the thread-facing model catalog is built — the opencode-go
  * provider, the `SAKU_FAKE_MODEL` scripted fixture, and the
- * `ModelCatalogShape` view — parameterized by the auth source (the
+ * `ModelCatalogApi` view — parameterized by the auth source (the
  * daemon's credential store vs a deployment's auth context).
  *
  * Node-clean (no node: imports): the deployment's thread DO imports it
@@ -11,13 +11,13 @@
  */
 
 import { Effect } from "effect";
-import {
-  createModels,
-  type Api,
-  type AuthContext,
-  type CredentialStore,
-  type Model,
-  type MutableModels,
+import { createModels } from "@earendil-works/pi-ai";
+import type {
+  Api,
+  AuthContext,
+  CredentialStore,
+  Model,
+  MutableModels,
 } from "@earendil-works/pi-ai";
 import { opencodeGoProvider } from "@earendil-works/pi-ai/providers/opencode-go";
 import type { WireModelInfo } from "@saku/wire";
@@ -25,12 +25,12 @@ import type { WireModelInfo } from "@saku/wire";
 import { fakeProvider } from "./fake-provider.ts";
 
 /** The threads' shared model runtime: builtins + models.json, auth-aware. */
-export interface ModelCatalogShape {
+export interface ModelCatalogApi {
   /** The shared `MutableModels` collection (also feeds core's compaction helpers). */
   readonly models: MutableModels;
   /** Models whose providers have complete auth configuration. */
-  readonly available: () => Effect.Effect<readonly Model<Api>[], never>;
-  readonly hasAuth: (providerId: string) => Effect.Effect<boolean, never>;
+  readonly available: () => Effect.Effect<readonly Model<Api>[]>;
+  readonly hasAuth: (providerId: string) => Effect.Effect<boolean>;
   readonly getModel: (providerId: string, modelId: string) => Model<Api> | undefined;
   readonly toWireInfo: (model: Model<Api>) => WireModelInfo;
 }
@@ -57,7 +57,7 @@ export const createModelCatalog = (options: {
   readonly auth: ModelCatalogAuthSource;
   /** The env the `SAKU_FAKE_MODEL` switch reads (process env or the deployment's bindings). */
   readonly env: Readonly<{ SAKU_FAKE_MODEL?: string }>;
-}): ModelCatalogShape => {
+}): ModelCatalogApi => {
   const models = createModels(
     "credentials" in options.auth
       ? { credentials: options.auth.credentials }
@@ -76,17 +76,17 @@ export const createModelCatalog = (options: {
   }
 
   return {
-    models,
-    available: () => Effect.tryPromise(() => models.getAvailable()),
+    available: () => Effect.tryPromise(async () => await models.getAvailable()),
+    getModel: (providerId, modelId) => models.getModel(providerId, modelId),
     hasAuth: (providerId) =>
-      Effect.tryPromise(() => models.checkAuth(providerId))
+      Effect.tryPromise(async () => await models.checkAuth(providerId))
         .pipe(Effect.map((check) => check !== undefined))
         .pipe(Effect.catchEager(() => Effect.succeed(false))),
-    getModel: (providerId, modelId) => models.getModel(providerId, modelId),
+    models,
     toWireInfo: (model) => ({
-      provider: model.provider,
-      id: model.id,
       contextWindow: model.contextWindow,
+      id: model.id,
+      provider: model.provider,
       reasoning: model.reasoning,
     }),
   };

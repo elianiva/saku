@@ -6,11 +6,11 @@ describe("composer suggestions", () => {
   it("turns an @ path into a file mention candidate", () => {
     expect(composerSuggestions("file", "src/thread/view.ts", false)).toEqual([
       {
-        value: "src/thread/view.ts",
-        label: "@src/thread/view.ts",
+        action: "mention",
         detail: "mention this file",
         icon: "fileStack",
-        action: "mention",
+        label: "@src/thread/view.ts",
+        value: "src/thread/view.ts",
       },
     ]);
   });
@@ -18,12 +18,12 @@ describe("composer suggestions", () => {
   it("filters slash commands and hides thread actions on the welcome", () => {
     expect(composerSuggestions("command", "mo", false)).toEqual([]);
     expect(composerSuggestions("command", "mo", true)[0]).toMatchObject({
-      value: "model",
-      label: "/model",
       action: "model",
+      label: "/model",
+      value: "model",
     });
     expect(composerSuggestions("command", "", false)).toEqual([
-      expect.objectContaining({ value: "clear", action: "clear" }),
+      expect.objectContaining({ action: "clear", value: "clear" }),
     ]);
   });
 

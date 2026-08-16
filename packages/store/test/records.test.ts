@@ -3,9 +3,9 @@
  * service (memory + file backend layers).
  */
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { NodeFileSystem } from "@effect/platform-node";
-import { Effect, FileSystem, Layer, Option } from "effect";
+import { Effect, FileSystem, Option } from "effect";
 
 import { KvStore, jsonRecords } from "../src/index.ts";
 
@@ -20,7 +20,7 @@ const encode = (text: string) => new TextEncoder().encode(text);
 const cases = (run: <A>(effect: Effect.Effect<A, never, KvStore>) => Promise<A>) => {
   it("round-trips get/put/delete/list", async () => {
     await run(
-      Effect.gen(function* () {
+      Effect.gen(function* exercise() {
         const kv = yield* KvStore;
         const records = jsonRecords<TestRecord>(kv, "records/");
         expect(Option.isNone(yield* records.get("one"))).toBe(true);
@@ -29,7 +29,9 @@ const cases = (run: <A>(effect: Effect.Effect<A, never, KvStore>) => Promise<A>)
         yield* records.put("two", { id: "two", n: 2 });
         // list answers with keys relative to the prefix, in the backend's order.
         const listed = yield* records.list();
-        expect(listed.map((entry) => entry.key).sort()).toEqual(["one", "two"]);
+        const keys = listed.map((entry) => entry.key);
+        keys.sort();
+        expect(keys).toEqual(["one", "two"]);
         expect(listed.map((entry) => entry.value)).toEqual(
           expect.arrayContaining([
             { id: "one", n: 1 },
@@ -45,7 +47,7 @@ const cases = (run: <A>(effect: Effect.Effect<A, never, KvStore>) => Promise<A>)
 
   it("isolates prefixes on the same kv", async () => {
     await run(
-      Effect.gen(function* () {
+      Effect.gen(function* exercise() {
         const kv = yield* KvStore;
         const left = jsonRecords<TestRecord>(kv, "left/");
         const right = jsonRecords<TestRecord>(kv, "right/");
@@ -64,7 +66,7 @@ const cases = (run: <A>(effect: Effect.Effect<A, never, KvStore>) => Promise<A>)
 
   it("skips corrupt records on list and reads them as none on get", async () => {
     await run(
-      Effect.gen(function* () {
+      Effect.gen(function* exercise() {
         const kv = yield* KvStore;
         const records = jsonRecords<TestRecord>(kv, "records/");
         yield* records.put("good", { id: "good", n: 1 });
@@ -81,7 +83,7 @@ const cases = (run: <A>(effect: Effect.Effect<A, never, KvStore>) => Promise<A>)
 };
 
 describe("KvStore.memory()", () => {
-  cases((effect) => Effect.runPromise(effect.pipe(Effect.provide(KvStore.memory()))));
+  cases(async (effect) => await Effect.runPromise(effect.pipe(Effect.provide(KvStore.memory()))));
 });
 
 describe("KvStore.file()", () => {
@@ -89,7 +91,7 @@ describe("KvStore.file()", () => {
   beforeAll(async () => {
     fs = await Effect.runPromise(
       Effect.provide(NodeFileSystem.layer)(
-        Effect.gen(function* () {
+        Effect.gen(function* fileSystem() {
           return yield* FileSystem.FileSystem;
         }),
       ),
@@ -101,7 +103,7 @@ describe("KvStore.file()", () => {
     try {
       return await Effect.runPromise(effect.pipe(Effect.provide(KvStore.file(fs, root))));
     } finally {
-      await fs.remove(root, { recursive: true, force: true }).pipe(Effect.runPromise);
+      await fs.remove(root, { force: true, recursive: true }).pipe(Effect.runPromise);
     }
   });
 });

@@ -23,9 +23,9 @@ import { Schema as S } from "effect";
  * the console never asks for one.
  */
 export const ProjectInfo = S.Struct({
+  addedAt: S.Number,
   /** The resolved absolute path of the added project. */
   path: S.String,
-  addedAt: S.Number,
 });
 export type ProjectInfo = S.Schema.Type<typeof ProjectInfo>;
 
@@ -60,19 +60,19 @@ export const AddProjectResponse = S.TaggedStruct("add_project", { project: Proje
 export const RemoveProjectResponse = S.TaggedStruct("remove_project", {});
 /** One subdirectory of the browsed path (the tree's current level). */
 export const ProjectDirEntry = S.Struct({
+  /** True when pi has sessions for this exact cwd (the candidate marker). */
+  hasPiSessions: S.Boolean,
   name: S.String,
   /** The resolved absolute path of the subdirectory. */
   path: S.String,
-  /** True when pi has sessions for this exact cwd (the candidate marker). */
-  hasPiSessions: S.Boolean,
 });
 export type ProjectDirEntry = S.Schema.Type<typeof ProjectDirEntry>;
 export const BrowseProjectDirsResponse = S.TaggedStruct("browse_project_dirs", {
-  /** The resolved directory that was listed. */
-  path: S.String,
+  entries: S.Array(ProjectDirEntry),
   /** Its parent directory; null at the filesystem root (no up row). */
   parent: S.NullOr(S.String),
-  entries: S.Array(ProjectDirEntry),
+  /** The resolved directory that was listed. */
+  path: S.String,
 });
 export type BrowseProjectDirsResult = S.Schema.Type<typeof BrowseProjectDirsResponse>;
 

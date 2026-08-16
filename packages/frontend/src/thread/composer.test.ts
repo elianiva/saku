@@ -22,9 +22,7 @@ describe("Lexical composer nodes", () => {
       { discrete: true },
     );
 
-    expect(host.querySelector("[data-saku-file-mention]")?.textContent).toBe(
-      "@src/thread/view.ts",
-    );
+    expect(host.querySelector("[data-saku-file-mention]")?.textContent).toBe("@src/thread/view.ts");
     expect(editor.getEditorState().read(() => $getRoot().getTextContent())).toBe(
       "@src/thread/view.ts",
     );

@@ -32,7 +32,7 @@ Two facts shaped the design:
    adopted threads.
 2. **Subtree matching with header verification**: an added project claims its own
    session dir plus every dir whose encoded name extends it (longest prefix wins on
-   overlap); dir names only pick *candidate* dirs (zero file reads for anything not
+   overlap); dir names only pick _candidate_ dirs (zero file reads for anything not
    added), and the file header's real `cwd` confirms membership — the lossy encoding
    can never misattribute. Pre-cwd sessions (`cwd: ""`) pass on their dir match.
 3. **Lazy per project**: connect fetches threads + projects only; a project's sessions

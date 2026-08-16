@@ -20,7 +20,7 @@
  * hub's `IdleStopController`), and the fire path runs here.
  */
 
-import { Effect, Match, Option } from "effect";
+import { Effect, Match, Option, Schema } from "effect";
 import {
   Hub,
   HubRegistry,
@@ -31,20 +31,30 @@ import {
   BoxApi,
   workerdSocket,
   HubError,
-  type EnvProvisioner,
-  type HubShape,
-  type HubRelayCoreShape,
-  type SocketLike,
-  type WireCoreShape,
 } from "@saku/hub/core";
+import type { HubApi, HubRelayCoreApi, SocketLike, WireCoreApi } from "@saku/hub/core";
 import type { SessionWireEvent } from "@saku/wire";
 
 import { KvStore } from "@saku/store";
-import { varOrDefault, type DeploymentEnv } from "./env.ts";
+import { varOrDefault } from "./env.ts";
+import type { DeploymentEnv } from "./env.ts";
 import { threadIdleStop, threadWorkerRef } from "./rpc.ts";
 import { decodeHubPush, jsonError, jsonOk, rpcErrorOf } from "./do-protocol.ts";
 import { staticProvisioner } from "./static-provisioner.ts";
 import { ENV_BUNDLE_BASE64 } from "./generated/env-bundle.ts";
+
+/**
+ * A schema that accepts any payload and types it as `T` — the ADR 0005
+ * seam the wire client uses for `EventFrame.event`: pi's event
+ * vocabulary crosses the wire unvalidated, never re-schemed.
+ */
+const opaque = <T>() =>
+  Schema.declare<T>((_u): _u is T => true, {
+    description: "opaque payload, carried unvalidated (ADR 0005)",
+  });
+
+/** The boundary where the push channel's opaque event crosses to the projected `SessionWireEvent`. */
+const decodeSessionEvent = Schema.decodeUnknownSync(opaque<SessionWireEvent>());
 
 export const IDLE_STOP_DEFAULT_MS = 300_000;
 
@@ -53,16 +63,18 @@ export const IDLE_STOP_DEFAULT_MS = 300_000;
 const boxProvisioner = (env: DeploymentEnv) =>
   Provisioner.make({
     boxApi: BoxApi.make({ apiKey: env.BOX_API_KEY }),
+    log: (message) => Effect.logError(`[hub-do] box: ${message}`),
     // The env daemon bundle is embedded at build time (scripts/
     // embed-env-bundle.ts): a DO cannot read the filesystem.
     readBundle: () =>
       Effect.sync(() => {
         const binary = atob(ENV_BUNDLE_BASE64);
         const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        for (let i = 0; i < binary.length; i += 1) {
+          bytes[i] = binary.codePointAt(i) ?? 0;
+        }
         return new TextDecoder().decode(bytes);
       }),
-    log: (message) => Effect.logError(`[hub-do] box: ${message}`),
   });
 
 /**
@@ -92,16 +104,18 @@ const provisionerFor = (env: DeploymentEnv) =>
  */
 
 export class SakuHubDO {
-  private hubPromise: Promise<HubShape> | undefined;
-  private wire: WireCoreShape | undefined;
-  private relay: HubRelayCoreShape | undefined;
+  private readonly env: DeploymentEnv;
+  private hubPromise: Promise<HubApi> | undefined;
+  private wire: WireCoreApi | undefined;
+  private relay: HubRelayCoreApi | undefined;
   /** Accepted sockets by workerd `WebSocket` (webSocketMessage routing). */
   private readonly sockets = new Map<WebSocket, SocketLike>();
+  private readonly state: DurableObjectState;
 
-  constructor(
-    private readonly state: DurableObjectState,
-    private readonly env: DeploymentEnv,
-  ) {}
+  constructor(state: DurableObjectState, env: DeploymentEnv) {
+    this.state = state;
+    this.env = env;
+  }
 
   /**
    * Workerd delivers accepted-socket messages through these DO methods
@@ -119,22 +133,21 @@ export class SakuHubDO {
   }
   /** The hub core over DO storage, built once per activation (async: the
    * registry and skills store read DO storage at construction). */
-  private buildHubShape() {
-    const state = this.state;
-    const env = this.env;
+  private buildHub() {
+    const { state } = this;
+    const { env } = this;
     const idleStop = threadIdleStop(env);
-    const idleStopMs = Number.parseInt(
-      varOrDefault(env, "SAKU_IDLE_STOP_MS", String(IDLE_STOP_DEFAULT_MS)),
-      10,
+    const idleStopMs = Math.trunc(
+      Number(varOrDefault(env, "SAKU_IDLE_STOP_MS", String(IDLE_STOP_DEFAULT_MS))),
     );
-    return Effect.fn("buildHubShape")(function* () {
+    return Effect.fn("buildHub")(function* buildHub() {
       return yield* Hub.make({
+        idleStop,
+        idleStopMs,
+        provisioner: yield* provisionerFor(env),
         registry: yield* HubRegistry.make(),
         skills: yield* SkillsStore.make(),
         workerRef: threadWorkerRef(env),
-        provisioner: yield* provisionerFor(env),
-        idleStopMs,
-        idleStop,
       });
     })().pipe(
       // The hub's registry and skills store live on DO storage — the
@@ -149,30 +162,24 @@ export class SakuHubDO {
    * seam (plain workerd, no alchemy runtime), so `Effect.runPromise`
    * happens here, at the edge, like the CLI's `Effect.runPromise(main())`.
    */
-  private hubShape() {
-    if (this.hubPromise === undefined) {
-      this.hubPromise = Effect.runPromise(this.buildHubShape());
-    }
-    return this.hubPromise;
+  private async hub() {
+    this.hubPromise ??= Effect.runPromise(this.buildHub());
+    return await this.hubPromise;
   }
 
   private async wireCore() {
-    if (this.wire === undefined) {
-      // A DO has no process: the hello_ok pid is 0. The runSync is safe
-      // because WireCore.make performs no blocking async work (its
-      // Effect.gen only builds Refs); only the hub shape above is
-      // awaited, since the registry and skills store read DO storage.
-      this.wire = Effect.runSync(
-        WireCore.make({ hub: await this.hubShape(), token: this.env.DEPLOYMENT_SECRET, pid: 0 }),
-      );
-    }
+    // A DO has no process: the hello_ok pid is 0. The runSync is safe
+    // because WireCore.make performs no blocking async work (its
+    // Effect.gen only builds Refs); only the hub shape above is
+    // awaited, since the registry and skills store read DO storage.
+    this.wire ??= Effect.runSync(
+      WireCore.make({ hub: await this.hub(), pid: 0, token: this.env.DEPLOYMENT_SECRET }),
+    );
     return this.wire;
   }
 
   private relayCore() {
-    if (this.relay === undefined) {
-      this.relay = Effect.runSync(HubRelayCore.make({ token: this.env.DEPLOYMENT_SECRET }));
-    }
+    this.relay ??= Effect.runSync(HubRelayCore.make({ token: this.env.DEPLOYMENT_SECRET }));
     return this.relay;
   }
 
@@ -182,7 +189,7 @@ export class SakuHubDO {
 
     // The thread DOs' JSON channel.
     if (path === "/push" && request.method === "POST") {
-      return this.handlePush(request);
+      return await this.handlePush(request);
     }
 
     // WebSocket surfaces: the wire (consoles) and the relay (daemons).
@@ -193,8 +200,8 @@ export class SakuHubDO {
       return jsonError("malformed", `unknown path: ${path}`);
     }
     const pair = new WebSocketPair();
-    const client = pair[0];
-    const server = pair[1];
+    // Workerd's pair is a tuple-like object without an iterator.
+    const [client, server] = [pair[0], pair[1]];
     this.state.acceptWebSocket(server);
     const socket = workerdSocket(server);
     this.sockets.set(server, socket);
@@ -202,10 +209,14 @@ export class SakuHubDO {
       // The connection handler lives for the socket's lifetime; failures
       // are per-connection (the socket closes, the hub keeps serving).
       const core = await this.wireCore();
-      void Effect.runPromise(Effect.scoped(core.runConnection(socket))).catch((error: unknown) => {
-        // The DO's fetch is a plain promise boundary: fork the log.
-        void Effect.runFork(Effect.logError(`[hub-do] connection failed: ${String(error)}`));
-      });
+      void Effect.runPromise(
+        Effect.scoped(core.runConnection(socket)).pipe(
+          Effect.matchEffect({
+            onFailure: (error) => Effect.logError(`[hub-do] connection failed: ${String(error)}`),
+            onSuccess: () => Effect.void,
+          }),
+        ),
+      );
     } else {
       this.relayCore().handleConnection(socket);
     }
@@ -217,32 +228,36 @@ export class SakuHubDO {
     // (decodeUnknownOption) both land on `none`: one error response.
     const parsed = await Effect.runPromise(
       Effect.tryPromise({
-        try: () => request.json() as Promise<unknown>,
-        catch: () => undefined,
+        catch: () => null,
+        try: async () => await request.json(),
       }).pipe(Effect.flatMap((body) => Effect.sync(() => decodeHubPush(body)))),
     );
-    if (Option.isNone(parsed)) return jsonError("malformed", "malformed push");
+    if (Option.isNone(parsed)) {
+      return jsonError("malformed", "malformed push");
+    }
     const push = parsed.value;
-    const hub = await this.hubShape();
-    return Match.value(push).pipe(
+    const hub = await this.hub();
+    return await Match.value(push).pipe(
       Match.tagsExhaustive({
+        idleStopFired: async ({ threadId }) => {
+          try {
+            await Effect.runPromise(hub.idleStopFired(threadId));
+            return jsonOk({});
+          } catch (error) {
+            const { kind, message } = rpcErrorOf(error);
+            return jsonError(kind, message);
+          }
+        },
         report: ({ threadId, report }) => {
           hub.events.report(threadId, report);
           return jsonOk({});
         },
         sessionEvent: ({ threadId, event, tailSeq }) => {
           // The event is opaque to the hub (ADR 0005) — the same seam
-          // cast the wire client applies to `EventFrame.event`.
-          hub.events.sessionEvent(threadId, event as SessionWireEvent, tailSeq);
+          // the wire client applies to `EventFrame.event`.
+          hub.events.sessionEvent(threadId, decodeSessionEvent(event), tailSeq);
           return jsonOk({});
         },
-        idleStopFired: ({ threadId }) =>
-          Effect.runPromise(hub.idleStopFired(threadId))
-            .then(() => jsonOk({}))
-            .catch((error: unknown) => {
-              const { kind, message } = rpcErrorOf(error);
-              return jsonError(kind, message);
-            }),
       }),
     );
   }

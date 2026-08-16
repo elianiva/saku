@@ -11,7 +11,7 @@ Cloudflare Workers + Durable Objects + ascii.dev Box stack, given a hard budget 
 **$20/month for everything** (control plane + sandbox + all infra)?
 
 **Date**: researched from primary sources; all claims cite their source.
-**Bottom line up front**: agentOS is a genuinely better *sandbox* fit (runs Pi, kills the
+**Bottom line up front**: agentOS is a genuinely better _sandbox_ fit (runs Pi, kills the
 Box bill, in-process with the thread actor), but **Rivet Cloud compute is premium-priced**
 (~$0.12/vCPU-hour vs ~$0.009 for Box) — the "$20 Hobby" is a floor, not a cap, and the
 real bill grows with agent runtime. The best-value shapes are: **Rivet Cloud Free +
@@ -24,6 +24,7 @@ on a $5 VPS** (same wire, ~$5/mo, lowest-risk experiment).
 ## 1. What the candidates are
 
 ### Rivet (rivet.dev) — the actor platform
+
 - Open-source (Apache 2.0) **actor platform** — stateful, durable, per-entity compute units
   with WebSockets, timers, events, per-actor SQLite. The same mental model as Durable
   Objects; Rivet's own docs position it as a portable, open-source DO alternative
@@ -35,6 +36,7 @@ on a $5 VPS** (same wire, ~$5/mo, lowest-risk experiment).
 - Company: Rivet Gaming, Inc. (the rivet.gg game-backend team), YC/a16z Speedrun backed [6].
 
 ### agentOS (agentos-sdk.dev, `@rivet-dev/agentos`) — the sandbox replacement
+
 - Open-source (Apache 2.0) **virtual operating system for agents, as a library**: each
   agent gets a V8-isolate + WebAssembly VM with a POSIX-compliant virtual kernel
   (filesystem, processes, pipes/PTYs, sockets, permissions). ~6 ms cold start, tens of MB
@@ -42,8 +44,8 @@ on a $5 VPS** (same wire, ~$5/mo, lowest-risk experiment).
 - Runs **Pi, Claude Code, Codex, and OpenCode** via ACP adapters; Pi is officially packaged
   as `@agentos-software/pi` (spawns `@earendil-works/pi-coding-agent/dist/cli.js`) [10][11].
 - Software registry (42 packages, WASM-compiled): `git, sh, coreutils, grep, sed, gawk,
-  findutils, curl, wget, jq, yq, fd, ripgrep, sqlite3, duckdb, vim, tar, unzip, zip,
-  diffutils, ssh, build-essential, common, everything`, the agents (`pi`, `pi-cli`,
+findutils, curl, wget, jq, yq, fd, ripgrep, sqlite3, duckdb, vim, tar, unzip, zip,
+diffutils, ssh, build-essential, common, everything`, the agents (`pi`, `pi-cli`,
   `claude`, `codex`, `opencode`) [12]. Node.js runs natively on V8 (full JIT), Bash and
   Python run inside the VM [13].
 - **Hybrid sandboxing**: agentOS can lazily mount a full external sandbox (provider-
@@ -53,48 +55,52 @@ on a $5 VPS** (same wire, ~$5/mo, lowest-risk experiment).
 - **Status: beta — "agentOS is beta and still undergoing security review"** [17].
 
 ### The current stack (the baseline)
+
 - Control plane: one Cloudflare Worker with `HUB` + `THREAD` Durable Object namespaces,
   deployed via alchemy; celld as the self-hosted twin (ADR 0002) [18].
 - Sandbox: ascii.dev **Box** — one full Ubuntu VM (4 vCPU / 8 GB / 50 GB, Docker, SSH,
-  snapshots) per sandbox-mode thread, lazy-provisioned by the hub, idle-stopped (ADR
-  0003) [19][20].
+  snapshots) per sandbox-mode thread, lazy-provisioned by the hub, idle-stopped (ADR 0003) [19][20].
 
 ---
 
 ## 2. Pricing (primary sources, as researched)
 
 ### Cloudflare (control plane)
-| | Workers Free | Workers Paid |
-|---|---|---|
-| Workers requests | 100,000/day (account-wide) | unlimited, $0.30/M |
-| DO requests | 100,000/day (includes WS messages, 20:1 ratio for incoming) | 1M/mo incl., +$0.15/M |
-| DO duration | 13,000 GB-s/day (≈28 h/day of active DO processing at 128 MB) | 400k GB-s/mo incl., +$12.50/M GB-s |
-| DO storage | 5 GB total | 5 GB-month incl., +$0.20/GB-mo |
-| DO rows | 5M reads/day, 100k writes/day | 25B reads, 50M writes incl., +$0.20/M reads, +$1.00/M writes |
-| Notes | SQLite-backed DOs only; **WS Hibernation API available on Free** | $5/mo minimum |
+
+|                  | Workers Free                                                     | Workers Paid                                                 |
+| ---------------- | ---------------------------------------------------------------- | ------------------------------------------------------------ |
+| Workers requests | 100,000/day (account-wide)                                       | unlimited, $0.30/M                                           |
+| DO requests      | 100,000/day (includes WS messages, 20:1 ratio for incoming)      | 1M/mo incl., +$0.15/M                                        |
+| DO duration      | 13,000 GB-s/day (≈28 h/day of active DO processing at 128 MB)    | 400k GB-s/mo incl., +$12.50/M GB-s                           |
+| DO storage       | 5 GB total                                                       | 5 GB-month incl., +$0.20/GB-mo                               |
+| DO rows          | 5M reads/day, 100k writes/day                                    | 25B reads, 50M writes incl., +$0.20/M reads, +$1.00/M writes |
+| Notes            | SQLite-backed DOs only; **WS Hibernation API available on Free** | $5/mo minimum                                                |
 
 Sources: [21][22][23]. With hibernation, idle DOs cost ~$0; a personal project easily
 fits Free. Exceeding a Free limit = hard error (not a bill).
 
 ### Sandbox options
-| Provider | Rate | Notes |
-|---|---|---|
-| **box (ascii.dev)** | **$20/mo minimum → 555 h of 4 vCPU/8 GB (~$0.036/h)**, per-second, snapshot stop/resume, 7-day trial | cheapest real-VM sandbox; flat monthly, shared across boxes [24][25][26] |
-| E2B | $0.0504/vCPU-h + $0.0162/GiB-h (2 vCPU/512 MiB ≈ $0.109/h) | per-second; one-time $100 free credits [27][28] |
-| **Cloudflare Sandbox** (Containers) | Workers Paid only; **$0.000020/vCPU-s + $0.0000025/GiB-s → 4 vCPU/8 GB ≈ $0.36/h**; 25 GiB-h + 375 vCPU-min incl. | ~10× box per hour; also billed for the controlling Worker/DO [29][30] |
+
+| Provider                            | Rate                                                                                                              | Notes                                                                    |
+| ----------------------------------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| **box (ascii.dev)**                 | **$20/mo minimum → 555 h of 4 vCPU/8 GB (~$0.036/h)**, per-second, snapshot stop/resume, 7-day trial              | cheapest real-VM sandbox; flat monthly, shared across boxes [24][25][26] |
+| E2B                                 | $0.0504/vCPU-h + $0.0162/GiB-h (2 vCPU/512 MiB ≈ $0.109/h)                                                        | per-second; one-time $100 free credits [27][28]                          |
+| **Cloudflare Sandbox** (Containers) | Workers Paid only; **$0.000020/vCPU-s + $0.0000025/GiB-s → 4 vCPU/8 GB ≈ $0.36/h**; 25 GiB-h + 375 vCPU-min incl. | ~10× box per hour; also billed for the controlling Worker/DO [29][30]    |
 
 ### Rivet Cloud
-| | Free | Hobby | Team |
-|---|---|---|---|
-| Price | **$0/mo** | **$20/mo + usage** | $200/mo + usage |
-| Awake Actor Hours | 100,000/mo hard cap | 400,000/mo incl. | same |
-| Compute | **$5/mo cap** (hard) | usage-based, **no included amount** | usage-based |
-| Max vCPU / actor | 1 | 8 | 8 |
-| Storage / reads / writes / egress | 5 GB / 200M / 5M / 100 GB | 5 GB / 25B / 50M / 1 TB | same |
-| Overage | — | awake actors $0.05/1k h; storage $0.40/GB-mo; reads $0.20/M; writes $1/M; egress $0.15/GB | — |
+
+|                                   | Free                      | Hobby                                                                                     | Team            |
+| --------------------------------- | ------------------------- | ----------------------------------------------------------------------------------------- | --------------- |
+| Price                             | **$0/mo**                 | **$20/mo + usage**                                                                        | $200/mo + usage |
+| Awake Actor Hours                 | 100,000/mo hard cap       | 400,000/mo incl.                                                                          | same            |
+| Compute                           | **$5/mo cap** (hard)      | usage-based, **no included amount**                                                       | usage-based     |
+| Max vCPU / actor                  | 1                         | 8                                                                                         | 8               |
+| Storage / reads / writes / egress | 5 GB / 200M / 5M / 100 GB | 5 GB / 25B / 50M / 1 TB                                                                   | same            |
+| Overage                           | —                         | awake actors $0.05/1k h; storage $0.40/GB-mo; reads $0.20/M; writes $1/M; egress $0.15/GB | —               |
 
 **Compute metering** (the number that matters): billed per active second, ~
 `$0.0000330/vCPU-s + $0.0000029/GiB-s`:
+
 - 1 vCPU / 512 MiB → **~$0.124/h**
 - 0.5 vCPU / 512 MiB → ~$0.065/h
 - Sleeping actors are **not** billed for compute [4][31][32].
@@ -108,22 +114,22 @@ For reference: their own estimator quotes $12.40/mo for 100 h of 1 vCPU/512 MiB 
 Assumptions: personal use; agents actually run ~1–4 h/day (30–120 h/mo); actors/threads
 sleep when idle (saku already has idle-stop semantics; Rivet actors sleep natively).
 
-| Path | Monthly bill | What you get | Fit at $20 |
-|---|---|---|---|
-| **A. CF Free + Box** (current) | **$20 flat** | 555 h/mo of 4 vCPU/8 GB VM-time; CF free caps (100k req/day) | ✅ exactly $20; most compute headroom per dollar |
-| **B. CF Paid + Box** | $25 | lifts CF caps | ❌ over budget |
-| **C. CF Free + E2B** | ~$0 + usage | $0.109/h for 2 vCPU/0.5 GiB → $3–13/mo at 30–120 h | ✅ possible, but worse per-hour than Box |
-| **D. CF Free + CF Sandbox** | ~$0 + usage | $0.36/h at 4 vCPU/8 GB → $11–43/mo | ⚠️ only at light usage; worst value per hour |
-| **E. Rivet Cloud Free + agentOS** | **$0** | $5/mo compute cap ≈ 40 h/mo at 1 vCPU (or ~160 h at 0.25 vCPU); 100k awake actor-h | ✅ best if runs ≲1 h/day |
-| **F. Rivet Cloud Hobby + agentOS** | **$20 + compute** | 30 h/mo at 0.5 vCPU → ~$22; 100 h/mo → ~$26–32 | ⚠️ only fits $20 at light usage — compute is metered with no included amount |
-| **G. Self-hosted Rivet + agentOS on a VPS** | **~$5–6** (Hetzner/DO) | everything: hub, threads, agentOS sidecars; unlimited within the VPS | ✅ cheapest unlimited; you own ops (updates, uptime, backups) |
-| **H. CF Free control plane + agentOS sidecar on $5 VPS** | **~$5–6** | keep DOs and the wire as-is; Box replaced by an agentOS VM pool on the VPS | ✅ lowest-risk way to test agentOS; sandbox spend $20 → ~$5 |
+| Path                                                     | Monthly bill           | What you get                                                                       | Fit at $20                                                                   |
+| -------------------------------------------------------- | ---------------------- | ---------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| **A. CF Free + Box** (current)                           | **$20 flat**           | 555 h/mo of 4 vCPU/8 GB VM-time; CF free caps (100k req/day)                       | ✅ exactly $20; most compute headroom per dollar                             |
+| **B. CF Paid + Box**                                     | $25                    | lifts CF caps                                                                      | ❌ over budget                                                               |
+| **C. CF Free + E2B**                                     | ~$0 + usage            | $0.109/h for 2 vCPU/0.5 GiB → $3–13/mo at 30–120 h                                 | ✅ possible, but worse per-hour than Box                                     |
+| **D. CF Free + CF Sandbox**                              | ~$0 + usage            | $0.36/h at 4 vCPU/8 GB → $11–43/mo                                                 | ⚠️ only at light usage; worst value per hour                                 |
+| **E. Rivet Cloud Free + agentOS**                        | **$0**                 | $5/mo compute cap ≈ 40 h/mo at 1 vCPU (or ~160 h at 0.25 vCPU); 100k awake actor-h | ✅ best if runs ≲1 h/day                                                     |
+| **F. Rivet Cloud Hobby + agentOS**                       | **$20 + compute**      | 30 h/mo at 0.5 vCPU → ~$22; 100 h/mo → ~$26–32                                     | ⚠️ only fits $20 at light usage — compute is metered with no included amount |
+| **G. Self-hosted Rivet + agentOS on a VPS**              | **~$5–6** (Hetzner/DO) | everything: hub, threads, agentOS sidecars; unlimited within the VPS               | ✅ cheapest unlimited; you own ops (updates, uptime, backups)                |
+| **H. CF Free control plane + agentOS sidecar on $5 VPS** | **~$5–6**              | keep DOs and the wire as-is; Box replaced by an agentOS VM pool on the VPS         | ✅ lowest-risk way to test agentOS; sandbox spend $20 → ~$5                  |
 
 Key asymmetry: **Rivet Cloud compute (~$0.124/vCPU-h) is ~13× Box's effective per-vCPU
 rate (~$0.009)** and ~2.4× E2B's ($0.0504) [24][27][31]. Rivet's economics only work
 because actors *sleep* (idle = $0). Long-running agents on Rivet Cloud compute will eat
 the budget; agentOS's "254× cheaper than sandboxes" claim [8] compares per-VM overhead
-inside an actor, but the *actor's* compute is what's metered.
+inside an actor, but the _actor's_ compute is what's metered.
 
 ---
 
@@ -132,15 +138,15 @@ inside an actor, but the *actor's* compute is what's metered.
 ~5.5 h/day × 30 = **~165 active agent-hours/month**. This changes the verdicts from §3
 significantly:
 
-| Path | Monthly bill @ 165 h/mo | Fits $20? |
-|---|---|---|
-| **A. CF Free + Box** (current) | **$20 flat** — 165 h of the 555 h included (30% utilization) | ✅ exactly |
-| **E. Rivet Cloud Free + agentOS** | $5/mo compute hard cap ≈ 40 h/mo at 1 vCPU, ~77 h at 0.5, ~143 h at 0.25 — **breaks mid-month** (hard errors, not a bill) | ❌ |
-| **F. Rivet Cloud Hobby + agentOS** | $20 + 165 h × $0.124/h (1 vCPU) ≈ **$40/mo**; ~$31 at 0.5 vCPU; ~$26 at 0.25 vCPU (painfully slow) | ❌ |
-| **H′. CF Free + static env daemon on a VPS** | **~$5–8/mo** (Hetzner CX22 2 vCPU/4 GB €4.49 ≈ $5.2; CX33 4 vCPU/8 GB €6.49 ≈ $7.5, EU prices [47]) — saku's existing `SAKU_ENV_PROVISIONER=static` shape, zero new code | ✅ best value |
-| **G. Self-hosted Rivet + agentOS on a VPS** | ~$5–8/mo + agentOS beta/no-Docker/native-binary limits + env-daemon packaging work | ✅ but more work than H′ |
-| **C. CF Free + E2B** | ~$10–18/mo (1–2 vCPU configs) | ✅ but worse per-hour than Box |
-| **D. CF Free + CF Sandbox** | $5 Workers Paid + 2 vCPU/2 GB ≈ $0.16/h × 165 ≈ **$32/mo**; only the weak 1 vCPU/1 GB config (~$18) fits | ⚠️/❌ |
+| Path                                         | Monthly bill @ 165 h/mo                                                                                                                                                  | Fits $20?                      |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------ |
+| **A. CF Free + Box** (current)               | **$20 flat** — 165 h of the 555 h included (30% utilization)                                                                                                             | ✅ exactly                     |
+| **E. Rivet Cloud Free + agentOS**            | $5/mo compute hard cap ≈ 40 h/mo at 1 vCPU, ~77 h at 0.5, ~143 h at 0.25 — **breaks mid-month** (hard errors, not a bill)                                                | ❌                             |
+| **F. Rivet Cloud Hobby + agentOS**           | $20 + 165 h × $0.124/h (1 vCPU) ≈ **$40/mo**; ~$31 at 0.5 vCPU; ~$26 at 0.25 vCPU (painfully slow)                                                                       | ❌                             |
+| **H′. CF Free + static env daemon on a VPS** | **~$5–8/mo** (Hetzner CX22 2 vCPU/4 GB €4.49 ≈ $5.2; CX33 4 vCPU/8 GB €6.49 ≈ $7.5, EU prices [47]) — saku's existing `SAKU_ENV_PROVISIONER=static` shape, zero new code | ✅ best value                  |
+| **G. Self-hosted Rivet + agentOS on a VPS**  | ~$5–8/mo + agentOS beta/no-Docker/native-binary limits + env-daemon packaging work                                                                                       | ✅ but more work than H′       |
+| **C. CF Free + E2B**                         | ~$10–18/mo (1–2 vCPU configs)                                                                                                                                            | ✅ but worse per-hour than Box |
+| **D. CF Free + CF Sandbox**                  | $5 Workers Paid + 2 vCPU/2 GB ≈ $0.16/h × 165 ≈ **$32/mo**; only the weak 1 vCPU/1 GB config (~$18) fits                                                                 | ⚠️/❌                          |
 
 Key insight: at this usage level, **Rivet Cloud's metered compute is the wrong economics**
 ($0.124/vCPU-h vs box's effective $0.009). The cheap compute lives on a **plain VPS** —
@@ -166,19 +172,20 @@ TypeScript/Python SDKs + MCP support [54].
 
 **Pricing (verified on the pricing page) [55]:**
 
-| | Free | Hobby | Pro |
-|---|---|---|---|
-| Price | **$0 forever** | $50/mo + usage | $500/mo + usage |
-| Concurrent VMs | 10 | 40 | 400 |
-| Included (per day) | **20 vCPU-h, 40 GiB-h, 16,800 GiB-h storage** | — | — |
-| Custom VM sizing | ✗ (default 4 vCPU / 8 GB / 20 GB only) | up to 8 vCPU / 16 GB / 32 GB | up to 32 vCPU / 64 GB |
-| Persistent VMs / snapshots | ✗ / 50 saved VMs | ✓ / 1,000 | ✓ / 12,000 |
+|                            | Free                                          | Hobby                        | Pro                   |
+| -------------------------- | --------------------------------------------- | ---------------------------- | --------------------- |
+| Price                      | **$0 forever**                                | $50/mo + usage               | $500/mo + usage       |
+| Concurrent VMs             | 10                                            | 40                           | 400                   |
+| Included (per day)         | **20 vCPU-h, 40 GiB-h, 16,800 GiB-h storage** | —                            | —                     |
+| Custom VM sizing           | ✗ (default 4 vCPU / 8 GB / 20 GB only)        | up to 8 vCPU / 16 GB / 32 GB | up to 32 vCPU / 64 GB |
+| Persistent VMs / snapshots | ✗ / 50 saved VMs                              | ✓ / 1,000                    | ✓ / 12,000            |
 
 Usage rates (beyond included): vCPU **$0.04032/h**, GiB memory **$0.0129/h**, GiB
 storage $0.000086/h [55]. Exceeding the free daily allowance transitions to paid usage
 (usage-based model) [52][56].
 
 **Cost at the user's 5–6 h/day (≈165 h/mo), default 4 vCPU/8 GB VM:**
+
 - 4 vCPU × 5.5 h = **22 vCPU-h/day vs 20 included**; 8 GiB × 5.5 h = **44 GiB-h/day vs 40
   included** — a hair over on 5.5+ h days.
 - Overage if billed: ~60 vCPU-h + ~120 GiB-h per month ≈ **$2.4 + $1.5 ≈ $4/mo**.
@@ -187,8 +194,9 @@ storage $0.000086/h [55]. Exceeding the free daily allowance transitions to paid
 - Worst case (no allowance at all): 165 h × (4×$0.04032 + 8×$0.0129) ≈ **$44/mo** — the
   daily included amounts are load-bearing; there is **no mid-tier between $0 and $50**.
 
-**Fit for saku** (Freestyle is a *sandbox* provider, not a control plane — it replaces
+**Fit for saku** (Freestyle is a _sandbox_ provider, not a control plane — it replaces
 **box**, not Cloudflare):
+
 - **Zero-code path**: run the env daemon inside one Freestyle VM and use the existing
   `SAKU_ENV_PROVISIONER=static` shape; VMs are reachable via public domain mappings
   (hostname → VM port), so the worker can dial the daemon [57]. One shared sandbox.
@@ -208,6 +216,7 @@ networking needs a real test.
 ## 4. Fit analysis for saku
 
 ### Concepts that map 1:1 (Rivet Actors ≈ DOs)
+
 - **Hub → one actor; Thread → one actor per thread** — "one actor per agent, per session"
   is literally Rivet's pitch [33].
 - **DO storage → per-actor SQLite** (injected automatically into actor deployments) [34] —
@@ -220,9 +229,10 @@ networking needs a real test.
 - **celld twin → self-hosted Rivet** (open source, Apache 2.0, `docker run rivetdev/engine`
   or Kubernetes) [38]. Local dev is simpler: `rivetkit dev` runs actors in-process [39].
 - Plain TypeScript/Node runtime (effect stack maps directly); edge networking on Rivet
-  Cloud *and* Cloudflare Workers [3].
+  Cloud _and_ Cloudflare Workers [3].
 
 ### What agentOS replaces (the Box)
+
 - **Box provisioning API/key, lazy-provision loop, idle-stop timer, snapshot/resume →
   built-in**: the thread actor boots its agentOS VM lazily on first action, disposes on
   sleep; the FS (≤10 GB) persists and survives sleep/wake [9][40]. The hub's Box
@@ -235,9 +245,11 @@ networking needs a real test.
   daemon is packaged as agentOS software (`defineSoftware` + aospkg toolchain) [41].
 
 ### agentOS limitations that bite (vs a full-VM Box)
+
 From the official limitations page [42]:
+
 - **No Docker, no container runtimes; no apt/yum; no arbitrary native binaries** — the
-  registry is the only software source (Go/Rust/C++ toolchains are *not* in it).
+  registry is the only software source (Go/Rust/C++ toolchains are _not_ in it).
 - **No kernel modules/eBPF, no file watching (`inotify`/`fs.watch`), no GPU/USB/hardware.**
 - Native npm deps (`sharp`, `better-sqlite3`, `playwright`), browsers, and heavy builds
   require the **external-sandbox hybrid** (beta, provider-agnostic) [14][15].
@@ -246,7 +258,8 @@ From the official limitations page [42]:
   of these limits (Docker included, dedicated IPv4, 60 fps desktop) [24][26].
 
 ### Risks
-- **agentOS is beta and explicitly still under security review** — it *is* the security
+
+- **agentOS is beta and explicitly still under security review** — it _is_ the security
   boundary (untrusted agent code), so this is the product's load-bearing surface [17].
 - **Rivet is young and fast-moving**: pricing/limits changed repeatedly 2024–2026
   (free-tier credit → usage → plan tiers; Rivet Compute launched June 2026) [4][43].
@@ -262,16 +275,16 @@ From the official limitations page [42]:
 
 ## 5. Tradeoff summary
 
-| Dimension | CF + Box (current) | Rivet Cloud + agentOS | Self-hosted Rivet + agentOS |
-|---|---|---|---|
-| Price @ typical use | $20 flat (CF free) | $0–$32 depending on runtime h | ~$5–6/mo |
-| Control-plane maturity | battle-tested, free tier | young but production-scale (multi-M player game backends) | you own ops |
-| Sandbox fidelity | full Ubuntu VM, Docker, IPv4 | POSIX VM: no Docker/apt/native binaries; hybrid sandbox (beta) | same as Rivet Cloud |
-| Sandbox cost | $20/mo for 555 h | metered as actor compute (cheap only when sleeping) | VPS-sized |
-| Cold start (sandbox mode) | seconds (snapshot resume) | ~6 ms | ~6 ms |
-| Lock-in | CF proprietary + box | Apache 2.0, self-hostable | none |
-| Ops surface | provisioning API keys, idle-stop loop (built) | none (built into actors) | VPS maintenance |
-| Fits $20 budget? | ✅ (exactly) | ⚠️ only Free tier or light Hobby usage | ✅ comfortably |
+| Dimension                 | CF + Box (current)                            | Rivet Cloud + agentOS                                          | Self-hosted Rivet + agentOS |
+| ------------------------- | --------------------------------------------- | -------------------------------------------------------------- | --------------------------- |
+| Price @ typical use       | $20 flat (CF free)                            | $0–$32 depending on runtime h                                  | ~$5–6/mo                    |
+| Control-plane maturity    | battle-tested, free tier                      | young but production-scale (multi-M player game backends)      | you own ops                 |
+| Sandbox fidelity          | full Ubuntu VM, Docker, IPv4                  | POSIX VM: no Docker/apt/native binaries; hybrid sandbox (beta) | same as Rivet Cloud         |
+| Sandbox cost              | $20/mo for 555 h                              | metered as actor compute (cheap only when sleeping)            | VPS-sized                   |
+| Cold start (sandbox mode) | seconds (snapshot resume)                     | ~6 ms                                                          | ~6 ms                       |
+| Lock-in                   | CF proprietary + box                          | Apache 2.0, self-hostable                                      | none                        |
+| Ops surface               | provisioning API keys, idle-stop loop (built) | none (built into actors)                                       | VPS maintenance             |
+| Fits $20 budget?          | ✅ (exactly)                                  | ⚠️ only Free tier or light Hobby usage                         | ✅ comfortably              |
 
 ---
 

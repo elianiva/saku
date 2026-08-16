@@ -20,7 +20,8 @@ import { Match, Option, Stream } from "effect";
 import type { Html, HtmlBuilder } from "foldkit/html";
 import type { ThreadEnvState, ThreadState, WireModelInfo } from "@saku/wire";
 
-import { icon, type IconName } from "../icon.ts";
+import { icon } from "../icon.ts";
+import type { IconName } from "../icon.ts";
 import {
   contextTone,
   envPresentation,
@@ -40,12 +41,11 @@ import {
   messageToolResult,
   summaryLine,
   trailToolIndex,
-  type ToolCallRow,
-  type ToolResultRow,
-  type TrailToolIndex,
 } from "./format.ts";
+import type { ToolCallRow, ToolResultRow, TrailToolIndex } from "./format.ts";
 import { markdownBody } from "./markdown.ts";
-import { toolArgsView, type ToolArgLine, type ToolArgsView } from "./tools.ts";
+import { toolArgsView } from "./tools.ts";
+import type { ToolArgLine, ToolArgsView } from "./tools.ts";
 import type { LiveTool } from "./live.ts";
 import {
   AbortRequested,
@@ -61,44 +61,13 @@ import {
   ToolToggled,
   UsagePanelClosed,
   UsagePanelRequested,
-  type ThreadMessage,
 } from "./message.ts";
+import type { ThreadMessage } from "./message.ts";
 import type { Model } from "./model.ts";
 import type { EntryProjection, MessageProjection } from "./projection.ts";
 import { ComposerMount } from "./composer.ts";
 import { composerSuggestions } from "./composer/options.ts";
 import { ChatScroller } from "./scroller.ts";
-
-export const view = Submodel.defineView<Model, ThreadMessage>((model, h) =>
-  h.section(
-    [h.Class("flex-1 flex flex-col min-w-0 min-h-0")],
-    model.id === null
-      ? [welcome(model, h)]
-      : [threadHeader(model, h), trailArea(model, h), composerArea(model, h)],
-  ),
-);
-
-const threadHeader = (model: Model, h: HtmlBuilder<ThreadMessage>) => {
-  const info = model.info;
-  return h.div(
-    [
-      h.Class(
-        "flex items-center gap-3 px-4 h-11 shrink-0 border-b border-line bg-surface text-[13px]",
-      ),
-    ],
-    [
-      h.span([h.Class("font-bold truncate min-w-0")], [info?.name ?? model.id ?? ""]),
-      h.span(
-        [h.Class("text-subtle text-[11px] uppercase tracking-[0.18em] shrink-0")],
-        [info?.mode ?? "local"],
-      ),
-      h.span([h.Class("flex-1")], []),
-      newThreadButton(h),
-      ...(info?.state === "working" ? [abortButton(h)] : []),
-      headerStateLine(info?.state, info?.env, h),
-    ],
-  );
-};
 
 /** The header's new-thread button: leave the pinned thread for the
  *  welcome — the pane surfaces NewThreadRequested and the root pushes "/"
@@ -155,75 +124,32 @@ const abortButton = (h: HtmlBuilder<ThreadMessage>) =>
     [icon(h, "square"), "abort"],
   );
 
-const trailArea = (model: Model, h: HtmlBuilder<ThreadMessage>) =>
-  AsyncData.match(model.trail, {
-    onIdle: () => trailStatus(h, "loading trail…"),
-    onLoading: () => trailStatus(h, "loading trail…"),
-    onRefreshing: () => trailStatus(h, "loading trail…"),
-    onStale: () => trailStatus(h, "loading trail…"),
-    onFailure: (error) => trailStatus(h, `trail unavailable — ${error}`),
-    onSuccess: ({ entries }) => {
-      const index = trailToolIndex(entries);
-      return h.div(
-        [h.Class("relative flex-1 min-h-0 flex flex-col bg-base max-w-3xl mx-auto")],
-        [
-          h.div(
-            [
-              h.Class("flex-1 min-h-0 overflow-y-auto"),
-              h.Attribute("id", "trail"),
-              h.OnMount(ChatScroller),
-            ],
-            [
-              h.div(
-                [h.Class("min-h-full flex flex-col gap-2")],
-                [
-                  ...entries.map((entry) => renderEntry(entry, h, model, index)),
-                  liveRegion(model, h),
-                ],
-              ),
-            ],
-          ),
-          scrollToLatestButton(h),
-        ],
-      );
-    },
-  });
+const threadHeader = (model: Model, h: HtmlBuilder<ThreadMessage>) => {
+  const { info } = model;
+  return h.div(
+    [
+      h.Class(
+        "flex items-center gap-3 px-4 h-11 shrink-0 border-b border-line bg-surface text-[13px]",
+      ),
+    ],
+    [
+      h.span([h.Class("font-bold truncate min-w-0")], [info?.name ?? model.id ?? ""]),
+      h.span(
+        [h.Class("text-subtle text-[11px] uppercase tracking-[0.18em] shrink-0")],
+        [info?.mode ?? "local"],
+      ),
+      h.span([h.Class("flex-1")], []),
+      newThreadButton(h),
+      ...(info?.state === "working" ? [abortButton(h)] : []),
+      headerStateLine(info?.state, info?.env, h),
+    ],
+  );
+};
 
 const trailStatus = (h: HtmlBuilder<ThreadMessage>, text: string) =>
   h.div(
     [h.Class("flex-1 min-h-0 flex items-center justify-center text-muted text-[12px]")],
     [text],
-  );
-
-const renderEntry = (
-  entry: EntryProjection,
-  h: HtmlBuilder<ThreadMessage>,
-  model: Model,
-  index: TrailToolIndex,
-) =>
-  Match.value(entry.type).pipe(
-    Match.when("message", () =>
-      renderMessageEntry(entry.message ?? {}, h, entry.id ?? "", model, index),
-    ),
-    Match.when("compaction", () =>
-      metaRow(h, "layers", `compacted — ${summaryLine(entry.summary)}`),
-    ),
-    Match.when("branch_summary", () =>
-      metaRow(h, "gitBranch", `branch — ${summaryLine(entry.summary)}`),
-    ),
-    Match.when("model_change", () =>
-      metaRow(h, "arrowRight", `model ${asString(entry.provider)}/${asString(entry.modelId)}`),
-    ),
-    Match.when("thinking_level_change", () =>
-      metaRow(h, "brain", `thinking ${asString(entry.thinkingLevel)}`),
-    ),
-    Match.when("active_tools_change", () => {
-      const tools = Array.isArray(entry.activeToolNames)
-        ? entry.activeToolNames.map(asString).join(", ")
-        : "";
-      return metaRow(h, "wrench", `tools ${tools}`);
-    }),
-    Match.orElse((type) => metaRow(h, "circleDot", asString(type) || "entry")),
   );
 
 const metaRow = (h: HtmlBuilder<ThreadMessage>, iconName: IconName, text: string) =>
@@ -232,135 +158,34 @@ const metaRow = (h: HtmlBuilder<ThreadMessage>, iconName: IconName, text: string
     [icon(h, iconName), text],
   );
 
-const renderMessageEntry = (
-  message: MessageProjection,
-  h: HtmlBuilder<ThreadMessage>,
-  entryId: string,
-  model: Model,
-  index: TrailToolIndex,
-) => {
-  const role = messageRole(message);
-  if (role === "user") {
+/** One argument line: labels for short fields, code blocks for
+ *  paths/content/commands, and plus/minus icons for edit diffs. */
+const toolArgsLine = (line: ToolArgLine, h: HtmlBuilder<ThreadMessage>) => {
+  if (line.kind === "label") {
     return h.div(
-      [h.Class("bg-surface border-l-2 border-pine/60 px-4 py-3"), h.Attribute("data-role", "user")],
-      [
-        roleLabel(h, "you", "text-pine font-bold"),
-        h.pre(
-          [h.Class("whitespace-pre-wrap text-[13px] leading-relaxed mt-1 text-text")],
-          [messageText(message)],
-        ),
-      ],
+      [h.Class("mt-1 text-[10px] uppercase tracking-[0.18em] text-subtle")],
+      [line.text],
     );
   }
-  if (role === "toolResult") {
-    const result = messageToolResult(message);
-    if (result === null) return null;
-    // A paired result renders inside its call's row (the view merges the
-    // tool's args and output into one block); only a result whose call
-    // never landed in this trail (compacted away) keeps its own row.
-    if (index.paired.has(result.callId)) return null;
-    const header = [
-      h.span(
-        [
-          h.Class(
-            `flex items-center gap-1 text-[10px] uppercase tracking-[0.18em] ${result.isError ? "text-love" : "text-subtle"}`,
-          ),
-        ],
-        [icon(h, result.isError ? "circleX" : "wrench"), "tool"],
+  if (line.kind === "code") {
+    return h.pre(
+      [h.Class("mt-0.5 whitespace-pre-wrap text-[12px] text-subtle max-h-40 overflow-y-auto")],
+      [line.text],
+    );
+  }
+  return h.div(
+    [
+      h.Class(
+        `mt-0.5 flex items-start gap-1 whitespace-pre-wrap text-[12px] font-mono ${line.kind === "removed" ? "text-love/80" : "text-foam/80"}`,
       ),
-      h.span([h.Class("text-[11px] text-muted font-bold")], [result.name]),
-    ];
-    // Nothing to reveal: a bare header row, not a collapsible.
-    if (result.text === "") {
-      return h.div(
-        [h.Class("px-4 py-2 border-b border-line bg-surface")],
-        [h.div([h.Class("flex items-center gap-2")], header)],
-      );
-    }
-    return h.details(
-      [
-        h.Class("group px-4 py-2 border-b border-line bg-surface"),
-        h.Open(model.toolsOpen.includes(entryId)),
-        h.OnToggle((expanded) => ToolToggled({ id: entryId, expanded })),
-      ],
-      [
-        h.summary(
-          [
-            h.Class(
-              "flex items-center gap-2 cursor-pointer select-none marker:hidden [&::-webkit-details-marker]:hidden",
-            ),
-          ],
-          [
-            h.span(
-              [
-                h.Class(
-                  "text-[10px] text-muted inline-block transition-transform duration-150 group-open:rotate-90",
-                ),
-              ],
-              [icon(h, "chevronRight")],
-            ),
-            ...header,
-          ],
-        ),
-        h.pre(
-          [h.Class("whitespace-pre-wrap text-[12px] text-subtle mt-1 max-h-64 overflow-y-auto")],
-          [result.text],
-        ),
-      ],
-    );
-  }
-  if (role === "assistant") {
-    const calls = messageToolCalls(message);
-    const thinking = messageThinking(message);
-    const text = messageText(message);
-    const error = messageError(message);
-    return h.div(
-      [h.Class("")],
-      [
-        ...(error === ""
-          ? []
-          : [
-              h.div(
-                [h.Class("mt-1 border-l-2 border-love/60 pl-2 text-[12px] text-love")],
-                [`model error — ${error}`],
-              ),
-            ]),
-        ...(thinking === ""
-          ? []
-          : [
-              thinkingBlock(h, markdownBody(h, thinking), {
-                open: model.thinkingOpen.includes(entryId),
-                onToggle: (expanded) => ThinkingToggled({ messageId: entryId, expanded }),
-              }),
-            ]),
-        ...(text === "" ? [] : [markdownBody(h, text)]),
-        ...(calls.length === 0
-          ? []
-          : [
-              h.div(
-                [h.Class("flex flex-col gap-2")],
-                calls.map((call) =>
-                  toolCallRow(
-                    call,
-                    index.results.get(call.id),
-                    model.toolsOpen.includes(call.id),
-                    h,
-                    (expanded) => ToolToggled({ id: call.id, expanded }),
-                  ),
-                ),
-              ),
-            ]),
-      ],
-    );
-  }
-  // Other roles (system, custom): render as a dim rail with the raw text.
-  const text = messageText(message);
-  return metaRow(
-    h,
-    "circleDot",
-    `${role || "message"}${text === "" ? "" : ` — ${summaryLine(text)}`}`,
+    ],
+    [icon(h, line.kind === "removed" ? "minus" : "plus"), line.text],
   );
 };
+
+/** The per-tool argument rendering, in display order. */
+const toolArgsLines = (args: ToolArgsView, h: HtmlBuilder<ThreadMessage>) =>
+  args.lines.map((line) => toolArgsLine(line, h));
 
 /**
  * One merged tool row: the call's arguments AND its output in a single
@@ -440,31 +265,6 @@ const toolCallRow = (
     ],
   );
 
-/** The per-tool argument rendering: labels for short fields, code blocks
- *  for paths/content/commands, and plus/minus icons for edit diffs. */
-const toolArgsLines = (args: ToolArgsView, h: HtmlBuilder<ThreadMessage>) =>
-  args.lines.map((line: ToolArgLine) =>
-    line.kind === "label"
-      ? h.div([h.Class("mt-1 text-[10px] uppercase tracking-[0.18em] text-subtle")], [line.text])
-      : line.kind === "code"
-        ? h.pre(
-            [
-              h.Class(
-                "mt-0.5 whitespace-pre-wrap text-[12px] text-subtle max-h-40 overflow-y-auto",
-              ),
-            ],
-            [line.text],
-          )
-        : h.div(
-            [
-              h.Class(
-                `mt-0.5 flex items-start gap-1 whitespace-pre-wrap text-[12px] font-mono ${line.kind === "removed" ? "text-love/80" : "text-foam/80"}`,
-              ),
-            ],
-            [icon(h, line.kind === "removed" ? "minus" : "plus"), line.text],
-          ),
-  );
-
 const roleLabel = (h: HtmlBuilder<ThreadMessage>, label: string, tone: string) =>
   h.div([h.Class(`text-[10px] uppercase tracking-[0.18em] ${tone}`)], [label]);
 
@@ -511,49 +311,196 @@ const thinkingBlock = (
     ],
   );
 
-const liveRegion = (model: Model, h: HtmlBuilder<ThreadMessage>) => {
-  const { live } = model;
-  const hasMessage = live.message !== undefined && live.message !== "";
-  const hasTools = live.tools.length > 0;
-  const hasNotice = live.notice !== undefined;
-  if (!hasMessage && !hasTools && !hasNotice) return null;
-  return h.div(
-    [h.Class("border-t-2 border-pine/40 bg-surface")],
-    [
-      ...(hasNotice ? [metaRow(h, "circleAlert", live.notice ?? "")] : []),
-      ...(hasMessage
-        ? [
-            h.div(
-              [h.Class("px-4 py-3")],
-              [roleLabel(h, "saku", "text-iris"), markdownBody(h, live.message ?? "", true)],
+const renderMessageEntry = (
+  message: MessageProjection,
+  h: HtmlBuilder<ThreadMessage>,
+  entryId: string,
+  model: Model,
+  index: TrailToolIndex,
+) => {
+  const role = messageRole(message);
+  if (role === "user") {
+    return h.div(
+      [h.Class("bg-surface border-l-2 border-pine/60 px-4 py-3"), h.Attribute("data-role", "user")],
+      [
+        roleLabel(h, "you", "text-pine font-bold"),
+        h.pre(
+          [h.Class("whitespace-pre-wrap text-[13px] leading-relaxed mt-1 text-text")],
+          [messageText(message)],
+        ),
+      ],
+    );
+  }
+  if (role === "toolResult") {
+    const result = messageToolResult(message);
+    if (result === null) {
+      return null;
+    }
+    // A paired result renders inside its call's row (the view merges the
+    // tool's args and output into one block); only a result whose call
+    // never landed in this trail (compacted away) keeps its own row.
+    if (index.paired.has(result.callId)) {
+      return null;
+    }
+    const header = [
+      h.span(
+        [
+          h.Class(
+            `flex items-center gap-1 text-[10px] uppercase tracking-[0.18em] ${result.isError ? "text-love" : "text-subtle"}`,
+          ),
+        ],
+        [icon(h, result.isError ? "circleX" : "wrench"), "tool"],
+      ),
+      h.span([h.Class("text-[11px] text-muted font-bold")], [result.name]),
+    ];
+    // Nothing to reveal: a bare header row, not a collapsible.
+    if (result.text === "") {
+      return h.div(
+        [h.Class("px-4 py-2 border-b border-line bg-surface")],
+        [h.div([h.Class("flex items-center gap-2")], header)],
+      );
+    }
+    return h.details(
+      [
+        h.Class("group px-4 py-2 border-b border-line bg-surface"),
+        h.Open(model.toolsOpen.includes(entryId)),
+        h.OnToggle((expanded) => ToolToggled({ expanded, id: entryId })),
+      ],
+      [
+        h.summary(
+          [
+            h.Class(
+              "flex items-center gap-2 cursor-pointer select-none marker:hidden [&::-webkit-details-marker]:hidden",
             ),
-          ]
-        : []),
-      ...(live.thinking !== undefined && live.thinking !== ""
-        ? [
-            h.div(
-              [h.Class("px-4 pt-2 ml-4")],
-              [thinkingBlock(h, markdownBody(h, live.thinking), { open: true })],
+          ],
+          [
+            h.span(
+              [
+                h.Class(
+                  "text-[10px] text-muted inline-block transition-transform duration-150 group-open:rotate-90",
+                ),
+              ],
+              [icon(h, "chevronRight")],
             ),
-          ]
-        : []),
-      ...(hasTools
-        ? [
-            h.div(
-              [h.Class("px-4 pb-3 flex flex-col gap-1")],
-              live.tools.map((tool) => liveToolRow(tool, model.toolsOpen, h)),
-            ),
-          ]
-        : []),
-    ],
+            ...header,
+          ],
+        ),
+        h.pre(
+          [h.Class("whitespace-pre-wrap text-[12px] text-subtle mt-1 max-h-64 overflow-y-auto")],
+          [result.text],
+        ),
+      ],
+    );
+  }
+  if (role === "assistant") {
+    const calls = messageToolCalls(message);
+    const thinking = messageThinking(message);
+    const text = messageText(message);
+    const error = messageError(message);
+    return h.div(
+      [h.Class("")],
+      [
+        ...(error === ""
+          ? []
+          : [
+              h.div(
+                [h.Class("mt-1 border-l-2 border-love/60 pl-2 text-[12px] text-love")],
+                [`model error — ${error}`],
+              ),
+            ]),
+        ...(thinking === ""
+          ? []
+          : [
+              thinkingBlock(h, markdownBody(h, thinking), {
+                onToggle: (expanded) => ThinkingToggled({ expanded, messageId: entryId }),
+                open: model.thinkingOpen.includes(entryId),
+              }),
+            ]),
+        ...(text === "" ? [] : [markdownBody(h, text)]),
+        ...(calls.length === 0
+          ? []
+          : [
+              h.div(
+                [h.Class("flex flex-col gap-2")],
+                calls.map((call) =>
+                  toolCallRow(
+                    call,
+                    index.results.get(call.id),
+                    model.toolsOpen.includes(call.id),
+                    h,
+                    (expanded) => ToolToggled({ expanded, id: call.id }),
+                  ),
+                ),
+              ),
+            ]),
+      ],
+    );
+  }
+  // Other roles (system, custom): render as a dim rail with the raw text.
+  const text = messageText(message);
+  return metaRow(
+    h,
+    "circleDot",
+    `${role || "message"}${text === "" ? "" : ` — ${summaryLine(text)}`}`,
   );
 };
 
+const renderEntry = (
+  entry: EntryProjection,
+  h: HtmlBuilder<ThreadMessage>,
+  model: Model,
+  index: TrailToolIndex,
+) =>
+  Match.value(entry.type).pipe(
+    Match.when("message", () =>
+      renderMessageEntry(entry.message ?? {}, h, entry.id ?? "", model, index),
+    ),
+    Match.when("compaction", () =>
+      metaRow(h, "layers", `compacted — ${summaryLine(entry.summary)}`),
+    ),
+    Match.when("branch_summary", () =>
+      metaRow(h, "gitBranch", `branch — ${summaryLine(entry.summary)}`),
+    ),
+    Match.when("model_change", () =>
+      metaRow(h, "arrowRight", `model ${asString(entry.provider)}/${asString(entry.modelId)}`),
+    ),
+    Match.when("thinking_level_change", () =>
+      metaRow(h, "brain", `thinking ${asString(entry.thinkingLevel)}`),
+    ),
+    Match.when("active_tools_change", () => {
+      const tools = Array.isArray(entry.activeToolNames)
+        ? entry.activeToolNames.map(asString).join(", ")
+        : "";
+      return metaRow(h, "wrench", `tools ${tools}`);
+    }),
+    Match.orElse((type) => metaRow(h, "circleDot", asString(type) || "entry")),
+  );
+
+/** A live tool's icon by state. */
+const toolStateIcon = (state: LiveTool["state"]): IconName => {
+  if (state === "running") {
+    return "loaderCircle";
+  }
+  if (state === "done") {
+    return "check";
+  }
+  return "circleX";
+};
+
+/** A live tool's tone by state. */
+const toolStateTone = (state: LiveTool["state"]) => {
+  if (state === "running") {
+    return "text-gold";
+  }
+  if (state === "done") {
+    return "text-foam";
+  }
+  return "text-love";
+};
+
 const liveToolRow = (tool: LiveTool, open: readonly string[], h: HtmlBuilder<ThreadMessage>) => {
-  const iconName: IconName =
-    tool.state === "running" ? "loaderCircle" : tool.state === "done" ? "check" : "circleX";
-  const tone =
-    tool.state === "running" ? "text-gold" : tool.state === "done" ? "text-foam" : "text-love";
+  const iconName = toolStateIcon(tool.state);
+  const tone = toolStateTone(tool.state);
   const output =
     tool.state === "running" ? (tool.partial ?? "") : (tool.result ?? tool.partial ?? "");
   const args = toolArgsView(tool.name, tool.args);
@@ -561,7 +508,7 @@ const liveToolRow = (tool: LiveTool, open: readonly string[], h: HtmlBuilder<Thr
     [
       h.Class("group flex flex-col gap-0.5 border border-line bg-base px-2 py-1"),
       h.Open(open.includes(tool.callId)),
-      h.OnToggle((expanded) => ToolToggled({ id: tool.callId, expanded })),
+      h.OnToggle((expanded) => ToolToggled({ expanded, id: tool.callId })),
     ],
     [
       h.summary(
@@ -600,47 +547,42 @@ const liveToolRow = (tool: LiveTool, open: readonly string[], h: HtmlBuilder<Thr
   );
 };
 
-/** The docked composer area under a pinned thread's trail. The prompt card
- *  gets enough width to feel like a work surface while staying aligned with
- *  the trail above it. */
-const composerArea = (model: Model, h: HtmlBuilder<ThreadMessage>) =>
-  h.div(
-    [h.Class("shrink-0 p-4")],
-    [h.div([h.Class("w-full max-w-4xl mx-auto")], [composerBox(model, h, "thread")])],
-  );
-
-/** The composer's integrated footer: state and keyboard guidance on the left,
- *  then the real thread controls and the send/abort action on the right. The
- *  welcome uses the same layout without thread-only model metadata. */
-const composerToolbar = (
-  model: Model,
-  h: HtmlBuilder<ThreadMessage>,
-  kind: "thread" | "welcome",
-  busy: boolean,
-) => {
-  const working = kind === "thread" && model.info !== null && model.info.state === "working";
+const liveRegion = (model: Model, h: HtmlBuilder<ThreadMessage>) => {
+  const { live } = model;
+  const hasMessage = live.message !== undefined && live.message !== "";
+  const hasTools = live.tools.length > 0;
+  const hasNotice = live.notice !== undefined;
+  if (!hasMessage && !hasTools && !hasNotice) {
+    return null;
+  }
   return h.div(
-    [h.Class("flex flex-wrap items-center gap-1.5 border-t border-line bg-overlay/20 px-2 py-2")],
+    [h.Class("border-t-2 border-pine/40 bg-surface")],
     [
-      ...(kind === "thread" && model.info !== null
-        ? [stateBadge(model.info.state, h)]
-        : [
-            h.span(
-              [h.Class("text-[10px] uppercase tracking-[0.16em] text-subtle")],
-              ["quick start"],
+      ...(hasNotice ? [metaRow(h, "circleAlert", live.notice ?? "")] : []),
+      ...(hasMessage
+        ? [
+            h.div(
+              [h.Class("px-4 py-3")],
+              [roleLabel(h, "saku", "text-iris"), markdownBody(h, live.message ?? "", true)],
             ),
-          ]),
-      h.span(
-        [h.Class("hidden sm:inline text-[10px] text-muted")],
-        [
-          kind === "welcome"
-            ? "enter to start · shift+enter newline · @ files · / commands"
-            : "enter to send · shift+enter newline · @ files · / commands",
-        ],
-      ),
-      h.span([h.Class("flex-1 min-w-2")], []),
-      ...(kind === "thread" ? [modelBadge(model, h), contextBadge(model, h)] : []),
-      working ? abortButton(h) : sendButton(h, kind, busy),
+          ]
+        : []),
+      ...(live.thinking !== undefined && live.thinking !== ""
+        ? [
+            h.div(
+              [h.Class("px-4 pt-2 ml-4")],
+              [thinkingBlock(h, markdownBody(h, live.thinking), { open: true })],
+            ),
+          ]
+        : []),
+      ...(hasTools
+        ? [
+            h.div(
+              [h.Class("px-4 pb-3 flex flex-col gap-1")],
+              live.tools.map((tool) => liveToolRow(tool, model.toolsOpen, h)),
+            ),
+          ]
+        : []),
     ],
   );
 };
@@ -678,9 +620,13 @@ const stateBadge = (state: ThreadState, h: HtmlBuilder<ThreadMessage>) => {
  *  breakdown (tokens in/out, cached read, hit rate, model, thinking
  *  level). */
 const contextBadge = (model: Model, h: HtmlBuilder<ThreadMessage>) => {
-  if (!AsyncData.isSuccess(model.trail)) return null;
+  if (!AsyncData.isSuccess(model.trail)) {
+    return null;
+  }
   const status = usageStatus(model.trail.data.entries, model.model);
-  if (status === null) return null;
+  if (status === null) {
+    return null;
+  }
   const { tokens, window, percent } = status.context;
   const open = model.usageOpen;
   return h.button(
@@ -723,9 +669,13 @@ const usageRow = (
  *  button is autofocused on open, and Escape closes and returns focus to
  *  the badge. */
 const usagePanel = (model: Model, h: HtmlBuilder<ThreadMessage>) => {
-  if (!AsyncData.isSuccess(model.trail)) return null;
+  if (!AsyncData.isSuccess(model.trail)) {
+    return null;
+  }
   const status = usageStatus(model.trail.data.entries, model.model);
-  if (status === null) return null;
+  if (status === null) {
+    return null;
+  }
   const { tokens, window, percent } = status.context;
   return h.div(
     [
@@ -773,13 +723,9 @@ const usagePanel = (model: Model, h: HtmlBuilder<ThreadMessage>) => {
           usageRow(
             h,
             "hit rate",
-            status.cacheHitRate === null
-              ? "—"
-              : `${Math.round(status.cacheHitRate * 100)}%`,
+            status.cacheHitRate === null ? "—" : `${Math.round(status.cacheHitRate * 100)}%`,
           ),
-          ...(status.model === null
-            ? []
-            : [usageRow(h, "model", modelLabel(status.model))]),
+          ...(status.model === null ? [] : [usageRow(h, "model", modelLabel(status.model))]),
           usageRow(h, "thinking", status.thinkingLevel ?? "—"),
         ],
       ),
@@ -803,6 +749,100 @@ const modelBadge = (model: Model, h: HtmlBuilder<ThreadMessage>) => {
       h.AriaLabel("change model"),
     ],
     [h.span([h.Class("truncate")], [label]), icon(h, "pencil")],
+  );
+};
+
+/** The composer's integrated footer: state and keyboard guidance on the left,
+ *  then the real thread controls and the send/abort action on the right. The
+ *  welcome uses the same layout without thread-only model metadata. */
+const composerToolbar = (
+  model: Model,
+  h: HtmlBuilder<ThreadMessage>,
+  kind: "thread" | "welcome",
+  busy: boolean,
+) => {
+  const working = kind === "thread" && model.info !== null && model.info.state === "working";
+  return h.div(
+    [h.Class("flex flex-wrap items-center gap-1.5 border-t border-line bg-overlay/20 px-2 py-2")],
+    [
+      ...(kind === "thread" && model.info !== null
+        ? [stateBadge(model.info.state, h)]
+        : [
+            h.span(
+              [h.Class("text-[10px] uppercase tracking-[0.16em] text-subtle")],
+              ["quick start"],
+            ),
+          ]),
+      h.span(
+        [h.Class("hidden sm:inline text-[10px] text-muted")],
+        [
+          kind === "welcome"
+            ? "enter to start · shift+enter newline · @ files · / commands"
+            : "enter to send · shift+enter newline · @ files · / commands",
+        ],
+      ),
+      h.span([h.Class("flex-1 min-w-2")], []),
+      ...(kind === "thread" ? [modelBadge(model, h), contextBadge(model, h)] : []),
+      working ? abortButton(h) : sendButton(h, kind, busy),
+    ],
+  );
+};
+
+/** The picker's key map: arrows move the highlight, Enter picks the
+ *  highlighted model (guarded while busy or empty). */
+const pickerMove = (
+  key: string,
+  activeModel: WireModelInfo | undefined,
+  busy: boolean,
+): Option.Option<ThreadMessage> => {
+  if (key === "ArrowDown") {
+    return Option.some(PickerMove({ delta: 1 }));
+  }
+  if (key === "ArrowUp") {
+    return Option.some(PickerMove({ delta: -1 }));
+  }
+  if (key === "Enter" && activeModel !== undefined && !busy) {
+    return Option.some(ModelPicked({ modelId: activeModel.id, provider: activeModel.provider }));
+  }
+  return Option.none();
+};
+
+const modelPickerStatus = (h: HtmlBuilder<ThreadMessage>, text: string) =>
+  h.div([h.Class("px-3 py-2 text-[12px] text-muted")], [text]);
+
+const modelPickerRow = (
+  candidate: WireModelInfo,
+  current: WireModelInfo | null,
+  busy: boolean,
+  active: boolean,
+  index: number,
+  h: HtmlBuilder<ThreadMessage>,
+) => {
+  const isCurrent =
+    current !== null && current.provider === candidate.provider && current.id === candidate.id;
+  return h.div(
+    [
+      h.Attribute("id", `model-option-${index}`),
+      h.Class(
+        `flex w-full cursor-pointer items-center gap-2 border-b border-line px-3 py-1.5 text-left text-[12px] last:border-b-0 ${active ? "bg-overlay/60" : ""} ${busy ? "text-muted" : "hover:bg-overlay/60"}`,
+      ),
+      h.Role("option"),
+      h.AriaSelected(isCurrent),
+      h.Attribute("aria-disabled", busy ? "true" : "false"),
+      h.OnClick(ModelPicked({ modelId: candidate.id, provider: candidate.provider })),
+      h.Title(
+        `${candidate.provider}/${candidate.id} · ${candidate.contextWindow.toLocaleString()} ctx${candidate.reasoning ? " · reasoning" : ""}`,
+      ),
+    ],
+    [
+      h.span(
+        [h.Class(`${isCurrent ? "text-pine" : "text-muted"} w-[1em] shrink-0`)],
+        isCurrent ? [icon(h, "check")] : [],
+      ),
+      h.span([h.Class("flex-1 truncate min-w-0")], [modelLabel(candidate)]),
+      h.span([h.Class("text-muted shrink-0")], [`${candidate.contextWindow.toLocaleString()} ctx`]),
+      ...(candidate.reasoning ? [h.span([h.Class("text-muted shrink-0")], ["reasoning"])] : []),
+    ],
   );
 };
 
@@ -839,17 +879,7 @@ const modelPickerPanel = (model: Model, h: HtmlBuilder<ThreadMessage>) => {
             h.Placeholder("search models…"),
             h.Value(model.pickerQuery),
             h.OnInput((text) => PickerQueryChanged({ text })),
-            h.OnKeyDownPreventDefault((key) =>
-              key === "ArrowDown"
-                ? Option.some(PickerMove({ delta: 1 }))
-                : key === "ArrowUp"
-                  ? Option.some(PickerMove({ delta: -1 }))
-                  : key === "Enter" && activeModel !== undefined && !busy
-                    ? Option.some(
-                        ModelPicked({ provider: activeModel.provider, modelId: activeModel.id }),
-                      )
-                    : Option.none(),
-            ),
+            h.OnKeyDownPreventDefault((key) => pickerMove(key, activeModel, busy)),
             // Escape closes the picker and returns focus to the badge (the
             // badge stays mounted while the panel is open, so the selector
             // always resolves).
@@ -862,11 +892,15 @@ const modelPickerPanel = (model: Model, h: HtmlBuilder<ThreadMessage>) => {
                 : Option.none(),
             ),
             h.OnMount({
-              name: "FocusModelSearch",
               f: (element) => {
-                (element as HTMLInputElement).focus();
+                // The picker's combobox input is the mount target (view.ts
+                // mounts it on the search input), so the element is an input.
+                if (element instanceof HTMLInputElement) {
+                  element.focus();
+                }
                 return Stream.empty;
               },
+              name: "FocusModelSearch",
             }),
           ]),
           h.button(
@@ -880,67 +914,31 @@ const modelPickerPanel = (model: Model, h: HtmlBuilder<ThreadMessage>) => {
         ],
       ),
       AsyncData.match(model.modelPicker, {
+        onFailure: (error) => modelPickerStatus(h, error.message),
         onIdle: () => modelPickerStatus(h, ""),
         onLoading: () => modelPickerStatus(h, "reading models…"),
         onRefreshing: () => modelPickerStatus(h, "reading models…"),
         onStale: () => modelPickerStatus(h, "reading models…"),
-        onFailure: (error) => modelPickerStatus(h, error.message),
-        onSuccess: (models) =>
-          models.length === 0
-            ? modelPickerStatus(h, "no models available")
-            : filtered.length === 0
-              ? modelPickerStatus(h, `no match for “${model.pickerQuery}”`)
-              : h.div(
-                  [
-                    h.Class("max-h-56 overflow-y-auto"),
-                    h.Role("listbox"),
-                    h.Attribute("id", "model-list"),
-                    h.AriaLabel("models"),
-                  ],
-                  filtered.map((candidate, index) =>
-                    modelPickerRow(candidate, model.model, busy, index === active, index, h),
-                  ),
-                ),
+        onSuccess: () => {
+          if (models.length === 0) {
+            return modelPickerStatus(h, "no models available");
+          }
+          if (filtered.length === 0) {
+            return modelPickerStatus(h, `no match for “${model.pickerQuery}”`);
+          }
+          return h.div(
+            [
+              h.Class("max-h-56 overflow-y-auto"),
+              h.Role("listbox"),
+              h.Attribute("id", "model-list"),
+              h.AriaLabel("models"),
+            ],
+            filtered.map((candidate, index) =>
+              modelPickerRow(candidate, model.model, busy, index === active, index, h),
+            ),
+          );
+        },
       }),
-    ],
-  );
-};
-
-const modelPickerStatus = (h: HtmlBuilder<ThreadMessage>, text: string) =>
-  h.div([h.Class("px-3 py-2 text-[12px] text-muted")], [text]);
-
-const modelPickerRow = (
-  candidate: WireModelInfo,
-  current: WireModelInfo | null,
-  busy: boolean,
-  active: boolean,
-  index: number,
-  h: HtmlBuilder<ThreadMessage>,
-) => {
-  const isCurrent =
-    current !== null && current.provider === candidate.provider && current.id === candidate.id;
-  return h.div(
-    [
-      h.Attribute("id", `model-option-${index}`),
-      h.Class(
-        `flex w-full cursor-pointer items-center gap-2 border-b border-line px-3 py-1.5 text-left text-[12px] last:border-b-0 ${active ? "bg-overlay/60" : ""} ${busy ? "text-muted" : "hover:bg-overlay/60"}`,
-      ),
-      h.Role("option"),
-      h.AriaSelected(isCurrent),
-      h.Attribute("aria-disabled", busy ? "true" : "false"),
-      h.OnClick(ModelPicked({ provider: candidate.provider, modelId: candidate.id })),
-      h.Title(
-        `${candidate.provider}/${candidate.id} · ${candidate.contextWindow.toLocaleString()} ctx${candidate.reasoning ? " · reasoning" : ""}`,
-      ),
-    ],
-    [
-      h.span(
-        [h.Class(`${isCurrent ? "text-pine" : "text-muted"} w-[1em] shrink-0`)],
-        isCurrent ? [icon(h, "check")] : [],
-      ),
-      h.span([h.Class("flex-1 truncate min-w-0")], [modelLabel(candidate)]),
-      h.span([h.Class("text-muted shrink-0")], [`${candidate.contextWindow.toLocaleString()} ctx`]),
-      ...(candidate.reasoning ? [h.span([h.Class("text-muted shrink-0")], ["reasoning"])] : []),
     ],
   );
 };
@@ -951,7 +949,9 @@ const modelPickerRow = (
  * DevTools and tests. */
 const composerMenuPanel = (model: Model, h: HtmlBuilder<ThreadMessage>) => {
   const menu = model.composerMenu;
-  if (menu === null) return null;
+  if (menu === null) {
+    return null;
+  }
   const options = composerSuggestions(menu.trigger, menu.query, model.id !== null);
   const active = options.length === 0 ? -1 : Math.min(menu.active, options.length - 1);
   return h.div(
@@ -1045,11 +1045,11 @@ const composerEditor = (
             : []),
           h.OnMount(
             ComposerMount({
-              kind,
-              initialText: model.composer,
-              placeholder,
-              editable: !busy,
               autofocus: kind === "welcome",
+              editable: !busy,
+              initialText: model.composer,
+              kind,
+              placeholder,
             }),
           ),
         ],
@@ -1070,6 +1070,20 @@ const composerEditor = (
   );
 };
 
+/** The composer's placeholder: the spin-up notice on the welcome while a
+ *  thread is starting, else the focus-aware affordance (humanlayer). */
+const composerPlaceholder = (model: Model, kind: "thread" | "welcome") => {
+  if (kind === "welcome" && model.starting) {
+    return "spinning up a thread…";
+  }
+  if (model.focused) {
+    return kind === "welcome"
+      ? "prompt saku — enter to spin up a thread"
+      : "prompt the thread · enter to send · shift+enter for a newline";
+  }
+  return "enter to start typing…";
+};
+
 /**
  * The composer box, shared by the thread pane and the welcome: a generous
  * prompt surface with its send action and real thread controls in one footer.
@@ -1082,14 +1096,7 @@ const composerEditor = (
 const composerBox = (model: Model, h: HtmlBuilder<ThreadMessage>, kind: "thread" | "welcome") => {
   const working = model.info?.state === "working";
   const busy = kind === "thread" ? working : model.starting;
-  const placeholder =
-    kind === "welcome" && model.starting
-      ? "spinning up a thread…"
-      : model.focused
-        ? kind === "welcome"
-          ? "prompt saku — enter to spin up a thread"
-          : "prompt the thread · enter to send · shift+enter for a newline"
-        : "enter to start typing…";
+  const placeholder = composerPlaceholder(model, kind);
   return h.div(
     [h.Class("relative flex flex-col")],
     [
@@ -1099,24 +1106,28 @@ const composerBox = (model: Model, h: HtmlBuilder<ThreadMessage>, kind: "thread"
             "flex flex-col overflow-hidden border border-line bg-surface transition-colors focus-within:border-subtle",
           ),
         ],
-        [
-          composerEditor(model, h, kind, busy, placeholder),
-          composerToolbar(model, h, kind, busy),
-        ],
+        [composerEditor(model, h, kind, busy, placeholder), composerToolbar(model, h, kind, busy)],
       ),
       // The floating panels hang off the card's top edge, overlaying the
       // trail above the composer (the card is the positioning context).
-      ...(model.composerMenu !== null ? [composerMenuPanel(model, h)] : []),
+      ...(model.composerMenu === null ? [] : [composerMenuPanel(model, h)]),
       ...(kind === "thread" && model.modelPicker._tag !== "Idle"
         ? [modelPickerPanel(model, h)]
         : []),
       ...(kind === "thread" && model.usageOpen ? [usagePanel(model, h)] : []),
-      model.notice === null
-        ? null
-        : h.div([h.Class("mt-2 text-[12px] text-love")], [model.notice]),
+      model.notice === null ? null : h.div([h.Class("mt-2 text-[12px] text-love")], [model.notice]),
     ],
   );
 };
+
+/** The docked composer area under a pinned thread's trail. The prompt card
+ *  gets enough width to feel like a work surface while staying aligned with
+ *  the trail above it. */
+const composerArea = (model: Model, h: HtmlBuilder<ThreadMessage>) =>
+  h.div(
+    [h.Class("shrink-0 p-4")],
+    [h.div([h.Class("w-full max-w-4xl mx-auto")], [composerBox(model, h, "thread")])],
+  );
 
 /** The jump-to-latest button (the shadcn MessageScrollerButton): floats at
  *  the trail's bottom edge, visible only while content sits below the
@@ -1134,6 +1145,40 @@ const scrollToLatestButton = (h: HtmlBuilder<ThreadMessage>) =>
     [h.span([h.Class("text-pine")], [icon(h, "arrowDown")]), "latest"],
   );
 
+const trailArea = (model: Model, h: HtmlBuilder<ThreadMessage>) =>
+  AsyncData.match(model.trail, {
+    onFailure: (error) => trailStatus(h, `trail unavailable — ${error}`),
+    onIdle: () => trailStatus(h, "loading trail…"),
+    onLoading: () => trailStatus(h, "loading trail…"),
+    onRefreshing: () => trailStatus(h, "loading trail…"),
+    onStale: () => trailStatus(h, "loading trail…"),
+    onSuccess: ({ entries }) => {
+      const index = trailToolIndex(entries);
+      return h.div(
+        [h.Class("relative flex-1 min-h-0 flex flex-col bg-base max-w-3xl mx-auto")],
+        [
+          h.div(
+            [
+              h.Class("flex-1 min-h-0 overflow-y-auto"),
+              h.Attribute("id", "trail"),
+              h.OnMount(ChatScroller),
+            ],
+            [
+              h.div(
+                [h.Class("min-h-full flex flex-col gap-2")],
+                [
+                  ...entries.map((entry) => renderEntry(entry, h, model, index)),
+                  liveRegion(model, h),
+                ],
+              ),
+            ],
+          ),
+          scrollToLatestButton(h),
+        ],
+      );
+    },
+  });
+
 /** The root route's surface: wordmark, greeting, and the quick-start
  *  composer in a centered chat-app column (CONTEXT.md: Quick start). Pi's
  *  sessions live in the rail now — the welcome is the composer and nothing
@@ -1147,3 +1192,11 @@ const welcome = (model: Model, h: HtmlBuilder<ThreadMessage>) =>
       h.div([h.Class("w-full max-w-4xl mt-2")], [composerBox(model, h, "welcome")]),
     ],
   );
+export const view = Submodel.defineView<Model, ThreadMessage>((model, h) =>
+  h.section(
+    [h.Class("flex-1 flex flex-col min-w-0 min-h-0")],
+    model.id === null
+      ? [welcome(model, h)]
+      : [threadHeader(model, h), trailArea(model, h), composerArea(model, h)],
+  ),
+);

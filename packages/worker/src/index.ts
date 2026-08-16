@@ -1,5 +1,5 @@
 /**
- * @saku/worker — the local worker daemon: registry + per-thread session hosts
+ * saku/worker — the local worker daemon: registry + per-thread session hosts
  * over the saku wire protocol.
  *
  * The daemon is the server-side home of pi sessions: each thread gets a
@@ -11,14 +11,16 @@
  */
 
 export { ensureAuthToken, readAuthToken, ensureSakuDirs } from "./auth.ts";
+export { DaemonError } from "./daemon-error.ts";
 export { RegistryError } from "./registry-error.ts";
-export { DoSessionRepo, DoSessionStorage, type DoSessionMetadata } from "./do-session.ts";
+export { DoSessionStorage, type DoSessionMetadata } from "./do-session.ts";
+export { DoSessionRepo } from "./do-session-repo.ts";
 export {
   ModelCatalog,
   ModelCatalogLive,
   ModelCatalogTest,
   type CatalogOptions,
-  type ModelCatalogShape,
+  type ModelCatalogApi,
 } from "./model-catalog.ts";
 export { buildTools } from "./tools.ts";
 export {
@@ -33,9 +35,9 @@ export {
   ThreadRegistryLive,
   ThreadRegistryTest,
   ThreadRecordSchema,
-  type HostRegistryShape,
+  type HostRegistryApi,
   type ThreadRecord,
-  type ThreadRegistryShape,
+  type ThreadRegistryApi,
 } from "./registry.ts";
 export { listProjects, addProject, removeProject, type ProjectRecord } from "./projects.ts";
 export {
@@ -43,8 +45,7 @@ export {
   SakuDaemonLive,
   SakuDaemonTest,
   SakuDaemonLayer,
-  DaemonError,
   type DaemonOptions,
-  type SakuDaemonShape,
+  type SakuDaemonApi,
 } from "./daemon.ts";
-export * from "./paths.ts";
+export { Paths, PathsLive, PathsTest, type PathsLayout } from "./paths.ts";

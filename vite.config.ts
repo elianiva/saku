@@ -1,4 +1,6 @@
 import { defineConfig } from "vite-plus";
+import core from "ultracite/oxlint/core";
+import antiSlop from "ultracite/oxlint/anti-slop";
 
 export default defineConfig({
   fmt: {
@@ -10,14 +12,25 @@ export default defineConfig({
       ".wrangler/**",
       "packages/deploy/src/generated/**",
     ],
-    singleQuote: false,
-    semi: true,
     indentWidth: 2,
     lineWidth: 100,
+    semi: true,
+    singleQuote: false,
     sortPackageJson: true,
   },
   lint: {
-    ignorePatterns: ["dist/**", ".turbo/**", ".references/**", "node_modules/**", ".wrangler/**"],
+    // Ultracite's strict oxlint baseline, plus dmmulroy/anti-slop's
+    // low-evidence rules (bundled as ultracite's anti-slop preset).
+    extends: [core, antiSlop],
+    ignorePatterns: [
+      "dist/**",
+      ".turbo/**",
+      ".references/**",
+      "node_modules/**",
+      ".wrangler/**",
+      // Stray untracked copy of the repo, not part of the workspace.
+      "nwwqtzlu/**",
+    ],
     options: {
       typeAware: true,
       // Oxlint's experimental type-check emits false positives on
@@ -26,23 +39,21 @@ export default defineConfig({
       // typecheck` (and CI) runs separately.
       typeCheck: false,
     },
-    rules: {
-      "no-console": ["error", { allow: ["warn", "error"] }],
-    },
     overrides: [
       {
-        files: ["packages/{wire,worker,cli,hub,store,deploy}/**"],
         env: { node: true },
+        files: ["packages/{wire,worker,cli,hub,store,deploy}/**"],
       },
       {
         // The frontend runs in the browser; its vite config runs in node.
-        files: ["packages/frontend/**"],
         env: { browser: true },
+        files: ["packages/frontend/**"],
       },
       {
         // Process entries log to a file the CLI/systemd captures; the
         // worker daemon is grandfathered under the node env block. The
         // frontend's vite config legitimately reads the node environment.
+        env: { node: true },
         files: [
           "packages/cli/**",
           "packages/env/src/entry.ts",
@@ -50,7 +61,6 @@ export default defineConfig({
           "packages/deploy/scripts/**",
           "packages/frontend/vite.config.ts",
         ],
-        env: { node: true },
         rules: {
           "no-console": "off",
         },
@@ -63,6 +73,9 @@ export default defineConfig({
         },
       },
     ],
+    rules: {
+      "no-console": ["error", { allow: ["warn", "error"] }],
+    },
   },
   staged: {
     "*": "vp check --fix",
