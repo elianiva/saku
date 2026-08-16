@@ -16,7 +16,7 @@ import {
   listPiSessions,
   readPiSession,
   PiSessionsError,
-} from "../src/pi-sessions.ts";
+} from "../src/pi-sessions/index.ts";
 import { Paths, PathsTest } from "../src/paths.ts";
 import type { PathsLayout } from "../src/paths.ts";
 import type { SessionMutation } from "../src/session-state.ts";

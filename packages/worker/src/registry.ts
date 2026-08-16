@@ -47,7 +47,7 @@ export interface ThreadRegistryApi extends HostRegistryApi {
     cwd?: string;
     mode?: ThreadMode;
     autoName?: boolean;
-    /** Adoption provenance for imported pi sessions (pi-sessions.ts). */
+    /** Adoption provenance for imported pi sessions (pi-sessions). */
     source?: ThreadSource;
   }) => Effect.Effect<ThreadRecord, RegistryError>;
   /** Archive a thread: visibility-only, the trail is untouched (CONTEXT.md: Archive). */

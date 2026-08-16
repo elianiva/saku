@@ -49,7 +49,7 @@ export class DoSessionRepo implements SessionRepo<DoSessionMetadata> {
   }
 
   /**
-   * Adopt a parsed pi session (pi-sessions.ts): write its mutations into
+   * Adopt a parsed pi session (pi-sessions): write its mutations into
    * this repo as a fresh session, then load it back — the load replays the
    * whole log through `SessionState`, so an invalid import (broken chain,
    * duplicate id, non-consecutive seq) fails here, before a thread points

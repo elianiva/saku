@@ -203,7 +203,7 @@ describe("durability", () => {
     await withFileKv(async (kv) => {
       const repo = new DoSessionRepo(kv);
       // The mutation stream a pi session import produces: three entries, a
-      // name fact, and the synthesized main-lane pin (pi-sessions.ts).
+      // name fact, and the synthesized main-lane pin (pi-sessions).
       const imported = await repo.import("adopted-thread", {
         createdAt: 1_780_500_000_000,
         cwd: "/tmp/pi-workspace",

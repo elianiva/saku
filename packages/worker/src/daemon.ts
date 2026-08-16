@@ -85,8 +85,8 @@ import type { ModelCatalogApi } from "./model-catalog.ts";
 import { SessionHost, SessionHostError } from "./session-host.ts";
 import { runSessionCommand } from "./session-commands.ts";
 import { DoSessionRepo } from "./do-session-repo.ts";
-import { browseProjectDirs, listPiSessions, readPiSession } from "./pi-sessions.ts";
-import type { PiSessionData } from "./pi-sessions.ts";
+import { browseProjectDirs, listPiSessions, readPiSession } from "./pi-sessions/index.ts";
+import type { PiSessionData } from "./pi-sessions/index.ts";
 import { addProject, listProjects, removeProject } from "./projects.ts";
 
 export interface DaemonOptions {
@@ -410,6 +410,8 @@ export class SakuDaemon extends Context.Service<SakuDaemon, SakuDaemonApi>()("Sa
             // daemon can read them (the mirror of skills_not_served). The
             // list is the window's scope (CONTEXT.md: Project): a filter
             // arg scopes to one project, otherwise every added project.
+            // Unreadable dirs read as empty (pi's own list skips those
+            // silently); failures surface as DaemonError(pi_sessions).
             const projects =
               command.project === undefined
                 ? (yield* listProjects(fs, paths)).map((project) => project.path)
