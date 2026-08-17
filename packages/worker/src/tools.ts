@@ -33,9 +33,12 @@ const adapt = <TParameters extends TSchema, TDetails>(
 });
 
 /** The standard hand toolset for a thread: read, bash, edit, write. */
-export const buildTools = (env: ExecutionEnv) => [
-  adapt(createReadTool(), env),
-  adapt(createBashTool(), env),
-  adapt(createEditTool(), env),
-  adapt(createWriteTool(), env),
-];
+export const buildTools = (env: ExecutionEnv) => {
+  const tools: AgentTool[] = [
+    adapt(createReadTool(), env),
+    adapt(createBashTool(), env),
+    adapt(createEditTool(), env),
+    adapt(createWriteTool(), env),
+  ];
+  return tools;
+};

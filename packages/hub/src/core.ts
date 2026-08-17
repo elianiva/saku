@@ -4,8 +4,8 @@
  * needs and nothing that binds to node.
  *
  * The module graph here is workerd-clean: the hub core, the durable
- * registry and skills store over the `KvStore` seam, the Box API client
- * and provisioner (injectable fetch), the wire and relay connection cores
+ * registry and skills store over the `KvStore` seam, the provider-neutral
+ * remote-machine and env-provisioner seams, the wire and relay connection cores
  * over the `SocketLike` surface, and the worker-seam types. The node
  * WebSocket servers (server.ts, relay.ts's `HubRelay.make`) live in the
  * package's main entry; a DO feeds the cores its accepted sockets and
@@ -21,27 +21,15 @@ export {
 } from "./idle-stop.ts";
 export { HubRegistry, type HubRecord, type HubRegistryApi } from "./registry.ts";
 export { SkillsStore, skillNameFromSource, type SkillsStoreApi } from "./skills.ts";
+export { type EnvProvisioner, type EnvProvisioning } from "./provisioner.ts";
 export {
-  Provisioner,
-  boxSystemdUnit,
-  boxRunScript,
-  boxEnsureNodeCommand,
-  boxInstallCommand,
-  BOX_DAEMON_PORT,
-  BOX_ENV_DIR,
-  BOX_NODE_VERSION,
-  type EnvProvisioner,
-  type ProvisionerDeps,
-} from "./provisioner.ts";
-export {
-  BoxApi,
   pollUntilReady,
-  BoxError,
-  type BoxApiContract,
-  type BoxInfo,
-  type BoxApiDeps,
+  RemoteMachineError,
   type CommandResult,
-} from "./box.ts";
+  type RemoteMachine,
+  type RemoteMachineProvider,
+  type RemoteMachineProviderError,
+} from "./remote-machine.ts";
 export {
   HubRelayCore,
   type HubRelayCoreApi,

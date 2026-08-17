@@ -367,6 +367,7 @@ export const inProcessWorker = Effect.fn("inProcessWorker")(function* inProcessW
           id: record.id,
           mode: record.mode,
           name: record.name,
+          remoteMachineId: null,
           sessionId: record.sessionId,
         });
         const payload = yield* runHostCommand(host, command);

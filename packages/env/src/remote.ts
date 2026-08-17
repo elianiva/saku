@@ -10,9 +10,9 @@
  * (`FileError`/`ExecutionError`), reconstructed from `{kind, message,
  * path?}` — a remote env fails exactly like a local one.
  *
- * Transport: `url` is either the env daemon's direct endpoint (a Box's
- * `host --private` URL) or the hub's relay server; with `relay`, the
- * client attaches to a registered env (`relay_attach`) before its
+ * Transport: `url` is either the env daemon's provider endpoint or the
+ * hub's relay server; with `relay`, the client attaches to a registered env
+ * (`relay_attach`) before its
  * `env_hello`, and the hub pipes the rest.
  *
  * The socket is an explicit dependency (`socket`): `RemoteEnv` itself

@@ -93,7 +93,6 @@ const stack = harnessBeforeAll(
       envUrl: daemon.url,
       fakeModel: true,
       idleStopMs: IDLE_STOP_MS,
-      provisioner: "static",
       secret: Redacted.make(TOKEN),
     }),
   ),

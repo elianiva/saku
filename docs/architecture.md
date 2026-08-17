@@ -287,13 +287,13 @@ channel (reports, session events, idle-stop firings).
 
 The same wire protocol, the same DO classes, two hosts:
 
-|                   | Local spine                                                         | Deployment                                   |
-| ----------------- | ------------------------------------------------------------------- | -------------------------------------------- |
-| Hub role          | the worker daemon (transitional)                                    | `SakuHubDO`, one per deployment              |
-| Worker role       | in-process `SessionHost` per thread                                 | `SakuThreadDO`, one per thread               |
-| Storage           | file-backed `KvStore` under `~/.saku/`                              | DO storage                                   |
-| Hands             | in-process `LocalEnv`                                               | `RemoteEnv` over the relay or a VM           |
-| Console bootstrap | `/__saku` reads `~/.saku/worker.url` + token, probes, then connects | same-origin `/ws` on the deployment's domain |
+|                   | Local spine                                                         | Deployment                                     |
+| ----------------- | ------------------------------------------------------------------- | ---------------------------------------------- |
+| Hub role          | the worker daemon (transitional)                                    | `SakuHubDO`, one per deployment                |
+| Worker role       | in-process `SessionHost` per thread                                 | `SakuThreadDO`, one per thread                 |
+| Storage           | file-backed `KvStore` under `~/.saku/`                              | DO storage                                     |
+| Hands             | in-process `LocalEnv`                                               | `RemoteEnv` over the relay or a remote machine |
+| Console bootstrap | `/__saku` reads `~/.saku/worker.url` + token, probes, then connects | same-origin `/ws` on the deployment's domain   |
 
 The daemon is the transitional local spine: when the hub owns the wire's
 server side in production, the daemon keeps the local stack alive speaking
@@ -308,9 +308,10 @@ and the celld twin (`packages/deploy/celld`). The thread DO's RPC surface is
 its durable alarm is the idle-stop trigger.
 
 Sandbox provisioning is behind the `SAKU_ENV_PROVISIONER` switch: `static`
-(one configured env daemon — dev/celld shape), `box` (ascii.dev — selectable
-for parity, **incomplete**, ADR 0008), `freestyle` (the provider of record,
-ADR 0008 — fails loudly until the backend lands).
+(the default; one configured env daemon — dev/celld shape), `box` (ascii.dev —
+explicit parity opt-in, **incomplete**, ADR 0008), `freestyle` (the provider
+of record, ADR 0008 — fails loudly until the backend lands). Unknown values
+fail rather than silently selecting Box (ADR 0010).
 
 ## The seams
 
@@ -320,8 +321,8 @@ Every seam has two or three implementations, chosen at the composition site:
 | --------------- | -------------------------------------------------------------------------------------------------- |
 | `KvStore`       | memory · file · DO storage                                                                         |
 | Wire server     | daemon · hub node server · hub DO (`/ws`)                                                          |
-| Env transport   | local socket · relay socket · VM `host --private` URL                                              |
-| Env provisioner | static · box (incomplete) · freestyle (planned)                                                    |
+| Env transport   | local socket · relay socket · provider endpoint                                                    |
+| Env provisioner | local relay path · static daemon · remote-machine adapters (Box/Freestyle)                         |
 | Idle-stop timer | hub-side timers (local spine, tests) · DO alarm (deployment)                                       |
 | Worker ref      | thread-DO namespace (deployment) · scripted (tests) · absent (local spine — the daemon is the hub) |
 | Socket          | node `ws` · workerd `WebSocket` (same `SocketLike` surface)                                        |

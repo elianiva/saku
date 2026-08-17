@@ -12,12 +12,11 @@
  *              and idle-stop firings
  *
  * Everything durable lives on DO storage through the `KvStore` seam; the
- * worker seam is the thread-DO namespace; provisioning is the Box
- * provisioner (incomplete — ADR 0008), the static one
- * (`SAKU_ENV_PROVISIONER=static`), or — once the backend lands — Freestyle
- * (`SAKU_ENV_PROVISIONER=freestyle`, fails loudly until then); the
- * idle-stop window is armed in the thread DOs as durable alarms (the
- * hub's `IdleStopController`), and the fire path runs here.
+ * worker seam is the thread-DO namespace; provisioning is the default static
+ * daemon, the explicit Box adapter (incomplete — ADR 0008), or — once the
+ * backend lands — Freestyle (`SAKU_ENV_PROVISIONER=freestyle`, fails loudly
+ * until then); the idle-stop window is armed in the thread DOs as durable
+ * alarms (the hub's `IdleStopController`), and the fire path runs here.
  */
 
 import { Effect, Match, Option, Schema } from "effect";
@@ -26,14 +25,13 @@ import {
   HubRegistry,
   HubRelayCore,
   SkillsStore,
-  Provisioner,
   WireCore,
-  BoxApi,
   workerdSocket,
   HubError,
 } from "@saku/hub/core";
 import type { HubApi, HubRelayCoreApi, SocketLike, WireCoreApi } from "@saku/hub/core";
 import type { SessionWireEvent } from "@saku/wire";
+import { BoxApi, BoxProvisioner } from "@saku/hub/providers/box";
 
 import { KvStore } from "@saku/store";
 import { varOrDefault } from "./env.ts";
@@ -58,11 +56,10 @@ const decodeSessionEvent = Schema.decodeUnknownSync(opaque<SessionWireEvent>());
 
 export const IDLE_STOP_DEFAULT_MS = 300_000;
 
-/** The Box provisioner with the deployment's key and embedded bundle.
- * Box is incomplete (ADR 0008) — kept selectable until Freestyle lands. */
+/** The Box adapter with the deployment's key and embedded bundle.
+ * Box is incomplete (ADR 0008) — explicit opt-in until Freestyle lands. */
 const boxProvisioner = (env: DeploymentEnv) =>
-  Provisioner.make({
-    boxApi: BoxApi.make({ apiKey: env.BOX_API_KEY }),
+  BoxProvisioner.make({
     log: (message) => Effect.logError(`[hub-do] box: ${message}`),
     // The env daemon bundle is embedded at build time (scripts/
     // embed-env-bundle.ts): a DO cannot read the filesystem.
@@ -75,18 +72,19 @@ const boxProvisioner = (env: DeploymentEnv) =>
         }
         return new TextDecoder().decode(bytes);
       }),
+    remoteMachineProvider: BoxApi.make({ apiKey: env.BOX_API_KEY }),
   });
 
 /**
- * The deployment's provisioner: `SAKU_ENV_PROVISIONER=static` opts into
- * the configured-daemon mode (dev/celld); `freestyle` is the chosen
- * sandbox provider (ADR 0008) — the backend is in preparation, so it
- * fails loudly at hub build rather than silently falling back; anything
- * else is the Box (incomplete, ADR 0008).
+ * The deployment's provisioner: static is the default configured-daemon
+ * mode (dev/celld); Box is explicit and incomplete; Freestyle is the chosen
+ * provider of record but fails loudly until its backend lands. Unknown
+ * values fail rather than silently selecting a provider.
  */
-const provisionerFor = (env: DeploymentEnv) =>
-  Match.value(varOrDefault(env, "SAKU_ENV_PROVISIONER", "box")).pipe(
+export const provisionerFor = (env: DeploymentEnv) =>
+  Match.value(varOrDefault(env, "SAKU_ENV_PROVISIONER", "static")).pipe(
     Match.when("static", () => Effect.succeed(staticProvisioner(env))),
+    Match.when("box", () => Effect.succeed(boxProvisioner(env))),
     Match.when("freestyle", () =>
       Effect.fail(
         new HubError({
@@ -95,7 +93,14 @@ const provisionerFor = (env: DeploymentEnv) =>
         }),
       ),
     ),
-    Match.orElse(() => Effect.succeed(boxProvisioner(env))),
+    Match.orElse((value) =>
+      Effect.fail(
+        new HubError({
+          kind: "provisioner",
+          message: `unknown env provisioner: ${value}`,
+        }),
+      ),
+    ),
   );
 
 /**

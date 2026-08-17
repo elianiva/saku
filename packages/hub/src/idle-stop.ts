@@ -1,13 +1,14 @@
 /**
  * The idle-stop policy (idle-stop.ts): a ready sandbox env that has been
- * idle is stopped by the hub (snapshot, billing paused) and resumed on
+ * idle is suspended by the hub (snapshot, billing paused) and resumed on
  * the next prompt; local envs never stop (ADR 0003).
  *
  * The policy is the hub's hidden sub-machine, extracted from the core
  * (hub.ts) into its own module: `arm` starts the window (sandbox mode +
  * env ready + state idle), `disarm` clears it (any activity resets the
- * window), and `fire` — the trigger — validates, stops the Box, flips the
- * env axis, and broadcasts. The hub arms/disarms on every activity signal
+ * window), and `fire` — the trigger — validates, suspends the remote
+ * machine, flips the env axis, and broadcasts. The hub arms/disarms on every
+ * activity signal
  * (worker reports, session events, the env gate) and delegates its public
  * `idleStopFired` (the deployment's DO-alarm trigger) to `fire`.
  *
@@ -38,15 +39,15 @@ export interface IdleStopController {
 export interface IdleStopDeps {
   /** The policy gates on the record (mode, env axis) and the state cache. */
   readonly registry: Pick<HubRegistryApi, "get" | "toInfo" | "setEnv">;
-  /** Release: stop the Box when the window fires. */
+  /** Release: suspend the remote machine when the window fires. */
   readonly provisioner: Pick<EnvProvisioner, "release">;
-  /** Clear the worker's env handle on fire (the env connection died with the Box). */
+  /** Clear the worker's env handle on fire (the env connection died with the machine). */
   readonly workerRef: Pick<ThreadWorkerRef, "setEnvHandle">;
   /** The thread's wire view; `fire` broadcasts it after the env flip. */
   readonly infoOf: (threadId: string) => Effect.Effect<ThreadInfo, HubError>;
   /** The hub's fan-out (the wire server's `thread_changed` broadcasts). */
   readonly emitThreadChanged: (thread: ThreadInfo) => Effect.Effect<void>;
-  /** Idle before a sandbox env is stopped; the hub supplies the default. */
+  /** Idle before a sandbox env is suspended; the hub supplies the default. */
   readonly idleStopMs: number;
   /**
    * The timer seam: defaults to hub-side timers (the local spine, tests);
@@ -138,7 +139,7 @@ export class IdleStop extends Context.Service<IdleStop, IdleStopApi>()("IdleStop
       });
     });
 
-    /** The idle-stop trigger: stop the Box, flip the env axis, broadcast. */
+    /** The idle-stop trigger: suspend the remote machine, flip the env axis, broadcast. */
     fire = Effect.fn("fire")(function* fireImpl(threadId: string) {
       yield* disarm(threadId);
       const record = yield* registry.get(threadId);
@@ -156,9 +157,9 @@ export class IdleStop extends Context.Service<IdleStop, IdleStopApi>()("IdleStop
         return;
       }
       yield* provisioner
-        .release(threadId, Option.fromNullishOr(record.value.envHandle))
+        .release(threadId, record.value.remoteMachineId, record.value.envHandle)
         .pipe(Effect.catch(() => Effect.void));
-      // The worker's env connection is dead with the Box: clear it.
+      // The worker's env connection is dead with the remote machine: clear it.
       yield* workerRef.setEnvHandle(threadId, null).pipe(Effect.catch(() => Effect.void));
       yield* registry.setEnv(threadId, "stopped");
       const after = yield* infoOf(threadId);

@@ -20,27 +20,15 @@ export {
 } from "./idle-stop.ts";
 export { HubRegistry, type HubRecord, type HubRegistryApi } from "./registry.ts";
 export { SkillsStore, skillNameFromSource, type SkillsStoreApi } from "./skills.ts";
+export { type EnvProvisioner, type EnvProvisioning } from "./provisioner.ts";
 export {
-  Provisioner,
-  boxSystemdUnit,
-  boxRunScript,
-  boxEnsureNodeCommand,
-  boxInstallCommand,
-  BOX_DAEMON_PORT,
-  BOX_ENV_DIR,
-  BOX_NODE_VERSION,
-  type EnvProvisioner,
-  type ProvisionerDeps,
-} from "./provisioner.ts";
-export {
-  BoxApi,
   pollUntilReady,
-  BoxError,
-  type BoxApiContract,
-  type BoxInfo,
-  type BoxApiDeps,
+  RemoteMachineError,
   type CommandResult,
-} from "./box.ts";
+  type RemoteMachine,
+  type RemoteMachineProvider,
+  type RemoteMachineProviderError,
+} from "./remote-machine.ts";
 export { HubRelay, type HubRelayApi, type RelayServerOptions } from "./relay.ts";
 export { HubRelayCore, type HubRelayCoreApi } from "./relay-core.ts";
 export { WireCore, type WireCoreOptions, type WireCoreApi } from "./wire-core.ts";

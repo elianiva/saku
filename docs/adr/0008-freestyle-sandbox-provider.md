@@ -30,8 +30,9 @@ usage is ~5–6 h/day of agent runtime (~165 active hours/month). A research pas
 - The deployment selects it with `SAKU_ENV_PROVISIONER=freestyle` and a
   `FREESTYLE_API_KEY` secret. Until the freestyle backend lands, setting the var
   **fails loudly at hub build** (no silent Box fallback).
-- `SAKU_ENV_PROVISIONER=static` remains the dev/celld shape; `box` remains the
-  fallback default until the freestyle backend is production-verified.
+- `SAKU_ENV_PROVISIONER=static` is the deployment default and remains the
+  dev/celld shape; `box` is explicit opt-in until the freestyle backend is
+  production-verified (ADR 0010).
 
 ### The freestyle backend (in preparation)
 

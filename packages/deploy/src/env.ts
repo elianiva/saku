@@ -13,7 +13,7 @@
 /** The vars a deployment may set (all optional; the defaults in the stack). */
 export interface DeploymentVars {
   /**
-   * "box" (default — incomplete, ADR 0008), "static" (dev/celld shape),
+   * "static" (default, dev/celld shape), "box" (explicit, incomplete),
    * or "freestyle" (the intended provider, ADR 0008 — the backend is in
    * preparation, so the hub fails loudly until it lands).
    */
@@ -34,7 +34,7 @@ export interface DeploymentEnv extends DeploymentVars {
   /** The deployment secret consoles present in `hello` (v1 auth). */
   readonly DEPLOYMENT_SECRET: string;
   /** The Box API key (ascii.dev); empty for static-provisioner deploys.
-   * Box is incomplete (ADR 0008) — kept for parity until Freestyle lands. */
+   * Box is incomplete (ADR 0008) and explicit opt-in. */
   readonly BOX_API_KEY: string;
   /** The Freestyle API key (freestyle.sh); unused until the freestyle
    * provisioner backend lands (ADR 0008). */

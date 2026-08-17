@@ -1,8 +1,8 @@
 /**
- * The Box bundle (tsdown.bundle.config.ts): the env daemon as one
- * self-contained file, uploaded into a Box by the hub's provisioner
- * (ADR 0003) — `dist/entry.bundle.js`. The Box has no node_modules and no
- * workspace, so everything (effect, ws, the tool engine) is inlined; the
+ * The remote env bundle (tsdown.bundle.config.ts): the env daemon as one
+ * self-contained file, uploaded into a remote machine by its provider
+ * provisioner (ADR 0003). The machine has no node_modules and no workspace,
+ * so everything (effect, ws, the tool engine) is inlined; the
  * systemd unit runs `node entry.bundle.js` with zero external deps.
  *
  * The regular `tsdown` build (package.json `build`) keeps producing the

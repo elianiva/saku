@@ -1,6 +1,4 @@
 import { defineConfig } from "vite-plus";
-import core from "ultracite/oxlint/core";
-import antiSlop from "ultracite/oxlint/anti-slop";
 
 export default defineConfig({
   fmt: {
@@ -11,6 +9,7 @@ export default defineConfig({
       "node_modules/**",
       ".wrangler/**",
       "packages/deploy/src/generated/**",
+      "tools/oxlint/anti-slop/**",
     ],
     indentWidth: 2,
     lineWidth: 100,
@@ -19,15 +18,20 @@ export default defineConfig({
     sortPackageJson: true,
   },
   lint: {
-    // Ultracite's strict oxlint baseline, plus dmmulroy/anti-slop's
-    // low-evidence rules (bundled as ultracite's anti-slop preset).
-    extends: [core, antiSlop],
+    // dmmulroy/anti-slop: low-evidence TypeScript patterns.
+    jsPlugins: [
+      {
+        name: "anti-slop",
+        specifier: "./tools/oxlint/anti-slop/index.ts",
+      },
+    ],
     ignorePatterns: [
       "dist/**",
       ".turbo/**",
       ".references/**",
       "node_modules/**",
       ".wrangler/**",
+      "tools/oxlint/anti-slop/**",
       // Stray untracked copy of the repo, not part of the workspace.
       "nwwqtzlu/**",
     ],
@@ -74,6 +78,21 @@ export default defineConfig({
       },
     ],
     rules: {
+      "anti-slop/no-chained-type-assertions": "error",
+      "anti-slop/no-conditional-empty-object-spread": "error",
+      "anti-slop/no-known-value-widening": "error",
+      "anti-slop/no-module-mocking": "error",
+      "anti-slop/no-object-parameters": "error",
+      "anti-slop/no-reflect-apply": "error",
+      "anti-slop/no-reflect-get": "error",
+      "anti-slop/no-runtime-typeof": "off",
+      "anti-slop/no-shape-in-symbol-names": "error",
+      "anti-slop/no-unknown-parameters": "error",
+      "anti-slop/no-unknown-returns": "error",
+      "anti-slop/no-unknown-type-aliases": "error",
+      "anti-slop/no-unsafe-dictionary-type": "error",
+      "anti-slop/no-widen-then-assert": "error",
+      "anti-slop/require-safety-comment-for-type-assertion": "error",
       "no-console": ["error", { allow: ["warn", "error"] }],
     },
   },

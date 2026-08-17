@@ -1,6 +1,6 @@
 /**
  * The env protocol (protocol.ts): the single hands vocabulary of the env
- * daemon (ADR 0003) — one protocol for the local machine and a Box.
+ * daemon (ADR 0003) — one protocol for the local machine and a remote machine.
  *
  * JSONL frames over WebSocket, the wire's framing habits: one JSON object
  * per line. The connection opens with `env_hello {token, version, cwd?}`
@@ -214,8 +214,6 @@ export const EnvPayloadSchema = {
  * protocol — the JSON shape is the contract.
  */
 export const EnvHandle = S.Struct({
-  /** The backing Box, when the env is a sandbox thread's. */
-  boxId: S.Union([S.Null, S.String]),
   /**
    * Attach through the hub relay to this registered env (the local
    * machine's daemon, cloud workers) — the direct-URL path otherwise.
@@ -223,7 +221,7 @@ export const EnvHandle = S.Struct({
   relay: S.optional(S.Struct({ envId: S.String, token: S.String })),
   /** The env protocol token the daemon enforces in `env_hello`. */
   token: S.String,
-  /** The env's endpoint: a `host --private` URL (Box) or the hub relay URL. */
+  /** The env daemon's endpoint: a provider URL or the hub relay URL. */
   url: S.String,
 });
 export type EnvHandle = S.Schema.Type<typeof EnvHandle>;

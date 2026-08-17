@@ -201,11 +201,15 @@ const fakeController = () => {
 
 describe("IdleStop.make — the policy directly", () => {
   const THREAD = "thread_policy";
-  const HANDLE: EnvHandle = { boxId: "bx_policy", token: "env-token", url: "ws://127.0.0.1:1" };
+  const HANDLE: EnvHandle = { token: "env-token", url: "ws://127.0.0.1:1" };
 
   interface PolicyWorld {
     readonly idleStop: IdleStopApi;
-    readonly released: { threadId: string; handle: EnvHandle | null }[];
+    readonly released: {
+      threadId: string;
+      remoteMachineId: string | null;
+      handle: EnvHandle | null;
+    }[];
     readonly handles: { threadId: string; handle: EnvHandle | null }[];
     readonly envs: { threadId: string; env: ThreadEnvState }[];
     readonly changed: ThreadInfo[];
@@ -228,6 +232,7 @@ describe("IdleStop.make — the policy directly", () => {
       id: THREAD,
       mode: options.mode ?? "sandbox",
       name: "boxed",
+      remoteMachineId: "machine_policy",
       sessionId: null,
     };
     const released: PolicyWorld["released"] = [];
@@ -271,9 +276,9 @@ describe("IdleStop.make — the policy directly", () => {
           return info.value;
         }),
         provisioner: {
-          release: (threadId, handle) =>
+          release: (threadId, remoteMachineId, handle) =>
             Effect.sync(() => {
-              released.push({ handle: Option.getOrNull(handle), threadId });
+              released.push({ handle, remoteMachineId, threadId });
             }),
         },
         registry,
@@ -348,7 +353,9 @@ describe("IdleStop.make — the policy directly", () => {
   it("fires: releases the env, clears the worker's handle, flips the axis, broadcasts", async () => {
     const { idleStop, released, handles, envs, changed } = await makePolicy({});
     await Effect.runPromise(idleStop.fire(THREAD));
-    expect(released).toEqual([{ handle: HANDLE, threadId: THREAD }]);
+    expect(released).toEqual([
+      { handle: HANDLE, remoteMachineId: "machine_policy", threadId: THREAD },
+    ]);
     expect(handles).toEqual([{ handle: null, threadId: THREAD }]);
     expect(envs).toEqual([{ env: "stopped", threadId: THREAD }]);
     expect(changed).toHaveLength(1);

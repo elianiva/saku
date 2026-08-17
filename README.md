@@ -170,12 +170,11 @@ ports, `SAKU_FAKE_MODEL`), so CI needs no cloud credentials.
 
 The deployment lives in `packages/deploy` (the same code both hosts ship):
 
-- **Cloudflare** (production): `bun alchemy deploy` with the secrets as env
-  vars — `BOX_API_KEY` (Box provisioning — **incomplete**, ADR 0008),
-  `FREESTYLE_API_KEY` (Freestyle provisioning, once the backend lands — the
-  deployment fails loudly on `SAKU_ENV_PROVISIONER=freestyle` until then), and
-  `SAKU_ENV_*` for the
-  static-provisioner shape (a single configured env daemon instead of Boxes).
+- **Cloudflare** (production): `bun alchemy deploy` defaults to the static
+  provisioner, so set `SAKU_ENV_URL` and `SAKU_ENV_TOKEN` for the configured
+  env daemon. `BOX_API_KEY` enables the explicit Box adapter (**incomplete**,
+  ADR 0008); `FREESTYLE_API_KEY` is reserved for Freestyle once its backend
+  lands (`SAKU_ENV_PROVISIONER=freestyle` fails loudly until then).
   Model credentials are separate: the local daemon reads pi's `auth.json` +
   `models.json`; a deployed worker resolves the opencode gateway's
   `OPENCODE_API_KEY` off its bindings (not declared by the program — add it

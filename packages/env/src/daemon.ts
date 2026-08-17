@@ -12,8 +12,8 @@
  *
  * The same connection handler serves two transports:
  *
- * - the local WebSocket server (`EnvDaemon.make`) — behind the Box host's
- *   `host --private` URL, or the loopback for direct connections
+ * - the local WebSocket server (`EnvDaemon.make`) — behind a provider's
+ *   port mapping, or the loopback for direct connections
  * - the outbound relay socket (`EnvRelayClient.make` in relay.ts) — the
  *   user's machine has no open ports, so the daemon dials the hub and the
  *   hub pipes a worker's connection onto this socket
@@ -81,7 +81,7 @@ const DECODE_OP = Schema.decodeUnknownSync(EnvOp);
 
 export interface EnvDaemonOptions {
   readonly token: string;
-  /** Listen host; default loopback (the Box's `host` proxy fronts it). */
+  /** Listen host; default loopback (a remote provider may front it). */
   readonly host?: string;
   /** 0 = random free port (the URL is returned). */
   readonly port?: number;

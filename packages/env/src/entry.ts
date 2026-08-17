@@ -1,12 +1,12 @@
 /**
  * The env daemon entry (entry.ts): the process the CLI spawns (`saku env
- * start`) and the Box's systemd service runs.
+ * start`) and a remote-machine supervisor runs.
  *
  * Flags: `--token <env token>`, `--cwd <workspace>`, `--hub <hub url>`
  * + `--env-id <id>` + `--hub-token <deployment secret>` for relay
- * registration (the local machine's outbound path; a Box daemon runs
- * without `--hub` — the worker reaches it through the `host --private`
- * URL directly). The daemon publishes its URL to `~/.saku/env.url` and
+ * registration (the local machine's outbound path; a remote-machine daemon
+ * may run without `--hub` when its provider exposes a direct endpoint). The
+ * daemon publishes its URL to `~/.saku/env.url` and
  * logs to stdout (the CLI redirects it to `~/.saku/env.log`).
  *
  * The program is a scoped resource: the daemon (and the relay client,

@@ -20,6 +20,7 @@
 
 import { Effect, Match, Option, Ref, Result, Schema } from "effect";
 import { Event, Machine, State } from "effect-machine";
+import type { MachineType } from "effect-machine";
 import {
   buildSessionContext,
   compact,
@@ -495,7 +496,19 @@ const safeReply = Effect.fn("safeReply")(function* safeReply<S extends HostState
  * own machine with thread-local deps and spawns it immediately (the
  * `SakuDaemon`-style services build the hosts, not the machines).
  */
-const HostMachine = {
+interface HostMachineApi {
+  readonly make: (
+    deps: HostDeps,
+  ) => MachineType<
+    HostStateV,
+    HostEventV,
+    never,
+    typeof HostState._definition,
+    typeof HostEvent._definition
+  >;
+}
+
+const HostMachine: HostMachineApi = {
   make: (deps: HostDeps) => {
     const machine = Machine.make({
       event: HostEvent,
@@ -503,199 +516,199 @@ const HostMachine = {
       state: HostState,
     });
 
-    return (
-      machine
-        .on(
-          [HostState.Idle, HostState.Interrupted],
-          HostEvent.PromptRequested,
-          ({ state, event }) =>
-            startRun(deps, state, HostState.Working({ images: event.images, text: event.text })),
-        )
-        .on(
-          [HostState.Working, HostState.Compacting, HostState.Crashed],
-          HostEvent.PromptRequested,
-          ({ state }) => Machine.reply(state, busyReply(state)),
-        )
-        .on([HostState.Idle, HostState.Interrupted], HostEvent.SteerRequested, ({ state, event }) =>
-          startRun(deps, state, HostState.Working({ text: event.text })),
-        )
-        .on(
-          [HostState.Working, HostState.Compacting, HostState.Crashed],
-          HostEvent.SteerRequested,
-          ({ state }) => Machine.reply(state, busyReply(state)),
-        )
-        .on(
-          [HostState.Idle, HostState.Interrupted],
-          HostEvent.FollowUpRequested,
-          ({ state, event }) => startRun(deps, state, HostState.Working({ text: event.text })),
-        )
-        .on(
-          [HostState.Working, HostState.Compacting, HostState.Crashed],
-          HostEvent.FollowUpRequested,
-          ({ state }) => Machine.reply(state, busyReply(state)),
-        )
-        // Abort settles the in-flight run; elsewhere it is a no-op.
-        .on(HostState.Working, HostEvent.AbortRequested, ({ state }) =>
+    const configured: MachineType<
+      HostStateV,
+      HostEventV,
+      never,
+      typeof HostState._definition,
+      typeof HostEvent._definition
+    > = machine
+      .on([HostState.Idle, HostState.Interrupted], HostEvent.PromptRequested, ({ state, event }) =>
+        startRun(deps, state, HostState.Working({ images: event.images, text: event.text })),
+      )
+      .on(
+        [HostState.Working, HostState.Compacting, HostState.Crashed],
+        HostEvent.PromptRequested,
+        ({ state }) => Machine.reply(state, busyReply(state)),
+      )
+      .on([HostState.Idle, HostState.Interrupted], HostEvent.SteerRequested, ({ state, event }) =>
+        startRun(deps, state, HostState.Working({ text: event.text })),
+      )
+      .on(
+        [HostState.Working, HostState.Compacting, HostState.Crashed],
+        HostEvent.SteerRequested,
+        ({ state }) => Machine.reply(state, busyReply(state)),
+      )
+      .on(
+        [HostState.Idle, HostState.Interrupted],
+        HostEvent.FollowUpRequested,
+        ({ state, event }) => startRun(deps, state, HostState.Working({ text: event.text })),
+      )
+      .on(
+        [HostState.Working, HostState.Compacting, HostState.Crashed],
+        HostEvent.FollowUpRequested,
+        ({ state }) => Machine.reply(state, busyReply(state)),
+      )
+      // Abort settles the in-flight run; elsewhere it is a no-op.
+      .on(HostState.Working, HostEvent.AbortRequested, ({ state }) =>
+        Effect.gen(function* make() {
+          const compactionAbort = yield* Ref.get(deps.compactionAbortRef);
+          if (Option.isSome(compactionAbort)) {
+            compactionAbort.value.abort();
+          }
+          deps.agent.abort();
+          return Machine.reply(state, ReplyOk.make({}));
+        }),
+      )
+      .on(
+        [HostState.Idle, HostState.Interrupted, HostState.Compacting, HostState.Crashed],
+        HostEvent.AbortRequested,
+        ({ state }) => Machine.reply(state, ReplyOk.make({})),
+      )
+      .on([HostState.Idle, HostState.Interrupted], HostEvent.CompactRequested, ({ event }) =>
+        Machine.deferReply(HostState.Compacting({ customInstructions: event.customInstructions })),
+      )
+      .on(HostState.Working, HostEvent.CompactRequested, ({ state }) =>
+        Machine.reply(
+          state,
+          ReplyFailed.make({ message: "cannot compact while the agent is working" }),
+        ),
+      )
+      .on(HostState.Compacting, HostEvent.CompactRequested, ({ state }) =>
+        Machine.reply(state, ReplyFailed.make({ message: "already compacting" })),
+      )
+      .on(HostState.Crashed, HostEvent.CompactRequested, ({ state }) =>
+        Machine.reply(state, ReplyFailed.make({ message: "host crashed; retry" })),
+      )
+      // Config commands are valid in every state (the trail is the source of truth).
+      .on(
+        [
+          HostState.Idle,
+          HostState.Interrupted,
+          HostState.Working,
+          HostState.Compacting,
+          HostState.Crashed,
+        ],
+        HostEvent.SetAutoCompactionRequested,
+        ({ state, event }) =>
           Effect.gen(function* make() {
-            const compactionAbort = yield* Ref.get(deps.compactionAbortRef);
-            if (Option.isSome(compactionAbort)) {
-              compactionAbort.value.abort();
-            }
-            deps.agent.abort();
+            yield* Ref.update(deps.compactionSettingsRef, (settings) => ({
+              ...settings,
+              enabled: event.enabled,
+            }));
             return Machine.reply(state, ReplyOk.make({}));
           }),
-        )
-        .on(
-          [HostState.Idle, HostState.Interrupted, HostState.Compacting, HostState.Crashed],
-          HostEvent.AbortRequested,
-          ({ state }) => Machine.reply(state, ReplyOk.make({})),
-        )
-        .on([HostState.Idle, HostState.Interrupted], HostEvent.CompactRequested, ({ event }) =>
-          Machine.deferReply(
-            HostState.Compacting({ customInstructions: event.customInstructions }),
-          ),
-        )
-        .on(HostState.Working, HostEvent.CompactRequested, ({ state }) =>
-          Machine.reply(
+      )
+      .on(
+        [
+          HostState.Idle,
+          HostState.Interrupted,
+          HostState.Working,
+          HostState.Compacting,
+          HostState.Crashed,
+        ],
+        HostEvent.SetSessionNameRequested,
+        ({ state, event }) =>
+          safeReply(
             state,
-            ReplyFailed.make({ message: "cannot compact while the agent is working" }),
+            Effect.tryPromise({
+              catch: toSessionHostError,
+              try: async () => {
+                await deps.session.setName(event.name);
+              },
+            }).pipe(Effect.map(() => ReplyOk.make({}))),
           ),
-        )
-        .on(HostState.Compacting, HostEvent.CompactRequested, ({ state }) =>
-          Machine.reply(state, ReplyFailed.make({ message: "already compacting" })),
-        )
-        .on(HostState.Crashed, HostEvent.CompactRequested, ({ state }) =>
-          Machine.reply(state, ReplyFailed.make({ message: "host crashed; retry" })),
-        )
-        // Config commands are valid in every state (the trail is the source of truth).
-        .on(
-          [
-            HostState.Idle,
-            HostState.Interrupted,
-            HostState.Working,
-            HostState.Compacting,
-            HostState.Crashed,
-          ],
-          HostEvent.SetAutoCompactionRequested,
-          ({ state, event }) =>
+      )
+      .on(
+        [
+          HostState.Idle,
+          HostState.Interrupted,
+          HostState.Working,
+          HostState.Compacting,
+          HostState.Crashed,
+        ],
+        HostEvent.SetModelRequested,
+        ({ state, event }) =>
+          safeReply(
+            state,
+            applyModel(deps, event.provider, event.modelId).pipe(
+              Effect.map((model) =>
+                ReplyOk.make({ model: model === null ? null : deps.catalog.toWireInfo(model) }),
+              ),
+            ),
+          ),
+      )
+      .on(
+        [
+          HostState.Idle,
+          HostState.Interrupted,
+          HostState.Working,
+          HostState.Compacting,
+          HostState.Crashed,
+        ],
+        HostEvent.SetThinkingLevelRequested,
+        ({ state, event }) =>
+          safeReply(
+            state,
+            applyThinkingLevel(deps, event.level).pipe(
+              Effect.map((level) => ReplyOk.make({ level })),
+            ),
+          ),
+      )
+      // Run lifecycle: the state-scoped effects settle their own replies.
+      .on(HostState.Working, HostEvent.RunFinished, () =>
+        Effect.gen(function* make() {
+          yield* deps.pushState("idle");
+          return HostState.Idle;
+        }),
+      )
+      .on(HostState.Working, HostEvent.RunFailed, ({ event }) =>
+        Effect.gen(function* make() {
+          yield* deps.pushState("idle");
+          return HostState.Crashed({ message: event.message });
+        }),
+      )
+      .on(HostState.Compacting, HostEvent.CompactFinished, () =>
+        Effect.gen(function* make() {
+          yield* deps.pushState("idle");
+          return HostState.Idle;
+        }),
+      )
+      .on(HostState.Compacting, HostEvent.CompactFailed, () =>
+        Effect.gen(function* make() {
+          yield* deps.pushState("idle");
+          return HostState.Idle;
+        }),
+      )
+      .spawn(HostState.Working, ({ self, state }) =>
+        Effect.gen(function* make() {
+          yield* runCommand(deps, state);
+          yield* self.reply(ReplyOk.make({}));
+          yield* self.send(HostEvent.RunFinished);
+        }).pipe(
+          Effect.catchEager((failure) =>
             Effect.gen(function* make() {
-              yield* Ref.update(deps.compactionSettingsRef, (settings) => ({
-                ...settings,
-                enabled: event.enabled,
-              }));
-              return Machine.reply(state, ReplyOk.make({}));
+              yield* self.reply(ReplyFailed.make({ message: messageOf(failure) }));
+              yield* self.send(HostEvent.RunFailed({ message: messageOf(failure) }));
             }),
-        )
-        .on(
-          [
-            HostState.Idle,
-            HostState.Interrupted,
-            HostState.Working,
-            HostState.Compacting,
-            HostState.Crashed,
-          ],
-          HostEvent.SetSessionNameRequested,
-          ({ state, event }) =>
-            safeReply(
-              state,
-              Effect.tryPromise({
-                catch: toSessionHostError,
-                try: async () => {
-                  await deps.session.setName(event.name);
-                },
-              }).pipe(Effect.map(() => ReplyOk.make({}))),
-            ),
-        )
-        .on(
-          [
-            HostState.Idle,
-            HostState.Interrupted,
-            HostState.Working,
-            HostState.Compacting,
-            HostState.Crashed,
-          ],
-          HostEvent.SetModelRequested,
-          ({ state, event }) =>
-            safeReply(
-              state,
-              applyModel(deps, event.provider, event.modelId).pipe(
-                Effect.map((model) =>
-                  ReplyOk.make({ model: model === null ? null : deps.catalog.toWireInfo(model) }),
-                ),
-              ),
-            ),
-        )
-        .on(
-          [
-            HostState.Idle,
-            HostState.Interrupted,
-            HostState.Working,
-            HostState.Compacting,
-            HostState.Crashed,
-          ],
-          HostEvent.SetThinkingLevelRequested,
-          ({ state, event }) =>
-            safeReply(
-              state,
-              applyThinkingLevel(deps, event.level).pipe(
-                Effect.map((level) => ReplyOk.make({ level })),
-              ),
-            ),
-        )
-        // Run lifecycle: the state-scoped effects settle their own replies.
-        .on(HostState.Working, HostEvent.RunFinished, () =>
-          Effect.gen(function* make() {
-            yield* deps.pushState("idle");
-            return HostState.Idle;
-          }),
-        )
-        .on(HostState.Working, HostEvent.RunFailed, ({ event }) =>
-          Effect.gen(function* make() {
-            yield* deps.pushState("idle");
-            return HostState.Crashed({ message: event.message });
-          }),
-        )
-        .on(HostState.Compacting, HostEvent.CompactFinished, () =>
-          Effect.gen(function* make() {
-            yield* deps.pushState("idle");
-            return HostState.Idle;
-          }),
-        )
-        .on(HostState.Compacting, HostEvent.CompactFailed, () =>
-          Effect.gen(function* make() {
-            yield* deps.pushState("idle");
-            return HostState.Idle;
-          }),
-        )
-        .spawn(HostState.Working, ({ self, state }) =>
-          Effect.gen(function* make() {
-            yield* runCommand(deps, state);
-            yield* self.reply(ReplyOk.make({}));
-            yield* self.send(HostEvent.RunFinished);
-          }).pipe(
-            Effect.catchEager((failure) =>
-              Effect.gen(function* make() {
-                yield* self.reply(ReplyFailed.make({ message: messageOf(failure) }));
-                yield* self.send(HostEvent.RunFailed({ message: messageOf(failure) }));
-              }),
-            ),
           ),
-        )
-        .spawn(HostState.Compacting, ({ self, state }) =>
-          Effect.gen(function* make() {
-            const result = yield* runCompaction(deps, "manual", state.customInstructions);
-            yield* self.reply(ReplyOk.make({ result }));
-            yield* self.send(HostEvent.CompactFinished({ result }));
-          }).pipe(
-            Effect.catchEager((failure) =>
-              Effect.gen(function* make() {
-                yield* self.reply(ReplyFailed.make({ message: messageOf(failure) }));
-                yield* self.send(HostEvent.CompactFailed({ message: messageOf(failure) }));
-              }),
-            ),
+        ),
+      )
+      .spawn(HostState.Compacting, ({ self, state }) =>
+        Effect.gen(function* make() {
+          const result = yield* runCompaction(deps, "manual", state.customInstructions);
+          yield* self.reply(ReplyOk.make({ result }));
+          yield* self.send(HostEvent.CompactFinished({ result }));
+        }).pipe(
+          Effect.catchEager((failure) =>
+            Effect.gen(function* make() {
+              yield* self.reply(ReplyFailed.make({ message: messageOf(failure) }));
+              yield* self.send(HostEvent.CompactFailed({ message: messageOf(failure) }));
+            }),
           ),
-        )
-    );
+        ),
+      );
+    return configured;
   },
 };
 

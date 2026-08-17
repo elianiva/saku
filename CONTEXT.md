@@ -54,31 +54,35 @@ Starting a thread with its first prompt in one gesture: the thread is created (n
 _Avoid_: new-thread dialog, quick-fire
 
 **Mode**:
-A thread's hands policy, hard-pinned at creation: `local` (the user's own machine is the hands, through the **env daemon**); `sandbox` (a **Freestyle** VM); `any` (local preferred, sandbox fallback). The pin is deliberate — switching modes mid-thread changes which filesystem the hands see, which would corrupt a thread's identity.
+A thread's hands policy, hard-pinned at creation: `local` (the user's own machine is the hands, through the **env daemon**); `sandbox` (a **remote machine**); `any` (local preferred, sandbox fallback). The pin is deliberate — switching modes mid-thread changes which filesystem the hands see, which would corrupt a thread's identity.
 _Avoid_: type, flavor, exec-target
 
 **Env**:
-The hands provider behind a thread's mode: the local machine (via the **env daemon**) or a sandbox VM (**Freestyle** — the provider of record, ADR 0008; the **Box** integration it replaces is incomplete). The worker never knows which; the thread's mode decides.
+The hands provider behind a thread's mode: the local machine (via the **env daemon**) or a **remote machine** (**Freestyle** — the provider of record, ADR 0008; the **Box** integration it replaces is incomplete). The worker never knows which; the thread's mode decides.
 _Avoid_: executor, shell, runtime, sandbox (that's the mode name)
 
 **Env daemon**:
-The hands process: one binary, one protocol. Runs on the user's machine (local mode — reachable from anywhere through the hub's relay) or inside a Box (sandbox mode — exposed through the box's private URL). Executes the pi tool surface (`read`/`bash`/`edit`/`write`) against the thread's workspace.
+The hands process: one binary, one protocol. Runs on the user's machine (local mode — reachable from anywhere through the hub's relay) or inside a **remote machine** (sandbox mode — exposed through the machine's private URL). Executes the pi tool surface (`read`/`bash`/`edit`/`write`) against the thread's workspace.
 _Avoid_: agent, worker, executor
 
 **Relay**:
-The hub's outbound bridge: the env daemon dials the hub (relay_hello, deployment secret) and a worker's `RemoteEnv` attaches (relay_attach); the hub pipes the two sockets — the env protocol flows through uninterpreted. The user's machine needs no open ports. Box envs skip the relay: the worker connects to the `host --private` URL directly.
+The hub's outbound bridge: the env daemon dials the hub (relay_hello, deployment secret) and a worker's `RemoteEnv` attaches (relay_attach); the hub pipes the two sockets — the env protocol flows through uninterpreted. The user's machine needs no open ports. Remote-machine envs skip the relay: the worker connects to the machine's private URL directly.
 _Avoid_: tunnel, vpn, proxy
 
+**Remote machine**:
+The provisioned hands host behind a `sandbox`-mode thread: a full Linux machine, created by the hub on first use, suspended by **idle-stop** between uses, resumed on the next prompt. Provider-agnostic — a **Box** (ascii.dev) and a **Freestyle** VM are both remote machines, and the **env daemon** runs inside one. The hub owns the remote machine's provider identity and lifecycle; the worker only receives connection information through the **env handle**. While suspended, the hub retains that identity so the same machine resumes. `local`-mode threads have no remote machine: their hands are the user's own machine, joined through the hub's relay.
+_Avoid_: box (the ascii.dev provider), VM (freestyle's word), orb (amp's word), sandbox (the mode name), machine unqualified (collides with the user's machine and the state-machine vocabulary)
+
 **Box**:
-The former remote sandbox provider (ascii.dev). One Box per thread, lazily provisioned by the hub on first use, stopped by **idle-stop** between uses. A Box is a disposable machine: snapshot on stop, resume in seconds. **Incomplete — superseded by Freestyle (ADR 0008)**: kept selectable for development/parity (`SAKU_ENV_PROVISIONER=box`), not the production path.
+The former **remote machine** provider (ascii.dev). One Box per thread, lazily provisioned by the hub on first use, suspended by **idle-stop** between uses. A Box is a disposable machine: snapshot on stop, resume in seconds. **Incomplete — superseded by Freestyle (ADR 0008)**: kept selectable for development/parity (`SAKU_ENV_PROVISIONER=box`), not the production path.
 _Avoid_: sandbox (the mode name), orb (amp's word), VM
 
 **Freestyle**:
-The remote sandbox provider (freestyle.sh), chosen by ADR 0008 to replace Box. Full Linux VMs (root, Docker, nested KVM) with suspend/resume — only storage is billed while suspended. One VM per thread, lazily provisioned by the hub on first use (`SAKU_ENV_PROVISIONER=freestyle` + `FREESTYLE_API_KEY`), suspended by **idle-stop** between uses. The backend is in preparation: the deployment fails loudly until it lands.
+The **remote machine** provider (freestyle.sh), chosen by ADR 0008 to replace Box. Full Linux machines (root, Docker, nested KVM) with suspend/resume — only storage is billed while suspended. One remote machine per thread, lazily provisioned by the hub on first use (`SAKU_ENV_PROVISIONER=freestyle` + `FREESTYLE_API_KEY`), suspended by **idle-stop** between uses. The backend is in preparation: the deployment fails loudly until it lands.
 _Avoid_: sandbox (the mode name), box (the ascii.dev provider)
 
 **Idle-stop**:
-The env lifecycle policy: a Box that has been idle is stopped (snapshot, billing paused) by the hub and resumed on the next prompt; local envs never stop. In the deployment, the thread DO owns the timer as a Durable Object alarm (armed via the hub's `/arm-idle`, cleared on activity): the alarm fires in the worker and pushes `idleStopFired` back to the hub, which validates, releases, and flips the env axis.
+The env lifecycle policy: a **remote machine** that has been idle is suspended (snapshot, billing paused) by the hub and resumed on the next prompt; local envs never stop. In the deployment, the thread DO owns the timer as a Durable Object alarm (armed via the hub's `/arm-idle`, cleared on activity): the alarm fires in the worker and pushes `idleStopFired` back to the hub, which validates, releases, and flips the env axis.
 _Avoid_: timeout, auto-stop (Box's own wall-clock TTL — a different thing)
 
 **Registry**:
@@ -114,9 +118,9 @@ The deployable whole: one alchemy program (`packages/deploy/alchemy.run.ts`) dec
 _Avoid_: app, service, api
 
 **Env handle**:
-What the hub hands the worker after provisioning: the env daemon's URL + token (+ relay identity for local envs). The worker rebuilds its `RemoteEnv` connection from the handle — pushed on provisioning and on resume, cleared on release.
+The connection-only information the hub hands the worker after provisioning: the env daemon's URL + token (+ relay identity for local envs). It does not carry the remote machine's provider identity. The hub retains the handle while a remote machine is suspended so it can resume the same machine; the worker's live attachment is cleared on release and rebuilt on the next prompt.
 _Avoid_: credentials, ticket, lease
 
 **Static provisioner**:
-The deployment's `SAKU_ENV_PROVISIONER=static` mode (dev/celld shape): one configured env daemon at `SAKU_ENV_URL` is every thread's env — no provisioning loop. The Box provisioner remains the selectable default but is **incomplete**; the intended production provider is Freestyle (ADR 0008).
+The deployment's `SAKU_ENV_PROVISIONER=static` mode (the default and the dev/celld shape): one configured env daemon at `SAKU_ENV_URL` is every thread's env — no provisioning loop and no remote-machine identity. Box is explicit opt-in and **incomplete**; the intended production provider is Freestyle (ADR 0008).
 _Avoid_: local mode (the mode name is a per-thread pin, this is a deployment shape)

@@ -10,8 +10,9 @@
  *
  * What is persisted vs. derived:
  *
- * - persisted: name, cwd, mode, autoName, createdAt, sessionId, env —
- *   a stopped Box must stay stopped across hub restarts (ADR 0003)
+ * - persisted: name, cwd, mode, autoName, createdAt, sessionId, env,
+ *   remoteMachineId, and envHandle — a suspended remote machine must stay
+ *   suspended across hub restarts (ADR 0003)
  * - volatile caches (re-derived from worker events and command results):
  *   `state` (idle/working/interrupted, pushed by the worker) and `tailSeq`
  *   (the thread's durable-log sequence, reported by the worker)
@@ -42,7 +43,9 @@ export interface HubRecord {
   sessionId: string | null;
   /** The env axis: persisted, because it outlives processes (idle-stop). */
   env: ThreadEnvState;
-  /** The persisted env handle (url + token + box id); null before provisioning. */
+  /** The hub-owned provider identity; null before remote provisioning. */
+  remoteMachineId: string | null;
+  /** The connection-only handle; null before a daemon is reachable. */
   envHandle: EnvHandle | null;
   /** Archive visibility lifecycle (CONTEXT.md: Archive); null when active. */
   archivedAt: number | null;
@@ -66,7 +69,12 @@ export interface HubRegistryApi {
     threadId: string,
     env: ThreadEnvState,
   ) => Effect.Effect<Option.Option<HubRecord>, HubError>;
-  /** Persist the env handle (survives hub restarts: a stopped Box stays stopped). */
+  /** Persist the remote-machine identity (survives suspension and restarts). */
+  readonly setRemoteMachineId: (
+    threadId: string,
+    remoteMachineId: string | null,
+  ) => Effect.Effect<Option.Option<HubRecord>, HubError>;
+  /** Persist the connection-only handle (survives suspension and restarts). */
   readonly setEnvHandle: (
     threadId: string,
     handle: EnvHandle | null,
@@ -125,12 +133,14 @@ export class HubRegistry extends Context.Service<HubRegistry, HubRegistryApi>()(
           // Sandbox threads have no local directory (ADR 0003); local
           // threads default to none until the env daemon reports one.
           cwd: input.mode === "sandbox" ? null : (input.cwd ?? null),
-          // A Box is not provisioned until the first prompt (lazy, ADR 0003).
+          // A remote machine is not provisioned until the first prompt
+          // (lazy, ADR 0003).
           env: input.mode === "sandbox" ? "stopped" : "ready",
           envHandle: null,
           id: crypto.randomUUID().replaceAll("-", ""),
           mode: input.mode ?? "local",
           name: input.name,
+          remoteMachineId: null,
           sessionId: null,
         };
         yield* records.put(`${record.id}/record`, record);
@@ -171,6 +181,8 @@ export class HubRegistry extends Context.Service<HubRegistry, HubRegistryApi>()(
       setEnv: (threadId, env) => patch(threadId, (record) => ({ ...record, env })),
       setEnvHandle: (threadId, envHandle) =>
         patch(threadId, (record) => ({ ...record, envHandle })),
+      setRemoteMachineId: (threadId, remoteMachineId) =>
+        patch(threadId, (record) => ({ ...record, remoteMachineId })),
       setState: (threadId, state) =>
         Ref.update(statesRef, (states) => new Map(states).set(threadId, state)),
       setTailSeq: (threadId, tailSeq) =>

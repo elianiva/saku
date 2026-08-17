@@ -9,7 +9,7 @@
  * half: this fixture keeps hub tests deterministic and socket-free.
  */
 
-import { Effect, Match, Option } from "effect";
+import { Effect, Match } from "effect";
 import {
   GetAvailableModelsResponse,
   GetAvailableThinkingLevelsResponse,
@@ -41,19 +41,23 @@ export const scriptedProvisioner = (
 } => {
   const released: string[] = [];
   return {
-    ensure: (thread, handle) => {
+    ensure: (thread, remoteMachineId, handle) => {
       if (thread.mode !== "sandbox") {
-        return Effect.succeed(Option.none());
+        return Effect.succeed({ handle: null, remoteMachineId: null });
       }
       if (options.fail === true) {
         return Effect.fail(
           new HubError({ kind: "provisioner", message: "sandbox provisioning failed (scripted)" }),
         );
       }
-      const existing: EnvHandle = Option.isSome(handle)
-        ? handle.value
-        : { boxId: "bx_scripted", token: "env-token", url: "ws://127.0.0.1:1" };
-      return Effect.succeed(Option.some(existing));
+      const existing: EnvHandle = handle ?? {
+        token: "env-token",
+        url: "ws://127.0.0.1:1",
+      };
+      return Effect.succeed({
+        handle: existing,
+        remoteMachineId: remoteMachineId ?? "machine_scripted",
+      });
     },
     release: (threadId) =>
       Effect.sync(() => {

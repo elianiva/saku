@@ -17,8 +17,8 @@
  * - session commands are forwarded to the thread's worker; the four
  *   read-only commands (get_entries, get_state, get_available_models,
  *   get_available_thinking_levels) skip the env gate — browsing never
- *   wakes a stopped Box (ADR 0004) — every other session command ensures
- *   the env first (lazy provisioning on first touch, ADR 0003)
+ *   wakes a suspended remote machine (ADR 0004) — every other session
+ *   command ensures the env first (lazy provisioning on first touch, ADR 0003)
  * - worker reports (state, sessionId, auto-title, tailSeq) update the
  *   registry caches and broadcast `thread_changed` when the wire view
  *   actually changed; a user rename (autoName = false) permanently wins
@@ -170,8 +170,9 @@ export class Hub extends Context.Service<Hub, HubApi>()("Hub", {
     });
 
     // Idle-stop: the timer is armed when a sandbox thread is idle with a
-    // ready env, disarmed on activity, and fires → the hub stops the Box
-    // (ADR 0003: the worker arms the timer; the hub pulls the trigger —
+    // ready env, disarmed on activity, and fires → the hub suspends the
+    // remote machine (ADR 0003: the worker arms the timer; the hub pulls
+    // the trigger —
     // the DO alarm of M4 replaces this hub-side timer, same semantics,
     // via the `idleStop` controller).
     const idleStop = yield* IdleStop.make({
@@ -266,7 +267,7 @@ export class Hub extends Context.Service<Hub, HubApi>()("Hub", {
       }
       yield* idleStop.disarm(thread.id);
       const outcome = yield* provisioner
-        .ensure(thread, Option.fromNullishOr(thread.envHandle))
+        .ensure(thread, thread.remoteMachineId, thread.envHandle)
         .pipe(Effect.result);
       if (Result.isFailure(outcome)) {
         yield* registry.setEnv(thread.id, "error");
@@ -274,14 +275,13 @@ export class Hub extends Context.Service<Hub, HubApi>()("Hub", {
         yield* emitThreadChanged(info);
         yield* Effect.fail(new HubError({ kind: "provisioner", message: outcome.failure.message }));
       } else {
-        const handle = outcome.success;
-        if (Option.isSome(handle)) {
-          yield* registry.setEnvHandle(thread.id, handle.value);
-        }
+        const provisioned = outcome.success;
+        yield* registry.setRemoteMachineId(thread.id, provisioned.remoteMachineId);
+        yield* registry.setEnvHandle(thread.id, provisioned.handle);
         yield* registry.setEnv(thread.id, "ready");
-        // The worker's env connection follows the handle.
+        // The worker's env connection follows the connection-only handle.
         yield* workerRef
-          .setEnvHandle(thread.id, Option.getOrNull(handle))
+          .setEnvHandle(thread.id, provisioned.handle)
           .pipe(Effect.catch(() => Effect.void));
         const info = yield* infoOf(thread.id);
         yield* emitThreadChanged(info);
@@ -346,7 +346,7 @@ export class Hub extends Context.Service<Hub, HubApi>()("Hub", {
         if (Option.isSome(record)) {
           yield* idleStop.disarm(threadId);
           yield* provisioner
-            .release(threadId, Option.fromNullishOr(record.value.envHandle))
+            .release(threadId, record.value.remoteMachineId, record.value.envHandle)
             .pipe(Effect.catch(() => Effect.void));
         }
         yield* registry.delete(threadId);

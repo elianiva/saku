@@ -31,7 +31,7 @@ export interface StackOptions {
   /** The Freestyle API key (default: the FREESTYLE_API_KEY secret; unused
    * until the freestyle provisioner backend lands — ADR 0008). */
   readonly freestyleApiKey?: Redacted.Redacted;
-  /** "box" (default, incomplete), "static", or "freestyle" (fails loudly until the backend lands). */
+  /** "static" (default), "box" (explicit, incomplete), or "freestyle" (fails loudly until the backend lands). */
   readonly provisioner?: "box" | "static" | "freestyle";
   /** Static provisioner: the env daemon's endpoint + token. */
   readonly envUrl?: string;
@@ -76,7 +76,7 @@ export const makeStack = (options: StackOptions = {}) =>
             Config.redacted("FREESTYLE_API_KEY").pipe(Config.withDefault(Redacted.make(""))),
           HUB: Cloudflare.DurableObject<SakuHubDO>("HUB", { className: "SakuHubDO" }),
           SAKU_ENV_PROVISIONER: Config.string("SAKU_ENV_PROVISIONER").pipe(
-            Config.withDefault(options.provisioner ?? "box"),
+            Config.withDefault(options.provisioner ?? "static"),
           ),
           SAKU_ENV_TOKEN: Config.string("SAKU_ENV_TOKEN").pipe(
             Config.withDefault(options.envToken ?? ""),

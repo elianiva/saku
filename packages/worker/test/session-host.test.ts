@@ -84,7 +84,8 @@ const oneShotStream = (text: string, stopReason: AssistantMessage["stopReason"] 
 /** A stream that ends only when the run's abort signal fires. */
 const abortableStream = () => {
   const message = assistantMessage("aborted run", "aborted");
-  return (_model: Model<Api>, _context: PiContext, options?: SimpleStreamOptions) => {
+  const started = Promise.withResolvers<true>();
+  const streamFn = (_model: Model<Api>, _context: PiContext, options?: SimpleStreamOptions) => {
     const stream = createAssistantMessageEventStream();
     options?.signal?.addEventListener(
       "abort",
@@ -94,8 +95,10 @@ const abortableStream = () => {
       },
       { once: true },
     );
+    started.resolve(true);
     return stream;
   };
+  return { started: started.promise, streamFn };
 };
 
 /** A stream that waits for an external gate before ending. */
@@ -263,10 +266,12 @@ describe("SessionHost", () => {
   });
 
   it("abort settles the run as aborted", async () => {
+    const stream = abortableStream();
     await scoped(
       async ({ host }) => {
         const running = Effect.runPromise(host.prompt("go"));
         await waitForState(host, "working");
+        await stream.started;
         await Effect.runPromise(host.abort());
         await running;
         await waitForState(host, "idle");
@@ -283,7 +288,7 @@ describe("SessionHost", () => {
         }
         expect(message.stopReason).toBe("aborted");
       },
-      { streamFn: abortableStream() },
+      { streamFn: stream.streamFn },
     );
   });
 

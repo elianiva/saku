@@ -3,7 +3,7 @@
  * (ADR 0003). One binary, one protocol — the pi tool surface
  * (`read`/`bash`/`edit`/`write`) over WebSocket JSONL — running on the
  * user's machine (local mode, reached through the hub's relay) or inside
- * a Box (sandbox mode, exposed through the box's private `host` URL).
+ * a remote machine (sandbox mode, reached through its provider endpoint).
  *
  * - `protocol.ts` — the env protocol: hello/version, the ops (pi's
  *   `ExecutionEnv` surface verbatim), streamed exec output, error classes

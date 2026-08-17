@@ -1,25 +1,17 @@
 /**
- * The static env provisioner (static-provisioner.ts): a Box-less
- * deployment mode for development and self-hosted celld setups — every
- * thread's env is one configured env daemon (SAKU_ENV_URL +
- * SAKU_ENV_TOKEN), and idle-stop releases nothing (a local daemon never
- * stops, ADR 0003).
- *
- * The Box provisioner (Provisioner.make) remains the selectable default
- * but is incomplete (ADR 0008); the intended production provider is
- * Freestyle (`SAKU_ENV_PROVISIONER=freestyle` — the backend is in
- * preparation, so the hub fails loudly until it lands).
- * `SAKU_ENV_PROVISIONER=static` opts the deployment into this mode.
+ * The static env provisioner: a deployment-wide configured env daemon for
+ * development and self-hosted celld setups. Every thread uses the same
+ * connection (`SAKU_ENV_URL` + `SAKU_ENV_TOKEN`); there is no remote-machine
+ * lifecycle and idle-stop releases nothing.
  */
 
-import { Effect, Option } from "effect";
+import { Effect } from "effect";
 import { HubError } from "@saku/hub/core";
-import type { EnvHandle } from "@saku/env";
 
 import type { DeploymentEnv } from "./env.ts";
 
 export const staticProvisioner = (env: DeploymentEnv) => ({
-  ensure: Effect.fn("ensure")(function* ensure(_thread, _handle) {
+  ensure: Effect.fn("ensure")(function* ensure() {
     const url = env.SAKU_ENV_URL;
     const token = env.SAKU_ENV_TOKEN;
     if (url === undefined || url.length === 0 || token === undefined || token.length === 0) {
@@ -30,8 +22,7 @@ export const staticProvisioner = (env: DeploymentEnv) => ({
         }),
       );
     }
-    const handle: EnvHandle = { boxId: null, token, url };
-    return Option.some(handle);
+    return { handle: { token, url }, remoteMachineId: null };
   }),
   release: () => Effect.void,
 });

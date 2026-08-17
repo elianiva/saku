@@ -15,11 +15,12 @@
     "saku": "node packages/cli/src/entry.ts"
   },
   "devDependencies": {
+    "@oxlint/plugins": "^1.78.0",
+    "oxlint": "^1.78.0",
     "portless": "^0.15.5",
     "tsdown": "^0.22.12",
     "turbo": "^2.10.5",
     "typescript": "^5.9.0",
-    "ultracite": "7.10.5",
     "vite": "^7.0.0",
     "vite-plus": "^0.2.4",
     "vitest": "^4.1.9"

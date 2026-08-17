@@ -2,7 +2,7 @@
  * Local execution environment (local-env.ts): `ExecutionEnv` (pi's
  * `FileSystem & Shell`) implemented over the `FileSystem` service — the
  * engine of the env daemon (ADR 0003). The daemon runs on the user's
- * machine or in a Box, so the environment is that machine: files under the
+ * machine or in a remote machine, so the environment is that machine: files under the
  * connection's workspace (`cwd`), shell commands in that cwd.
  *
  * Pi's contract is promise-based (`readTextFile` → `Promise<Result<...>>`),
@@ -13,8 +13,8 @@
  * yields `FileSystem.FileSystem`).
  *
  * Relative paths resolve against the workspace root (`cwd`), never the
- * process cwd — the daemon may be spawned from anywhere, and in a Box the
- * workspace is the box's workdir.
+ * process cwd — the daemon may be spawned from anywhere, including inside a
+ * remote machine whose workspace is its workdir.
  */
 
 import { spawn } from "node:child_process";

@@ -44,6 +44,7 @@ describe("HubRegistry.make", () => {
       cwd: null,
       env: "ready",
       mode: "local",
+      remoteMachineId: null,
       sessionId: null,
     });
     const sandbox = await Effect.runPromise(
@@ -80,9 +81,14 @@ describe("HubRegistry.make", () => {
     const record = await Effect.runPromise(registry.create({ mode: "sandbox", name: "t" }));
     await Effect.runPromise(registry.setEnv(record.id, "provisioning"));
     await Effect.runPromise(registry.setEnv(record.id, "ready"));
+    await Effect.runPromise(registry.setRemoteMachineId(record.id, "machine-1"));
     await Effect.runPromise(registry.update(record.id, { sessionId: "sess-1" }));
     const record2 = Option.getOrNull(await Effect.runPromise(registry.get(record.id)));
-    expect(record2).toMatchObject({ env: "ready", sessionId: "sess-1" });
+    expect(record2).toMatchObject({
+      env: "ready",
+      remoteMachineId: "machine-1",
+      sessionId: "sess-1",
+    });
   });
 
   it("deletes records and forgets their caches", async () => {

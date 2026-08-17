@@ -207,8 +207,8 @@ export class SakuThreadDO {
     const { handle } = body.value;
     await this.state.storage.put(ENV_HANDLE_KEY, handle);
     this.envHandle = handle;
-    // A different endpoint (a resumed Box gets a new host URL) means the
-    // old connection is dead: drop the env and rebuild the host from the
+    // A different endpoint (a resumed remote machine may expose a new URL)
+    // means the old connection is dead: drop the env and rebuild the host from the
     // trail on the next command.
     const key = envKeyOf(handle);
     if (key !== this.envKey) {
