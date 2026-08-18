@@ -18,7 +18,7 @@ import { GotRailMessage, NavigatedTo } from "./message.ts";
 /** Connect (or reconnect). The service re-resolves the bootstrap and swaps
  *  the client when the daemon restarted on a new port (wire.ts). */
 export const WireConnectCmd = Command.define("WireConnect", {
-  execute: Effect.gen(function* execute() {
+  execute: Effect.gen(function* () {
     const wire = yield* Wire;
     const hello = yield* wire.connect();
     return Connected({ hello });

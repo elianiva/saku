@@ -59,7 +59,7 @@ const wait = async (ms = 50) => {
  * promise callbacks.
  */
 const until = (predicate: () => boolean, tries = 50, delay = "20 millis") =>
-  Effect.gen(function* poll() {
+  Effect.gen(function* () {
     for (let i = 0; i < tries; i += 1) {
       if (predicate()) {
         return;

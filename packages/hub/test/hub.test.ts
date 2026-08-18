@@ -29,7 +29,7 @@ class TestError extends tagged<TestError>()("TestError", {
 
 /** Poll until the condition holds (worker-event forks land asynchronously). */
 const waitFor = (fn: () => boolean | Promise<boolean>, timeoutMs = 2000) =>
-  Effect.gen(function* poll() {
+  Effect.gen(function* () {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       const done = yield* Effect.promise(async () => await fn());
@@ -50,7 +50,7 @@ interface World {
 
 const makeWorld = async (provisioner: EnvProvisioner = scriptedProvisioner()) =>
   await Effect.runPromise(
-    Effect.gen(function* buildWorld() {
+    Effect.gen(function* () {
       const registry = yield* HubRegistry.make().pipe(Effect.provide(KvStore.memory()));
       const skills = yield* SkillsStore.make().pipe(Effect.provide(KvStore.memory()));
       const worker = scriptedWorker();

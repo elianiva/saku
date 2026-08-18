@@ -48,7 +48,7 @@ const onAbortError = () => Effect.succeed(AbortDone());
 export const LoadTrailCmd = Command.define("LoadTrail", {
   args: { id: S.String },
   execute: ({ id }) =>
-    Effect.gen(function* execute() {
+    Effect.gen(function* () {
       const { client } = yield* Wire;
       const result = yield* client.getEntries(id, 0);
       const decoded = yield* Effect.all(result.entries.map(decodeEntry));
@@ -65,7 +65,7 @@ export const LoadTrailCmd = Command.define("LoadTrail", {
 export const LoadStateCmd = Command.define("LoadState", {
   args: { id: S.String },
   execute: ({ id }) =>
-    Effect.gen(function* execute() {
+    Effect.gen(function* () {
       const { client } = yield* Wire;
       const [state, info] = yield* Effect.all([client.getState(id), client.getThread(id)]);
       return StateLoaded({ info, model: state.model });
@@ -77,7 +77,7 @@ export const LoadStateCmd = Command.define("LoadState", {
 export const ListModelsCmd = Command.define("ListModels", {
   args: { id: S.String },
   execute: ({ id }) =>
-    Effect.gen(function* execute() {
+    Effect.gen(function* () {
       const { client } = yield* Wire;
       const models = yield* client.getAvailableModels(id);
       return ModelsListed({ models });
@@ -89,7 +89,7 @@ export const ListModelsCmd = Command.define("ListModels", {
 export const SetModelCmd = Command.define("SetModel", {
   args: { id: S.String, modelId: S.String, provider: S.String },
   execute: ({ id, provider, modelId }) =>
-    Effect.gen(function* execute() {
+    Effect.gen(function* () {
       const { client } = yield* Wire;
       const model = yield* client.setModel(id, provider, modelId);
       return ModelSet({ model });
@@ -101,7 +101,7 @@ export const SetModelCmd = Command.define("SetModel", {
 export const PromptCmd = Command.define("Prompt", {
   args: { id: S.String, text: S.String },
   execute: ({ id, text }) =>
-    Effect.gen(function* execute() {
+    Effect.gen(function* () {
       const { client } = yield* Wire;
       yield* client.prompt(id, text);
       return PromptAcked();
@@ -115,7 +115,7 @@ export const PromptCmd = Command.define("Prompt", {
 export const CompactCmd = Command.define("Compact", {
   args: { id: S.String },
   execute: ({ id }) =>
-    Effect.gen(function* execute() {
+    Effect.gen(function* () {
       const { client } = yield* Wire;
       yield* client.compact(id);
       return CompactionFinished();
@@ -129,7 +129,7 @@ export const CompactCmd = Command.define("Compact", {
 export const QuickStartCmd = Command.define("QuickStart", {
   args: { text: S.String },
   execute: ({ text }) =>
-    Effect.gen(function* execute() {
+    Effect.gen(function* () {
       const { client } = yield* Wire;
       const created = yield* client.createThread(text, { autoName: true });
       yield* client.prompt(created.id, text);
@@ -143,7 +143,7 @@ export const QuickStartCmd = Command.define("QuickStart", {
 export const AbortCmd = Command.define("Abort", {
   args: { id: S.String },
   execute: ({ id }) =>
-    Effect.gen(function* execute() {
+    Effect.gen(function* () {
       const { client } = yield* Wire;
       yield* client.abort(id);
       return AbortDone();

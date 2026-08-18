@@ -49,7 +49,7 @@ export const makeStack = (options: StackOptions = {}) =>
       providers: Cloudflare.providers(),
       state: Cloudflare.state(),
     },
-    Effect.gen(function* makeStackProgram() {
+    Effect.gen(function* () {
       // The deployment secret: a persistent random value minted once, or
       // the caller's own (the tests pass a fixed test secret).
       const secret = options.secret ?? (yield* Random("SakuDeploymentSecret")).text;

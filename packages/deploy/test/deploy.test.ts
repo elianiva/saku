@@ -28,9 +28,7 @@ import * as Redacted from "effect/Redacted";
 import * as Effect from "effect/Effect";
 import { Exit, FileSystem, Schema, Scope } from "effect";
 import { NodeFileSystem } from "@effect/platform-node";
-import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import path from "node:path";
 
 import { EnvDaemon, EnvRelayClient, nodeSocket, RemoteEnv } from "@saku/env";
 import { WireClient } from "@saku/wire";
@@ -77,7 +75,14 @@ const daemonScope = await Effect.runPromise(Scope.make());
 const daemonFs = await Effect.runPromise(
   FileSystem.FileSystem.pipe(Effect.provide(NodeFileSystem.layer)),
 );
-const daemonWorkdir = await mkdtemp(path.join(tmpdir(), "saku-deploy-"));
+const daemonWorkdir = await Effect.runPromise(
+  Effect.provide(NodeFileSystem.layer)(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      return yield* fs.makeTempDirectory({ directory: tmpdir(), prefix: "saku-deploy-" });
+    }),
+  ),
+);
 const daemon = await Effect.runPromise(
   EnvDaemon.make({ cwd: daemonWorkdir, fs: daemonFs, token: ENV_TOKEN }).pipe(
     Effect.provideService(Scope.Scope, daemonScope),
@@ -104,9 +109,12 @@ harnessAfterAll(
       Scope.close(daemonScope, Exit.void).pipe(
         Effect.orDie,
         Effect.andThen(
-          Effect.tryPromise(async () => {
-            await rm(daemonWorkdir, { force: true, recursive: true });
-          }).pipe(Effect.orDie),
+          Effect.provide(NodeFileSystem.layer)(
+            Effect.gen(function* () {
+              const fs = yield* FileSystem.FileSystem;
+              yield* fs.remove(daemonWorkdir, { force: true, recursive: true });
+            }),
+          ).pipe(Effect.orDie),
         ),
       ),
     ),
@@ -115,7 +123,7 @@ harnessAfterAll(
 
 /** A fresh console for a test: connect inside the harness runtime. */
 const consoleFor = Effect.fn("consoleFor")(
-  function* consoleFor(url: string | undefined) {
+  function* (url: string | undefined) {
     if (url === undefined) {
       return yield* Effect.die(new DeployTestError({ message: "stack deployed without a url" }));
     }
@@ -140,7 +148,7 @@ const waitFor = <A>(
   const deadline = Date.now() + timeoutMs;
   // Recursive self-reference: inference can't close the loop type, so the
   // return annotation is the sole source of it (AGENTS.md allows this case).
-  const loop = Effect.fn("loop")(function* loop(): Effect.fn.Return<A> {
+  const loop = Effect.fn("loop")(function* (): Effect.fn.Return<A> {
     const value = yield* effect;
     if (predicate(value)) {
       return value;
@@ -153,10 +161,7 @@ const waitFor = <A>(
   return loop();
 };
 
-const entriesOf = Effect.fn("entriesOf")(function* entriesOf(
-  client: WireClientApi,
-  threadId: string,
-) {
+const entriesOf = Effect.fn("entriesOf")(function* (client: WireClientApi, threadId: string) {
   const result = yield* client.getEntries(threadId, 0).pipe(Effect.orDie);
   return [...result.entries];
 });
@@ -192,7 +197,7 @@ const makeThreadWatcher = (client: WireClientApi) => {
 
 t(
   "a console drives a thread through the deployed hub and thread DO",
-  Effect.gen(function* consoleDrivesThread() {
+  Effect.gen(function* () {
     const { url } = yield* stack;
     const client = yield* consoleFor(url);
     const watcher = makeThreadWatcher(client);
@@ -234,7 +239,7 @@ t(
 
 t(
   "idle-stop fires in the thread DO's alarm and the hub stops the env",
-  Effect.gen(function* idleStopFires() {
+  Effect.gen(function* () {
     const { url } = yield* stack;
     const client = yield* consoleFor(url);
     const watcher = makeThreadWatcher(client);
@@ -274,7 +279,7 @@ t(
 
 t(
   "the env relay lives in the hub DO: register, attach, exec",
-  Effect.gen(function* envRelayInHubDo() {
+  Effect.gen(function* () {
     const { url } = yield* stack;
     const scope = yield* Scope.make();
     const fs = yield* FileSystem.FileSystem.pipe(Effect.provide(NodeFileSystem.layer));
@@ -314,7 +319,7 @@ t(
 
 t(
   "delete_thread removes the thread (record + worker storage)",
-  Effect.gen(function* deleteThreadRemoves() {
+  Effect.gen(function* () {
     const { url } = yield* stack;
     const client = yield* consoleFor(url);
     const created = yield* client.createThread("delete-me", { mode: "sandbox" });

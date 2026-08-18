@@ -365,7 +365,7 @@ export class DoSessionStorage implements SessionStorage<DoSessionMetadata> {
   }
 
   /** Chain `operation` onto the tail synchronously (the serialization point). */
-  private async chainTail<T>(operation: () => Promise<T>): Promise<T> {
+  private async chainTail<T>(operation: () => Promise<T>) {
     return await this.tail.then(operation);
   }
 

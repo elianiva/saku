@@ -14,11 +14,11 @@
  * returns).
  */
 
-import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
-import { Effect } from "effect";
+import { Effect, FileSystem } from "effect";
+import { NodeFileSystem } from "@effect/platform-node";
 import { WireClient } from "@saku/wire";
 import { foldkit } from "@foldkit/vite-plugin";
 import tailwindcss from "@tailwindcss/vite";
@@ -26,12 +26,16 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { defineConfig } from "vite";
 
 const readMaybe = async (filePath: string) => {
-  try {
-    const content = await readFile(filePath, "utf-8");
-    return content.trim();
-  } catch {
-    return null;
-  }
+  const content = await Effect.runPromise(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      return yield* fs.readFileString(filePath);
+    }).pipe(
+      Effect.provide(NodeFileSystem.layer),
+      Effect.catch(() => Effect.succeed("")),
+    ),
+  );
+  return content.length > 0 ? content.trim() : null;
 };
 
 /**
@@ -41,7 +45,7 @@ const readMaybe = async (filePath: string) => {
  */
 const probeDaemon = async (url: string, token: string) =>
   await Effect.runPromise(
-    Effect.gen(function* probe() {
+    Effect.gen(function* () {
       const client = yield* WireClient.make({
         requestTimeoutMs: 1500,
         role: "cli",

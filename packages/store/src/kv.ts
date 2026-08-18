@@ -173,7 +173,7 @@ export class KvStore extends Context.Service<KvStore, KvStoreApi>()("KvStore") {
           ),
         ),
       put: Effect.fn("put")(
-        function* put(key: string, value: Uint8Array) {
+        function* (key: string, value: Uint8Array) {
           const path = keyPath(root, key);
           const tmp = `${path}.tmp`;
           yield* fs.makeDirectory(dirname(path), { recursive: true });

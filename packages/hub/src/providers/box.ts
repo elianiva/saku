@@ -77,7 +77,7 @@ export const BoxApi = {
     const fetchImpl =
       deps.fetch ?? (async (...args: Parameters<typeof fetch>) => await fetch(...args));
 
-    const request = Effect.fn("request")(function* request(
+    const request = Effect.fn("request")(function* (
       method: string,
       path: string,
       body?: RequestBody,
@@ -118,7 +118,7 @@ export const BoxApi = {
     });
 
     const provider = {
-      create: Effect.fn("create")(function* create(input: { env?: Record<string, string> }) {
+      create: Effect.fn("create")(function* (input: { env?: Record<string, string> }) {
         const payload: RequestBody = {
           ttlSeconds: null,
           type: "default",
@@ -135,7 +135,7 @@ export const BoxApi = {
         }
         return { id, status: envelope.box?.status ?? "provisioning" };
       }),
-      get: Effect.fn("get")(function* get(machineId: string) {
+      get: Effect.fn("get")(function* (machineId: string) {
         const envelope = yield* request("GET", `/boxes/${machineId}`);
         const id = envelope.box?.id ?? machineId;
         const status = envelope.box?.status ?? envelope.status;
@@ -147,7 +147,7 @@ export const BoxApi = {
         return { id, status };
       }),
       isReady: (machine: RemoteMachine) => machine.status === "ready" || machine.status === "idle",
-      readFile: Effect.fn("readFile")(function* readFile(machineId: string, path: string) {
+      readFile: Effect.fn("readFile")(function* (machineId: string, path: string) {
         const envelope = yield* request(
           "GET",
           `/boxes/${machineId}/files?path=${encodeURIComponent(path)}`,
@@ -160,10 +160,10 @@ export const BoxApi = {
         }
         return content;
       }),
-      resume: Effect.fn("resume")(function* resume(machineId: string) {
+      resume: Effect.fn("resume")(function* (machineId: string) {
         yield* request("POST", `/boxes/${machineId}/resume`);
       }),
-      runCommand: Effect.fn("runCommand")(function* runCommand(
+      runCommand: Effect.fn("runCommand")(function* (
         machineId: string,
         command: string,
         options?: { timeoutSeconds?: number; cwd?: string },
@@ -183,10 +183,10 @@ export const BoxApi = {
           success: envelope.success ?? false,
         } satisfies CommandResult;
       }),
-      suspend: Effect.fn("suspend")(function* suspend(machineId: string) {
+      suspend: Effect.fn("suspend")(function* (machineId: string) {
         yield* request("POST", `/boxes/${machineId}/stop`);
       }),
-      writeFile: Effect.fn("writeFile")(function* writeFile(
+      writeFile: Effect.fn("writeFile")(function* (
         machineId: string,
         path: string,
         content: string,
@@ -276,7 +276,7 @@ const toHubError = (context: string) => (cause: unknown) =>
     message: `${context}: ${cause instanceof Error ? cause.message : String(cause)}`,
   });
 
-const probeDaemon = Effect.fn("probeDaemon")(function* probeDaemon(url: string, token: string) {
+const probeDaemon = Effect.fn("probeDaemon")(function* (url: string, token: string) {
   const env = new RemoteEnv({ socket: nodeSocket, token, url });
   const outcome = yield* Effect.tryPromise({
     catch: (error) => error,
@@ -304,12 +304,12 @@ const hostUrlPending = () => ({ _tag: "HostUrlPending" }) satisfies HostUrlPendi
 const isHostUrlPending = (error: RemoteMachineProviderError): error is HostUrlPending =>
   error._tag === "HostUrlPending";
 
-const readHostUrl = Effect.fn("readHostUrl")(function* readHostUrl(
+const readHostUrl = Effect.fn("readHostUrl")(function* (
   deps: BoxProvisionerDeps,
   machineId: string,
 ) {
   const fail = toHubError(`box ${machineId} host.url read failed`);
-  const attempt = Effect.gen(function* attempt() {
+  const attempt = Effect.gen(function* () {
     const content = yield* deps.remoteMachineProvider
       .readFile(machineId, `${REMOTE_ENV_DIR}/host.url`)
       .pipe(Effect.mapError(fail));
@@ -335,7 +335,7 @@ const readHostUrl = Effect.fn("readHostUrl")(function* readHostUrl(
   );
 });
 
-const bootstrapBox = Effect.fn("bootstrapBox")(function* bootstrapBox(
+const bootstrapBox = Effect.fn("bootstrapBox")(function* (
   deps: BoxProvisionerDeps,
   machine: RemoteMachine,
 ) {
@@ -372,7 +372,7 @@ const bootstrapBox = Effect.fn("bootstrapBox")(function* bootstrapBox(
   return { token: envToken, url };
 });
 
-const resumeBox = Effect.fn("resumeBox")(function* resumeBox(
+const resumeBox = Effect.fn("resumeBox")(function* (
   deps: BoxProvisionerDeps,
   machineId: string,
   handle: EnvHandle,
@@ -395,7 +395,7 @@ const resumeBox = Effect.fn("resumeBox")(function* resumeBox(
 export const BoxProvisioner = {
   make: (deps: BoxProvisionerDeps) => {
     const ensure: EnvProvisioner["ensure"] = Effect.fn("ensure")(
-      function* ensure(thread, remoteMachineId, handle) {
+      function* (thread, remoteMachineId, handle) {
         if (thread.mode !== "sandbox") {
           return { handle: null, remoteMachineId: null };
         }
@@ -427,7 +427,7 @@ export const BoxProvisioner = {
     );
 
     const release: EnvProvisioner["release"] = Effect.fn("release")(
-      function* release(threadId, remoteMachineId, _handle) {
+      function* (threadId, remoteMachineId, _handle) {
         if (remoteMachineId === null) {
           return;
         }

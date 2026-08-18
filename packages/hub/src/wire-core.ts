@@ -163,7 +163,7 @@ const isNodeProcess = (value: NodeJS.Process | undefined): value is NodeJS.Proce
 
 /** The hub's wire connection core: a thin adapter over `WireServer.make`. */
 export class WireCore extends Context.Service<WireCore, WireCoreApi>()("WireCore", {
-  make: Effect.fn("WireCore.make")(function* make(options: WireCoreOptions) {
+  make: Effect.fn("WireCore.make")(function* (options: WireCoreOptions) {
     const { hub, token } = options;
     const pid = options.pid ?? (isNodeProcess(globalThis.process) ? globalThis.process.pid : 0);
     const core = yield* WireServer.make({
@@ -190,7 +190,7 @@ export class WireCore extends Context.Service<WireCore, WireCoreApi>()("WireCore
     const unsubscribe = hub.subscribe(onHubEvent);
 
     return {
-      close: Effect.fn(function* close() {
+      close: Effect.fn(function* () {
         unsubscribe();
         yield* core.close();
       }),

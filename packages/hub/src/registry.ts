@@ -93,11 +93,7 @@ export interface HubRegistryApi {
  * mutation. Requires the `KvStore` service — the DO adapter and the tests
  * provide the backend layer at the boundary. */
 export class HubRegistry extends Context.Service<HubRegistry, HubRegistryApi>()("HubRegistry", {
-  make: Effect.fn("HubRegistry.make")(function* make(): Effect.fn.Return<
-    HubRegistryApi,
-    HubError,
-    KvStore
-  > {
+  make: Effect.fn("HubRegistry.make")(function* () {
     const kv = yield* KvStore;
     const records = jsonRecords<HubRecord>(kv, "threads/");
     const loaded = yield* records.list();
@@ -109,7 +105,7 @@ export class HubRegistry extends Context.Service<HubRegistry, HubRegistryApi>()(
     );
     const tailSeqsRef = yield* Ref.make<ReadonlyMap<string, number>>(new Map());
 
-    const patch = Effect.fn("patch")(function* patch(
+    const patch = Effect.fn("patch")(function* (
       threadId: string,
       fn: (record: HubRecord) => HubRecord,
     ) {
@@ -125,7 +121,7 @@ export class HubRegistry extends Context.Service<HubRegistry, HubRegistryApi>()(
     });
 
     return {
-      create: Effect.fn("create")(function* create(input) {
+      create: Effect.fn("create")(function* (input) {
         const record: HubRecord = {
           archivedAt: null,
           autoName: input.autoName === true,
@@ -149,7 +145,7 @@ export class HubRegistry extends Context.Service<HubRegistry, HubRegistryApi>()(
         yield* Ref.update(tailSeqsRef, (map) => new Map(map).set(record.id, 0));
         return record;
       }),
-      delete: Effect.fn("delete")(function* deleteRecord(threadId) {
+      delete: Effect.fn("delete")(function* (threadId) {
         const current = yield* Ref.get(recordsRef);
         if (!current.has(threadId)) {
           return false;
@@ -187,7 +183,7 @@ export class HubRegistry extends Context.Service<HubRegistry, HubRegistryApi>()(
         Ref.update(statesRef, (states) => new Map(states).set(threadId, state)),
       setTailSeq: (threadId, tailSeq) =>
         Ref.update(tailSeqsRef, (tailSeqs) => new Map(tailSeqs).set(threadId, tailSeq)),
-      toInfo: Effect.fn("toInfo")(function* toInfo(threadId) {
+      toInfo: Effect.fn("toInfo")(function* (threadId) {
         const record = yield* Ref.get(recordsRef).pipe(Effect.map((map) => map.get(threadId)));
         if (record === undefined) {
           return Option.none();

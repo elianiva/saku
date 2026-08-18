@@ -56,7 +56,7 @@ const onDeleteError = (error: WireError) => Effect.succeed(DeleteFailed({ error 
 
 /** List the registry (the rail's grid). */
 export const ListThreadsCmd = Command.define("ListThreads", {
-  execute: Effect.gen(function* execute() {
+  execute: Effect.gen(function* () {
     const { client } = yield* Wire;
     const threads = yield* client.listThreads();
     return ThreadsListed({ threads });
@@ -66,7 +66,7 @@ export const ListThreadsCmd = Command.define("ListThreads", {
 
 /** List the added projects (the window's scope; CONTEXT.md: Project). */
 export const ListProjectsCmd = Command.define("ListProjects", {
-  execute: Effect.gen(function* execute() {
+  execute: Effect.gen(function* () {
     const { client } = yield* Wire;
     const projects = yield* client.listProjects();
     return ProjectsListed({ projects });
@@ -78,7 +78,7 @@ export const ListProjectsCmd = Command.define("ListProjects", {
 export const AddProjectCmd = Command.define("AddProject", {
   args: { path: S.String },
   execute: ({ path }) =>
-    Effect.gen(function* execute() {
+    Effect.gen(function* () {
       const { client } = yield* Wire;
       const project = yield* client.addProject(path);
       return ProjectAdded({ project });
@@ -90,7 +90,7 @@ export const AddProjectCmd = Command.define("AddProject", {
 export const RemoveProjectCmd = Command.define("RemoveProject", {
   args: { path: S.String },
   execute: ({ path }) =>
-    Effect.gen(function* execute() {
+    Effect.gen(function* () {
       const { client } = yield* Wire;
       yield* client.removeProject(path);
       return ProjectRemoved({ path });
@@ -102,7 +102,7 @@ export const RemoveProjectCmd = Command.define("RemoveProject", {
 export const ListProjectSessionsCmd = Command.define("ListProjectSessions", {
   args: { path: S.String },
   execute: ({ path }) =>
-    Effect.gen(function* execute() {
+    Effect.gen(function* () {
       const { client } = yield* Wire;
       const sessions = yield* client.listPiSessions(path);
       return ProjectSessionsListed({ path, sessions });
@@ -116,7 +116,7 @@ export const ListProjectSessionsCmd = Command.define("ListProjectSessions", {
 export const BrowseProjectDirsCmd = Command.define("BrowseProjectDirs", {
   args: { path: S.String },
   execute: ({ path }) =>
-    Effect.gen(function* execute() {
+    Effect.gen(function* () {
       const { client } = yield* Wire;
       const browse = yield* client.browseProjectDirs(path);
       return PickerBrowseListed({
@@ -132,7 +132,7 @@ export const BrowseProjectDirsCmd = Command.define("BrowseProjectDirs", {
 export const ArchiveThreadCmd = Command.define("ArchiveThread", {
   args: { id: S.String },
   execute: ({ id }) =>
-    Effect.gen(function* execute() {
+    Effect.gen(function* () {
       const { client } = yield* Wire;
       const thread = yield* client.archiveThread(id);
       return ThreadArchived({ thread });
@@ -144,7 +144,7 @@ export const ArchiveThreadCmd = Command.define("ArchiveThread", {
 export const UnarchiveThreadCmd = Command.define("UnarchiveThread", {
   args: { id: S.String },
   execute: ({ id }) =>
-    Effect.gen(function* execute() {
+    Effect.gen(function* () {
       const { client } = yield* Wire;
       const thread = yield* client.unarchiveThread(id);
       return ThreadUnarchived({ thread });
@@ -156,7 +156,7 @@ export const UnarchiveThreadCmd = Command.define("UnarchiveThread", {
 export const RenameThreadCmd = Command.define("RenameThread", {
   args: { id: S.String, name: S.String },
   execute: ({ id, name }) =>
-    Effect.gen(function* execute() {
+    Effect.gen(function* () {
       const { client } = yield* Wire;
       const thread = yield* client.renameThread(id, name);
       return ThreadRenamed({ thread });
@@ -169,7 +169,7 @@ export const RenameThreadCmd = Command.define("RenameThread", {
 export const AdoptPiSessionCmd = Command.define("AdoptPiSession", {
   args: { path: S.String },
   execute: ({ path }) =>
-    Effect.gen(function* execute() {
+    Effect.gen(function* () {
       const { client } = yield* Wire;
       const thread = yield* client.importPiSession(path);
       return PiSessionAdopted({ thread });
@@ -181,7 +181,7 @@ export const AdoptPiSessionCmd = Command.define("AdoptPiSession", {
 export const DeleteThreadCmd = Command.define("DeleteThread", {
   args: { id: S.String },
   execute: ({ id }) =>
-    Effect.gen(function* execute() {
+    Effect.gen(function* () {
       const { client } = yield* Wire;
       yield* client.deleteThread(id);
       return ThreadDeleted({ id });

@@ -116,7 +116,7 @@ const indexLoaded = (loaded: readonly ThreadRecord[]) => {
  * of the old FileSystem persist is the backend's job now.
  */
 export const RegistryKvLive = Layer.unwrap(
-  Effect.gen(function* RegistryKvLive() {
+  Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const paths = yield* Paths;
     return KvStore.file(fs, paths.threadsDir);
@@ -131,7 +131,7 @@ export const RegistryKvLive = Layer.unwrap(
  */
 export const ThreadRegistryLive = Layer.effect(
   ThreadRegistry,
-  Effect.gen(function* ThreadRegistryLive() {
+  Effect.gen(function* () {
     const kv = yield* KvStore;
     const paths = yield* Paths;
     const fs = yield* FileSystem.FileSystem;
@@ -152,7 +152,7 @@ export const ThreadRegistryLive = Layer.effect(
     const statesRef = yield* Ref.make<ReadonlyMap<string, ThreadState>>(initialStates);
 
     return ThreadRegistry.of({
-      archive: Effect.fn("archive")(function* archive(threadId) {
+      archive: Effect.fn("archive")(function* (threadId) {
         const record = yield* Ref.get(recordsRef).pipe(
           Effect.map((records) => records.get(threadId)),
         );
@@ -164,7 +164,7 @@ export const ThreadRegistryLive = Layer.effect(
         yield* Ref.update(recordsRef, (records) => new Map(records).set(threadId, next));
         return Option.some(next);
       }),
-      create: Effect.fn("create")(function* create(input) {
+      create: Effect.fn("create")(function* (input) {
         const record = withRecordSource(
           {
             archivedAt: null,
@@ -183,7 +183,7 @@ export const ThreadRegistryLive = Layer.effect(
         yield* Ref.update(statesRef, (states) => new Map(states).set(record.id, "idle"));
         return record;
       }),
-      delete: Effect.fn("delete")(function* deleteThread(threadId) {
+      delete: Effect.fn("delete")(function* (threadId) {
         const current = yield* Ref.get(recordsRef);
         if (!current.has(threadId)) {
           return false;
@@ -218,7 +218,7 @@ export const ThreadRegistryLive = Layer.effect(
         ),
       setState: (threadId, state) =>
         Ref.update(statesRef, (states) => new Map(states).set(threadId, state)),
-      toInfo: Effect.fn("toInfo")(function* toInfo(threadId, tailSeq) {
+      toInfo: Effect.fn("toInfo")(function* (threadId, tailSeq) {
         const record = yield* Ref.get(recordsRef).pipe(
           Effect.map((records) => records.get(threadId)),
         );
@@ -246,7 +246,7 @@ export const ThreadRegistryLive = Layer.effect(
         );
         return Option.some(info);
       }),
-      unarchive: Effect.fn("unarchive")(function* unarchive(threadId) {
+      unarchive: Effect.fn("unarchive")(function* (threadId) {
         const record = yield* Ref.get(recordsRef).pipe(
           Effect.map((records) => records.get(threadId)),
         );
@@ -258,7 +258,7 @@ export const ThreadRegistryLive = Layer.effect(
         yield* Ref.update(recordsRef, (records) => new Map(records).set(threadId, next));
         return Option.some(next);
       }),
-      update: Effect.fn("update")(function* update(threadId, patch) {
+      update: Effect.fn("update")(function* (threadId, patch) {
         const record = yield* Ref.get(recordsRef).pipe(
           Effect.map((records) => records.get(threadId)),
         );

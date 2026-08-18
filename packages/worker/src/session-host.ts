@@ -162,11 +162,7 @@ export interface SessionHostOptions {
 /** Create the host for a thread: open/create the DO session, recover, spawn. */
 export const SessionHost = {
   create(options: SessionHostOptions) {
-    return Effect.fn("SessionHost.create")(function* create(): Effect.fn.Return<
-      SessionHost,
-      SessionHostError | RegistryError,
-      KvStore
-    > {
+    return Effect.fn("SessionHost.create")(function* () {
       const { threadId, record, catalog, registry, env } = options;
       // The trail: the session's mutations on the `KvStore` service (the
       // daemon provides a file-backed layer; a Durable Object provides its
@@ -339,7 +335,7 @@ export const SessionHost = {
           Effect.mapError(toSessionHostError),
         );
 
-      const getEntries = Effect.fn("getEntries")(function* getEntries(sinceSeq?: number) {
+      const getEntries = Effect.fn("getEntries")(function* (sinceSeq?: number) {
         const log = yield* Effect.tryPromise({
           catch: toSessionHostError,
           try: async () =>
@@ -355,7 +351,7 @@ export const SessionHost = {
         return { entries: logEntries, leafId, tailSeq };
       });
 
-      const dispose = Effect.fn("dispose")(function* dispose() {
+      const dispose = Effect.fn("dispose")(function* () {
         unsubscribeAgent();
         // Settle an in-flight run; the run's own effect then finishes it.
         const compactionAbort = yield* Ref.get(compactionAbortRef);
@@ -379,7 +375,7 @@ export const SessionHost = {
 
       return {
         abort: () => command(HostEvent.AbortRequested).pipe(Effect.asVoid),
-        branch: Effect.fn("branch")(function* branch(entryId) {
+        branch: Effect.fn("branch")(function* (entryId) {
           const snapshot = yield* actor.snapshot;
           if (snapshot._tag === "Working" || snapshot._tag === "Compacting") {
             return yield* Effect.fail(
@@ -436,7 +432,7 @@ export const SessionHost = {
             catch: toSessionHostError,
             try: async () => await session.getStats(),
           }),
-        getState: Effect.fn("getState")(function* getState() {
+        getState: Effect.fn("getState")(function* () {
           const [name, { tailSeq }, snapshot, modelValue, thinkingLevelValue] = yield* Effect.all([
             Effect.tryPromise({
               catch: toSessionHostError,
@@ -459,7 +455,7 @@ export const SessionHost = {
           }
           return state;
         }),
-        prompt: (text, images) =>
+        prompt: (text, images?) =>
           command(HostEvent.PromptRequested({ images, text })).pipe(Effect.asVoid),
         setAutoCompaction: (enabled) =>
           command(HostEvent.SetAutoCompactionRequested({ enabled })).pipe(Effect.asVoid),
@@ -486,7 +482,7 @@ export const SessionHost = {
         get threadState() {
           return hostStateOf(actor.sync.snapshot());
         },
-      };
+      } satisfies SessionHost;
     })();
   },
 };

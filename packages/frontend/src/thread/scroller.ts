@@ -51,7 +51,7 @@ export const ChatScroller: MountAction<ThreadMessage> = {
     }
     const trail = element;
     return Stream.callback<ThreadMessage>(() =>
-      Effect.gen(function* f() {
+      Effect.gen(function* () {
         const content =
           trail.firstElementChild instanceof HTMLElement ? trail.firstElementChild : null;
         const button =

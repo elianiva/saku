@@ -193,7 +193,7 @@ export const ComposerMount = Mount.defineStream(
   }
   const root = element;
   return Stream.callback((queue) =>
-    Effect.gen(function* mountEditor() {
+    Effect.gen(function* () {
       yield* Effect.acquireRelease(
         Effect.sync(() => {
           const editor = createEditor({

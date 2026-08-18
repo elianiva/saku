@@ -96,7 +96,7 @@ const DECODE_MODELS_JSON = Schema.decodeUnknownSync(ModelsJsonSchema);
 
 const DEFAULT_COST = { cacheRead: 0, cacheWrite: 0, input: 0, output: 0 };
 
-const modelFromJson = Effect.fn("modelFromJson")(function* modelFromJson(
+const modelFromJson = Effect.fn("modelFromJson")(function* (
   providerId: string,
   definition: ModelsJsonModel,
   config: ModelsJsonProviderConfig,
@@ -146,7 +146,7 @@ const modelFromJson = Effect.fn("modelFromJson")(function* modelFromJson(
   return built;
 });
 
-const streamsFor = Effect.fn("streamsFor")(function* streamsFor(models: readonly Model<Api>[]) {
+const streamsFor = Effect.fn("streamsFor")(function* (models: readonly Model<Api>[]) {
   const streams: Partial<Record<Api, ProviderStreams>> = {};
   for (const model of models) {
     if (streams[model.api] !== undefined) {
@@ -273,7 +273,7 @@ const applyModelOverrides = (models: Model<Api>[], config: ModelsJsonProviderCon
   }
 };
 
-const loadModelsJsonFrom = Effect.fn("loadModelsJsonFrom")(function* loadModelsJsonFrom(
+const loadModelsJsonFrom = Effect.fn("loadModelsJsonFrom")(function* (
   fs: FileSystem.FileSystem,
   path: string,
 ) {
@@ -300,7 +300,7 @@ const loadModelsJsonFrom = Effect.fn("loadModelsJsonFrom")(function* loadModelsJ
 });
 
 /** A models.json provider that is not a builtin: full construction. */
-const buildCustomProvider = Effect.fn("buildCustomProvider")(function* buildCustomProvider(
+const buildCustomProvider = Effect.fn("buildCustomProvider")(function* (
   providerId: string,
   config: ModelsJsonProviderConfig,
   env: Record<string, string>,
@@ -335,7 +335,7 @@ const buildCustomProvider = Effect.fn("buildCustomProvider")(function* buildCust
  * models.json overlay over a builtin provider: base url, headers, model list
  * replacement, and per-model overrides. The provider's own auth is reused.
  */
-const overlayBuiltinProvider = Effect.fn("overlayBuiltinProvider")(function* overlayBuiltinProvider(
+const overlayBuiltinProvider = Effect.fn("overlayBuiltinProvider")(function* (
   providerId: string,
   base: Provider,
   config: ModelsJsonProviderConfig,
@@ -399,7 +399,7 @@ export class ModelCatalog extends Context.Service<ModelCatalog, ModelCatalogApi>
 export const ModelCatalogLive = (options: CatalogOptions = {}) =>
   Layer.effect(
     ModelCatalog,
-    Effect.gen(function* buildCatalog() {
+    Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const paths = yield* Paths;
       // The daemon's own environment resolves models.json `$VAR`/`!cmd` values.

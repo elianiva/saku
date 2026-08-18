@@ -146,7 +146,7 @@ export const scriptedWorker = (): ScriptedWorker => {
 
   const ref: ThreadWorkerRef = {
     close: () => Effect.void,
-    command: Effect.fn("command")(function* runCommand(threadId, command) {
+    command: Effect.fn("command")(function* (threadId, command) {
       commands.push({ command, threadId });
       return yield* handler(threadId, command);
     }),

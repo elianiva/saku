@@ -83,7 +83,7 @@ const READ_ONLY = new Set<SessionCommand["_tag"]>([
 ]);
 
 /** The worker's no-session answers for the read-only commands. */
-const readOnlyWithoutHost = Effect.fn("readOnlyWithoutHost")(function* readOnlyWithoutHost(
+const readOnlyWithoutHost = Effect.fn("readOnlyWithoutHost")(function* (
   catalog: ModelCatalogApi,
   command: SessionCommand,
 ) {
@@ -111,7 +111,7 @@ const readOnlyWithoutHost = Effect.fn("readOnlyWithoutHost")(function* readOnlyW
   return { payload, tailSeq: 0 };
 });
 
-export const inProcessWorker = Effect.fn("inProcessWorker")(function* inProcessWorker(
+export const inProcessWorker = Effect.fn("inProcessWorker")(function* (
   options: InProcessWorkerOptions,
 ) {
   const { fs, paths, catalog } = options;
@@ -140,7 +140,7 @@ export const inProcessWorker = Effect.fn("inProcessWorker")(function* inProcessW
         report(threadId, { state });
       }),
     toInfo: () => Effect.succeed(Option.none()),
-    update: Effect.fn("update")(function* update(threadId, patch) {
+    update: Effect.fn("update")(function* (threadId, patch) {
       const records = yield* Ref.get(recordsRef);
       const record = records.get(threadId);
       if (record === undefined) {
@@ -159,7 +159,7 @@ export const inProcessWorker = Effect.fn("inProcessWorker")(function* inProcessW
   };
 
   /** The lazy host; created on the first mutating command. */
-  const hostFor = Effect.fn("hostFor")(function* hostFor(threadId: string, hubRecord: HubRecord) {
+  const hostFor = Effect.fn("hostFor")(function* (threadId: string, hubRecord: HubRecord) {
     const hosts = yield* Ref.get(hostsRef);
     const existing = hosts.get(threadId);
     if (existing !== undefined) {
@@ -194,7 +194,7 @@ export const inProcessWorker = Effect.fn("inProcessWorker")(function* inProcessW
       registry,
       sink: (event) => {
         void Effect.runFork(
-          Effect.gen(function* pushEvent() {
+          Effect.gen(function* () {
             const live = yield* Ref.get(hostRef);
             if (Option.isSome(live) && sink !== undefined) {
               const { tailSeq } = yield* live.value.getEntries();
@@ -225,7 +225,7 @@ export const inProcessWorker = Effect.fn("inProcessWorker")(function* inProcessW
     );
 
   /** Forward one command to the host and shape the wire response. */
-  const runHostCommand = Effect.fn("runHostCommand")(function* runHostCommand(
+  const runHostCommand = Effect.fn("runHostCommand")(function* (
     host: SessionHost,
     cmd: SessionCommand,
   ) {
@@ -324,15 +324,12 @@ export const inProcessWorker = Effect.fn("inProcessWorker")(function* inProcessW
       sink = attached;
     },
     ref: {
-      close: Effect.fn("close")(function* close() {
+      close: Effect.fn("close")(function* () {
         const hosts = yield* Ref.get(hostsRef);
         yield* Effect.forEach([...hosts.values()], (host) => host.dispose(), { discard: true });
         yield* Ref.set(hostsRef, new Map());
       }),
-      command: Effect.fn("command")(function* runCommand(
-        threadId: string,
-        command: SessionCommand,
-      ) {
+      command: Effect.fn("command")(function* (threadId: string, command: SessionCommand) {
         const hosts = yield* Ref.get(hostsRef);
         const existing = hosts.get(threadId);
         // A live, uncrashed host serves the command directly; a crashed
@@ -373,7 +370,7 @@ export const inProcessWorker = Effect.fn("inProcessWorker")(function* inProcessW
         const payload = yield* runHostCommand(host, command);
         return { payload, tailSeq: yield* tailSeqOf(host) };
       }),
-      create: Effect.fn("create")(function* create(threadId: string, record: HubRecord) {
+      create: Effect.fn("create")(function* (threadId: string, record: HubRecord) {
         // The host is created lazily on first touch; the record is kept.
         yield* Ref.update(recordsRef, (records) =>
           new Map(records).set(threadId, {
@@ -387,7 +384,7 @@ export const inProcessWorker = Effect.fn("inProcessWorker")(function* inProcessW
           }),
         );
       }),
-      delete: Effect.fn("delete")(function* deleteThread(threadId: string) {
+      delete: Effect.fn("delete")(function* (threadId: string) {
         const hosts = yield* Ref.get(hostsRef);
         const host = hosts.get(threadId);
         if (host !== undefined) {

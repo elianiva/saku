@@ -122,7 +122,7 @@ const isReadOnly = (command: SessionCommand) => READ_ONLY_COMMANDS.has(command._
 const threadInfoEq = Schema.toEquivalence(ThreadInfo);
 
 /** Resolve a user-supplied thread id/name/prefix against the registry. */
-const resolveThreadId = Effect.fn("resolveThreadId")(function* resolveThreadId(
+const resolveThreadId = Effect.fn("resolveThreadId")(function* (
   registry: HubRegistryApi,
   input: string,
 ) {
@@ -136,14 +136,14 @@ const resolveThreadId = Effect.fn("resolveThreadId")(function* resolveThreadId(
 
 /** The hub's control plane: registry, skills, worker seam, env gate. */
 export class Hub extends Context.Service<Hub, HubApi>()("Hub", {
-  make: Effect.fn("Hub.make")(function* make(deps: HubDeps) {
+  make: Effect.fn("Hub.make")(function* (deps: HubDeps) {
     const { registry, skills, workerRef, provisioner } = deps;
     // Listeners are sync callbacks (the server forks its own broadcasts);
     // one plain synchronous set, shared by notify/subscribe/unsubscribe —
     // no runSync/runFork discipline split on the same structure.
     const listeners = new Set<HubListener>();
 
-    const notify = Effect.fn("notify")(function* notify(event: HubEvent) {
+    const notify = Effect.fn("notify")(function* (event: HubEvent) {
       // A throwing listener must not take the hub down. The snapshot keeps
       // a listener that unsubscribes itself mid-notify from starving others.
       const snapshot = [...listeners];
@@ -159,7 +159,7 @@ export class Hub extends Context.Service<Hub, HubApi>()("Hub", {
 
     const emitThreadChanged = (thread: ThreadInfo) => notify(HubEvent.thread_changed({ thread }));
 
-    const infoOf = Effect.fn("infoOf")(function* infoOf(threadId: string) {
+    const infoOf = Effect.fn("infoOf")(function* (threadId: string) {
       const info = yield* registry.toInfo(threadId);
       if (Option.isNone(info)) {
         return yield* Effect.fail(
@@ -186,7 +186,7 @@ export class Hub extends Context.Service<Hub, HubApi>()("Hub", {
     });
 
     /** Apply a worker report; broadcast when the wire view changed. */
-    const applyReport = Effect.fn("applyReport")(function* applyReport(
+    const applyReport = Effect.fn("applyReport")(function* (
       threadId: string,
       report: WorkerReport,
     ) {
@@ -238,7 +238,7 @@ export class Hub extends Context.Service<Hub, HubApi>()("Hub", {
         // Fire-and-forget pushes: a failing arm (the controller's alarm
         // channel) must not surface as an unhandled fiber error.
         void Effect.runFork(
-          Effect.gen(function* sessionEvent() {
+          Effect.gen(function* () {
             yield* registry.setTailSeq(threadId, tailSeq);
             // Any event is activity: reset the idle timer.
             yield* idleStop.arm(threadId);
@@ -254,7 +254,7 @@ export class Hub extends Context.Service<Hub, HubApi>()("Hub", {
     };
 
     /** The env gate: a non-ready env is provisioned before the command runs. */
-    const ensureEnv = Effect.fn("ensureEnv")(function* ensureEnv(thread: HubRecord) {
+    const ensureEnv = Effect.fn("ensureEnv")(function* (thread: HubRecord) {
       if (thread.env === "ready") {
         // The worker may have restarted since provisioning (a DO activation
         // loses its in-memory handle): re-push the persisted handle.
@@ -291,7 +291,7 @@ export class Hub extends Context.Service<Hub, HubApi>()("Hub", {
     });
 
     return {
-      archiveThread: Effect.fn("archiveThread")(function* archiveThread(threadIdInput: string) {
+      archiveThread: Effect.fn("archiveThread")(function* (threadIdInput: string) {
         const threadId = yield* resolveThreadId(registry, threadIdInput);
         const record = yield* registry.update(threadId, { archivedAt: Date.now() });
         if (Option.isNone(record)) {
@@ -303,13 +303,13 @@ export class Hub extends Context.Service<Hub, HubApi>()("Hub", {
         yield* emitThreadChanged(info);
         return info;
       }),
-      close: Effect.fn("close")(function* close() {
+      close: Effect.fn("close")(function* () {
         // The policy's hub-side timers are cleared here (the controller's
         // durable alarms die with the thread DOs).
         yield* idleStop.close;
         yield* workerRef.close().pipe(Effect.catch(() => Effect.void));
       }),
-      createThread: Effect.fn("createThread")(function* createThread(input: {
+      createThread: Effect.fn("createThread")(function* (input: {
         name: string;
         cwd?: string;
         mode?: ThreadMode;
@@ -331,13 +331,13 @@ export class Hub extends Context.Service<Hub, HubApi>()("Hub", {
         yield* emitThreadChanged(info);
         return info;
       }),
-      deleteSkill: Effect.fn("deleteSkill")(function* deleteSkill(id: string) {
+      deleteSkill: Effect.fn("deleteSkill")(function* (id: string) {
         const deleted = yield* skills.delete(id);
         if (!deleted) {
           yield* Effect.fail(new HubError({ kind: "skills", message: `unknown skill: ${id}` }));
         }
       }),
-      deleteThread: Effect.fn("deleteThread")(function* deleteThread(threadIdInput: string) {
+      deleteThread: Effect.fn("deleteThread")(function* (threadIdInput: string) {
         const threadId = yield* resolveThreadId(registry, threadIdInput);
         const info = yield* infoOf(threadId);
         const record = yield* registry.get(threadId);
@@ -354,7 +354,7 @@ export class Hub extends Context.Service<Hub, HubApi>()("Hub", {
         return info;
       }),
       events,
-      getThread: Effect.fn("getThread")(function* getThread(threadIdInput: string) {
+      getThread: Effect.fn("getThread")(function* (threadIdInput: string) {
         const threadId = yield* resolveThreadId(registry, threadIdInput);
         return yield* infoOf(threadId);
       }),
@@ -362,17 +362,14 @@ export class Hub extends Context.Service<Hub, HubApi>()("Hub", {
       importSkill: (source: string, scope?: SkillScope) =>
         skills.import(scope === undefined ? { source } : { scope, source }),
       listSkills: () => skills.list(),
-      listThreads: Effect.fn("listThreads")(function* listThreads() {
+      listThreads: Effect.fn("listThreads")(function* () {
         const records = yield* registry.list();
         // Independent reads; the order of results follows the records.
         return yield* Effect.forEach(records, (record) => infoOf(record.id), {
           concurrency: "unbounded",
         });
       }),
-      renameThread: Effect.fn("renameThread")(function* renameThread(
-        threadIdInput: string,
-        name: string,
-      ) {
+      renameThread: Effect.fn("renameThread")(function* (threadIdInput: string, name: string) {
         const threadId = yield* resolveThreadId(registry, threadIdInput);
         const trimmed = name.trim();
         if (trimmed.length === 0) {
@@ -386,7 +383,7 @@ export class Hub extends Context.Service<Hub, HubApi>()("Hub", {
         yield* emitThreadChanged(info);
         return info;
       }),
-      runSessionCommand: Effect.fn("runSessionCommand")(function* runSessionCommand(
+      runSessionCommand: Effect.fn("runSessionCommand")(function* (
         threadIdInput: string,
         command: SessionCommand,
       ) {
@@ -411,9 +408,7 @@ export class Hub extends Context.Service<Hub, HubApi>()("Hub", {
           listeners.delete(listener);
         };
       },
-      unarchiveThread: Effect.fn("unarchiveThread")(function* unarchiveThread(
-        threadIdInput: string,
-      ) {
+      unarchiveThread: Effect.fn("unarchiveThread")(function* (threadIdInput: string) {
         const threadId = yield* resolveThreadId(registry, threadIdInput);
         const record = yield* registry.update(threadId, { archivedAt: null });
         if (Option.isNone(record)) {

@@ -70,7 +70,7 @@ const projectAgentEvent = (event: AgentEvent) => {
 };
 
 /** Pi's agent events: durable appends on message_end, then wire projection. */
-export const handleAgentEvent = Effect.fn("handleAgentEvent")(function* handleAgentEvent(
+export const handleAgentEvent = Effect.fn("handleAgentEvent")(function* (
   deps: HostDeps,
   event: AgentEvent,
 ) {

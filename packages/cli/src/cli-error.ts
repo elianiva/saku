@@ -1,9 +1,6 @@
 import { Schema } from "effect";
 
-/** Alias so the lint rule's Error-name call heuristic doesn't demand `new` here. */
-const taggedError = Schema.TaggedError;
-
-export class CliError extends taggedError<CliError>()("CliError", {
+export class CliError extends Schema.TaggedError<CliError>()("CliError", {
   cause: Schema.optional(Schema.Unknown),
   // malformed command line (missing arguments, unknown command)
   code: Schema.Literals([

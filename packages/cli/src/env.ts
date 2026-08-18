@@ -14,15 +14,12 @@
  */
 
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { Effect, Option, Schema } from "effect";
+import { Effect, FileSystem, Option, Schema } from "effect";
 import { RemoteEnv, getEnvConfigPath, getEnvLogPath, getEnvUrlPath, nodeSocket } from "@saku/env";
 import { Paths } from "@saku/worker";
 import type { PathsLayout } from "@saku/worker";
-
-import type { DaemonLifecycleConfig } from "./lifecycle.ts";
 
 export const resolveEnvEntry = () => fileURLToPath(import.meta.resolve("@saku/env/entry"));
 
@@ -31,27 +28,28 @@ const EnvConfigSchema = Schema.Struct({
   hubUrl: Schema.optional(Schema.String),
   token: Schema.String.check(Schema.isMinLength(1)),
 });
-const DECODE_ENV_CONFIG = Schema.decodeUnknownOption(EnvConfigSchema);
 export type EnvConfig = Schema.Schema.Type<typeof EnvConfigSchema>;
 
 /** Read the env identity; none before the first `saku env start`. */
-export const readEnvConfig = (): Effect.Effect<Option.Option<EnvConfig>> =>
-  Effect.tryPromise(async () => await readFile(getEnvConfigPath(), "utf-8")).pipe(
-    Effect.flatMap(
-      // SAFETY: JSON.parse returns `any`; DECODE_ENV_CONFIG (a Schema.decodeUnknownOption)
-      // validates the parsed shape before any field is read, so this cast is the
-      // boundary between untrusted JSON and the validated EnvConfig domain type.
-      (content) => Effect.try(() => JSON.parse(content) as unknown),
-    ),
-    Effect.map(DECODE_ENV_CONFIG),
+export const readEnvConfig = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const content = yield* fs
+    .readFileString(getEnvConfigPath())
+    .pipe(Effect.catch(() => Effect.succeed("")));
+  if (content.length === 0) return Option.none();
+  // SAFETY: JSON.parse returns `any`; DECODE_ENV_CONFIG (a Schema.decodeUnknownOption)
+  // validates the parsed shape before any field is read, so this cast is the
+  // boundary between untrusted JSON and the validated EnvConfig domain type.
+  return yield* Effect.try(() => JSON.parse(content) as unknown).pipe(
+    Effect.map(Schema.decodeUnknownOption(EnvConfigSchema)),
     Effect.orElseSucceed(() => Option.none()),
   );
+});
 
 /** Read ~/.saku/auth, creating it (0600) when absent — the deployment secret. */
-const ensureHubToken = Effect.fn("ensureHubToken")(function* ensureHubToken(paths: PathsLayout) {
-  const existing = yield* Effect.tryPromise(
-    async () => await readFile(paths.authPath, "utf-8"),
-  ).pipe(
+const ensureHubToken = Effect.fn("ensureHubToken")(function* (paths: PathsLayout) {
+  const fs = yield* FileSystem.FileSystem;
+  const existing = yield* fs.readFileString(paths.authPath).pipe(
     Effect.map((content) => content.trim()),
     Effect.catch(() => Effect.succeed("")),
   );
@@ -59,54 +57,40 @@ const ensureHubToken = Effect.fn("ensureHubToken")(function* ensureHubToken(path
     return existing;
   }
   const token = randomBytes(32).toString("hex");
-  yield* Effect.tryPromise(
-    async () => await mkdir(path.dirname(paths.authPath), { mode: 0o700, recursive: true }),
-  );
-  yield* Effect.tryPromise(async () => {
-    await writeFile(paths.authPath, `${token}\n`, { mode: 0o600 });
-  });
+  yield* fs.makeDirectory(path.dirname(paths.authPath), { mode: 0o700, recursive: true });
+  yield* fs.writeFileString(paths.authPath, `${token}\n`);
   return token;
 });
 
 /** Read or create the env identity (random envId + protocol token). */
-export const ensureEnvConfig = Effect.fn("ensureEnvConfig")(function* ensureEnvConfig(
-  hubUrl?: string,
-) {
-  const existing = yield* readEnvConfig();
+export const ensureEnvConfig = Effect.fn("ensureEnvConfig")(function* (hubUrl?: string) {
+  const existing = yield* readEnvConfig;
   if (Option.isSome(existing)) {
     // A hub switch is honored on start; identity is stable.
     if (hubUrl === undefined || existing.value.hubUrl === hubUrl) {
       return existing.value;
     }
+    const fs = yield* FileSystem.FileSystem;
     const updated: EnvConfig = { ...existing.value, hubUrl };
-    yield* Effect.tryPromise(async () => {
-      await writeFile(getEnvConfigPath(), `${JSON.stringify(updated, null, 2)}\n`, { mode: 0o600 });
-    });
+    yield* fs.writeFileString(getEnvConfigPath(), `${JSON.stringify(updated, null, 2)}\n`);
     return updated;
   }
   const config = {
     envId: `env_${randomUUID().replaceAll("-", "")}`,
     token: randomBytes(32).toString("hex"),
   };
+  const fs = yield* FileSystem.FileSystem;
   const configWithHub: EnvConfig = hubUrl === undefined ? config : { ...config, hubUrl };
-  yield* Effect.tryPromise(
-    async () => await mkdir(path.dirname(getEnvConfigPath()), { mode: 0o700, recursive: true }),
-  );
-  yield* Effect.tryPromise(async () => {
-    await writeFile(getEnvConfigPath(), `${JSON.stringify(configWithHub, null, 2)}\n`, {
-      mode: 0o600,
-    });
-  });
+  yield* fs.makeDirectory(path.dirname(getEnvConfigPath()), { mode: 0o700, recursive: true });
+  yield* fs.writeFileString(getEnvConfigPath(), `${JSON.stringify(configWithHub, null, 2)}\n`);
   return configWithHub;
 });
 
 /** The env daemon's lifecycle: env-protocol probe, --token/--cwd/--hub args. */
-export const envLifecycle = Effect.fn("envLifecycle")(function* envLifecycle(
-  hubUrl?: string,
-): Effect.fn.Return<DaemonLifecycleConfig, never, Paths> {
+export const envLifecycle = Effect.fn("envLifecycle")(function* (hubUrl?: string) {
   const paths = yield* Paths;
   return {
-    args: Effect.gen(function* args() {
+    args: Effect.gen(function* () {
       const config = yield* ensureEnvConfig(hubUrl);
       // The relay credential is the deployment secret (~/.saku/auth, the
       // worker's token); the env daemon presents it in relay_hello. Mint it
@@ -123,9 +107,9 @@ export const envLifecycle = Effect.fn("envLifecycle")(function* envLifecycle(
       ];
     }),
     entry: resolveEnvEntry(),
-    label: "env daemon",
+    label: "env daemon" as const,
     logPath: getEnvLogPath(),
-    probe: Effect.fn("probe")(function* probe(identity) {
+    probe: Effect.fn("probe")(function* (identity) {
       const env = new RemoteEnv({ socket: nodeSocket, token: identity.token, url: identity.url });
       const hello = yield* Effect.tryPromise(async () => await env.connect()).pipe(
         Effect.map(Option.some),
@@ -137,8 +121,8 @@ export const envLifecycle = Effect.fn("envLifecycle")(function* envLifecycle(
         onSome: (value) => Option.some({ cwd: value.cwd, pid: value.pid, version: value.version }),
       });
     }),
-    readToken: readEnvConfig().pipe(Effect.map(Option.map((config) => config.token))),
-    timeoutCode: "env_timeout",
+    readToken: readEnvConfig.pipe(Effect.map(Option.map((config) => config.token))),
+    timeoutCode: "env_timeout" as const,
     urlPath: getEnvUrlPath(),
   };
 });

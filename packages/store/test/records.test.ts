@@ -20,7 +20,7 @@ const encode = (text: string) => new TextEncoder().encode(text);
 const cases = (run: <A>(effect: Effect.Effect<A, never, KvStore>) => Promise<A>) => {
   it("round-trips get/put/delete/list", async () => {
     await run(
-      Effect.gen(function* exercise() {
+      Effect.gen(function* () {
         const kv = yield* KvStore;
         const records = jsonRecords<TestRecord>(kv, "records/");
         expect(Option.isNone(yield* records.get("one"))).toBe(true);
@@ -47,7 +47,7 @@ const cases = (run: <A>(effect: Effect.Effect<A, never, KvStore>) => Promise<A>)
 
   it("isolates prefixes on the same kv", async () => {
     await run(
-      Effect.gen(function* exercise() {
+      Effect.gen(function* () {
         const kv = yield* KvStore;
         const left = jsonRecords<TestRecord>(kv, "left/");
         const right = jsonRecords<TestRecord>(kv, "right/");
@@ -66,7 +66,7 @@ const cases = (run: <A>(effect: Effect.Effect<A, never, KvStore>) => Promise<A>)
 
   it("skips corrupt records on list and reads them as none on get", async () => {
     await run(
-      Effect.gen(function* exercise() {
+      Effect.gen(function* () {
         const kv = yield* KvStore;
         const records = jsonRecords<TestRecord>(kv, "records/");
         yield* records.put("good", { id: "good", n: 1 });
@@ -91,7 +91,7 @@ describe("KvStore.file()", () => {
   beforeAll(async () => {
     fs = await Effect.runPromise(
       Effect.provide(NodeFileSystem.layer)(
-        Effect.gen(function* fileSystem() {
+        Effect.gen(function* () {
           return yield* FileSystem.FileSystem;
         }),
       ),

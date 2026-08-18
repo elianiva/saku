@@ -45,7 +45,7 @@ const flags = (args: readonly string[]) => {
   return map;
 };
 
-const program = Effect.gen(function* program() {
+const program = Effect.gen(function* () {
   const args = flags(process.argv.slice(2));
   const token = args.get("--token") ?? "";
   const cwd = args.get("--cwd") ?? process.cwd();
@@ -92,7 +92,7 @@ const program = Effect.gen(function* program() {
   }
 });
 
-const main = Effect.gen(function* main() {
+const main = Effect.gen(function* () {
   yield* program;
   return yield* Effect.never;
 });

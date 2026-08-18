@@ -60,7 +60,7 @@ export interface HubServerApi {
  * rework lands (plan 0001).
  */
 export class HubServer extends Context.Service<HubServer, HubServerApi>()("HubServer", {
-  make: Effect.fn("HubServer.make")(function* make(options: HubServerOptions) {
+  make: Effect.fn("HubServer.make")(function* (options: HubServerOptions) {
     const { hub, token } = options;
     // The env relay: a separate port for M3 (the DO adapter of M4
     // multiplexes both behind the deployment's domain).
@@ -84,7 +84,7 @@ export class HubServer extends Context.Service<HubServer, HubServerApi>()("HubSe
     const closedRef = yield* Ref.make(false);
     const serverRef = yield* Ref.make<Option.Option<WebSocketServer>>(Option.none());
 
-    const close = Effect.fn("close")(function* close() {
+    const close = Effect.fn("close")(function* () {
       const closed = yield* Ref.get(closedRef);
       if (closed) {
         return;

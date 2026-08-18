@@ -38,7 +38,7 @@ class TestError extends tagged<TestError>()("TestError", {
 }) {}
 
 const waitFor = (fn: () => boolean, timeoutMs = 2000) =>
-  Effect.gen(function* poll() {
+  Effect.gen(function* () {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       if (fn()) {
@@ -58,7 +58,7 @@ interface World {
 
 const makeWorld = async () => {
   const world = await Effect.runPromise(
-    Effect.gen(function* world() {
+    Effect.gen(function* () {
       const registry = yield* HubRegistry.make().pipe(Effect.provide(KvStore.memory()));
       const skills = yield* SkillsStore.make().pipe(Effect.provide(KvStore.memory()));
       const worker = scriptedWorker();
@@ -266,7 +266,7 @@ describe("IdleStop.make — the policy directly", () => {
         controller: options.controller,
         emitThreadChanged: (thread) => Effect.sync(() => changed.push(thread)),
         idleStopMs: options.idleStopMs ?? IDLE_MS,
-        infoOf: Effect.fn("infoOf")(function* infoOf(threadId) {
+        infoOf: Effect.fn("infoOf")(function* (threadId) {
           const info = yield* registry.toInfo(threadId);
           if (Option.isNone(info)) {
             return yield* Effect.fail(

@@ -108,7 +108,7 @@ export const readSavedConfig = () => {
   return { token: decoded.token, url: decoded.url };
 };
 
-export const resolveConfig: Effect.Effect<ResolvedConfig> = Effect.gen(function* resolveConfig() {
+export const resolveConfig = Effect.gen(function* () {
   const bootstrap = yield* fetchBootstrap;
   if (Option.isSome(bootstrap)) {
     return bootstrap.value;

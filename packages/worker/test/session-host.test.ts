@@ -4,7 +4,6 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -116,7 +115,7 @@ const gated = () => {
 /** Build a KvStore value from a backend layer (the pi seam is value-shaped). */
 const buildKv = async (layer: Layer.Layer<KvStore>) =>
   await Effect.runPromise(
-    Effect.gen(function* buildKvValue() {
+    Effect.gen(function* () {
       const kv = yield* KvStore;
       return kv;
     }).pipe(Effect.provide(layer)),
@@ -141,7 +140,7 @@ interface HostOptions {
 type MutableHostOptions = Omit<SessionHostOptions, "streamFn"> & { streamFn?: StreamFn };
 
 /** Build a host over a fresh trail (the FileSystem service is provided by the caller). */
-const makeHost = Effect.fn("makeHost")(function* makeHost(options: HostOptions = {}) {
+const makeHost = Effect.fn("makeHost")(function* (options: HostOptions = {}) {
   const fs = yield* FileSystem.FileSystem;
   const paths = yield* Paths;
   const registry = new FakeRegistry(record());
@@ -182,7 +181,7 @@ const scoped = async <A>(
   home?: string,
 ) =>
   await Effect.runPromise(
-    Effect.gen(function* scopedRun() {
+    Effect.gen(function* () {
       const world = yield* makeHost(options);
       const outcome = yield* Effect.tryPromise(async () => await run(world)).pipe(
         Effect.ensuring(world.host.dispose()),
@@ -424,7 +423,14 @@ describe("SessionHost", () => {
     // One shared layout across both boots: a crash simulation must boot the
     // second host over the SAME trail (a fresh `PathsTest()` per boot would
     // give it a different temp home, i.e. an empty registry of trails).
-    const home = await mkdtemp(path.join(tmpdir(), "saku-host-recover-"));
+    const home = await Effect.runPromise(
+      Effect.provide(NodeFileSystem.layer)(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          return yield* fs.makeTempDirectory({ directory: tmpdir(), prefix: "saku-host-recover-" });
+        }),
+      ),
+    );
     try {
       await scoped(
         async ({ host, fs, kvRoot }) => {
@@ -446,7 +452,7 @@ describe("SessionHost", () => {
 
           // A new host over the same trail boots into Interrupted.
           const second = await Effect.runPromise(
-            Effect.gen(function* second() {
+            Effect.gen(function* () {
               const paths = yield* Paths;
               const registry = new FakeRegistry(record());
               return yield* SessionHost.create({
@@ -474,7 +480,14 @@ describe("SessionHost", () => {
         home,
       );
     } finally {
-      await rm(home, { force: true, recursive: true });
+      await Effect.runPromise(
+        Effect.provide(NodeFileSystem.layer)(
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            yield* fs.remove(home, { force: true, recursive: true });
+          }),
+        ).pipe(Effect.catch(() => Effect.void)),
+      );
     }
   });
 

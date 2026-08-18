@@ -23,7 +23,7 @@ import type { SessionMutation } from "../src/session-state.ts";
 
 const fs = await Effect.runPromise(
   Effect.provide(NodeFileSystem.layer)(
-    Effect.gen(function* fs() {
+    Effect.gen(function* () {
       return yield* FileSystem.FileSystem;
     }),
   ),
@@ -45,7 +45,7 @@ const mutationSeq = (mutation: SessionMutation): number => {
 /** A temp dir acting as pi's agent dir; the layout comes from `PathsTest`. */
 const withPiAgentDir = async <T>(run: (root: string, paths: PathsLayout) => Promise<T>) =>
   await Effect.runPromise(
-    Effect.gen(function* withPiAgentDirScoped() {
+    Effect.gen(function* () {
       const paths = yield* Paths;
       const outcome = yield* Effect.tryPromise(async () => await run(paths.agentDir, paths));
       return outcome;
@@ -54,7 +54,7 @@ const withPiAgentDir = async <T>(run: (root: string, paths: PathsLayout) => Prom
 
 const writeSession = async (root: string, cwdSlug: string, fileName: string, content: string) =>
   await Effect.runPromise(
-    Effect.gen(function* writeSessionIn() {
+    Effect.gen(function* () {
       const dir = `${root}/sessions/${cwdSlug}`;
       yield* fs.makeDirectory(dir, { recursive: true });
       yield* fs.writeFileString(`${dir}/${fileName}`, content);

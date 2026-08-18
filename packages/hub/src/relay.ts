@@ -11,7 +11,7 @@ export type { HubRelayApi, RelayServerOptions } from "./relay-core.ts";
 
 /** The relay as a node WebSocket server (the local spine, tests). */
 export class HubRelay extends Context.Service<HubRelay, HubRelayApi>()("HubRelay", {
-  make: Effect.fn("HubRelay.make")(function* make(options: RelayServerOptions) {
+  make: Effect.fn("HubRelay.make")(function* (options: RelayServerOptions) {
     const log = options.log ?? (() => Effect.void);
     const core = yield* HubRelayCore.make({ log, token: options.token });
     // listenWs owns the server's lifetime: it resolves once the server is

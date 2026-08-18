@@ -24,7 +24,7 @@ import { expectPresent } from "./expect.ts";
 /** Build a KvStore value from a backend layer (the pi seam is value-shaped). */
 const buildKv = async (layer: Layer.Layer<KvStore>) =>
   await Effect.runPromise(
-    Effect.gen(function* buildKvValue() {
+    Effect.gen(function* () {
       const kv = yield* KvStore;
       return kv;
     }).pipe(Effect.provide(layer)),
@@ -60,7 +60,7 @@ runConformance("memoryKv", memoryFixture);
 // The file-backed fixture needs the FileSystem service; build its factory
 // once inside a provided context (each case still gets a fresh temp dir).
 const fileFixtureFactory = await Effect.runPromise(
-  Effect.gen(function* fileFixtureFactory() {
+  Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     return async () => {
       const root = await Effect.runPromise(fs.makeTempDirectory({ prefix: "saku-trail-" }));
@@ -82,10 +82,10 @@ runConformance("fileKv", fileFixtureFactory);
 /** Run a case against a fresh temp-dir file KvStore, torn down afterwards. */
 const withFileKv = async <A>(run: (kv: KvStoreApi, fs: FileSystem.FileSystem) => Promise<A>) =>
   await Effect.runPromise(
-    Effect.gen(function* withFileKvScoped() {
+    Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const root = yield* fs.makeTempDirectory({ prefix: "saku-durability-" });
-      const result = yield* Effect.gen(function* withFileKvRun() {
+      const result = yield* Effect.gen(function* () {
         const kv = yield* KvStore;
         const outcome = yield* Effect.tryPromise(async () => await run(kv, fs)).pipe(
           Effect.ensuring(

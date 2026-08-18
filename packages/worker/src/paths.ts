@@ -87,7 +87,7 @@ const agentDir = Config.string("PI_CODING_AGENT_DIR").pipe(
  */
 export const PathsLive: Layer.Layer<Paths> = Layer.effect(
   Paths,
-  Effect.gen(function* PathsLive() {
+  Effect.gen(function* () {
     const saku = yield* sakuHome;
     const agent = yield* agentDir;
     return Paths.of(makePaths(saku, agent));
@@ -103,7 +103,7 @@ export const PathsLive: Layer.Layer<Paths> = Layer.effect(
 export const PathsTest = (home?: string) =>
   Layer.effect(
     Paths,
-    Effect.gen(function* buildTestLayout() {
+    Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       // A temp-dir failure in tests is a defect, not a recoverable failure
       // (the same posture as PathsLive's config errors).

@@ -246,7 +246,7 @@ export class SakuThreadDO {
   }
 
   private runCommand(record: ThreadRecord, command: SessionCommand) {
-    return Effect.fn("runCommand")({ self: this }, function* runCommand(this: SakuThreadDO) {
+    return Effect.fn("runCommand")({ self: this }, function* (this: SakuThreadDO) {
       // The shared dispatch serves the read-only commands without a host
       // (a thread whose session has never begun answers from the
       // record/catalog alone, ADR 0004) and starts the session on the
@@ -278,7 +278,7 @@ export class SakuThreadDO {
 
   /** The live host only when the thread's session has already started; none otherwise. */
   private readOnlyHost(record: ThreadRecord) {
-    return Effect.fn("readOnlyHost")({ self: this }, function* readOnlyHost(this: SakuThreadDO) {
+    return Effect.fn("readOnlyHost")({ self: this }, function* (this: SakuThreadDO) {
       if (this.host !== undefined) {
         return Option.some(this.host);
       }
@@ -294,7 +294,7 @@ export class SakuThreadDO {
 
   /** The lazy host: built on the first mutating command; crashed hosts rebuild. */
   private hostFor(record: ThreadRecord) {
-    return Effect.fn("hostFor")({ self: this }, function* hostFor(this: SakuThreadDO) {
+    return Effect.fn("hostFor")({ self: this }, function* (this: SakuThreadDO) {
       const existing = this.host;
       if (existing !== undefined) {
         // A crashed host rebuilds from its trail on the next touch.
@@ -333,7 +333,7 @@ export class SakuThreadDO {
         registry,
         sink: (event) => {
           void Effect.runFork(
-            Effect.fn("sink")({ self: this }, function* sink(this: SakuThreadDO) {
+            Effect.fn("sink")({ self: this }, function* (this: SakuThreadDO) {
               const live = this.host;
               if (live !== undefined) {
                 const { tailSeq } = yield* live
@@ -403,7 +403,7 @@ export class SakuThreadDO {
         }),
       update: Effect.fn("update")(
         { self: this },
-        function* update(
+        function* (
           this: SakuThreadDO,
           threadId: string,
           patch: Partial<Pick<ThreadRecord, "name" | "sessionId" | "nameAuto">>,

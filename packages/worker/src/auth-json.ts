@@ -48,7 +48,7 @@ export class AuthJsonCredentialStore implements CredentialStore {
   }
 
   static load(path: string, fs: FileSystem.FileSystem) {
-    return Effect.fn("load")(function* load() {
+    return Effect.fn("load")(function* () {
       // Any read failure lands in the Result: missing auth.json is the default
       // install, an unreadable file is worth knowing — both yield an empty store.
       const content = yield* fs.readFileString(path).pipe(

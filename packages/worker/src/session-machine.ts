@@ -175,7 +175,7 @@ export const entriesFromLog = (log: readonly LogItem[]) =>
     .map((item) => item.entry);
 
 /** Apply a thinking level with model clamping; appends the trail entry. */
-const applyThinkingLevel = Effect.fn("applyThinkingLevel")(function* applyThinkingLevel(
+const applyThinkingLevel = Effect.fn("applyThinkingLevel")(function* (
   deps: HostDeps,
   level: ThinkingLevel,
 ) {
@@ -208,7 +208,7 @@ const applyThinkingLevel = Effect.fn("applyThinkingLevel")(function* applyThinki
 });
 
 /** Set the thread's model: catalog + auth checks, trail entry, thinking re-clamp. */
-const applyModel = Effect.fn("applyModel")(function* applyModel(
+const applyModel = Effect.fn("applyModel")(function* (
   deps: HostDeps,
   provider: string,
   modelId: string,
@@ -246,7 +246,7 @@ const applyModel = Effect.fn("applyModel")(function* applyModel(
  * Compaction, manual or threshold. Aborts settle as success with `undefined`
  * (the run continues); real failures propagate.
  */
-const runCompaction = Effect.fn("runCompaction")(function* runCompaction(
+const runCompaction = Effect.fn("runCompaction")(function* (
   deps: HostDeps,
   reason: "manual" | "threshold" | "overflow",
   customInstructions?: string,
@@ -282,7 +282,7 @@ const runCompaction = Effect.fn("runCompaction")(function* runCompaction(
   deps.sink({ reason, type: "compaction_start" });
   const thinkingLevel = yield* Ref.get(deps.thinkingLevelRef);
   const outcome = yield* Effect.result(
-    Effect.gen(function* outcome() {
+    Effect.gen(function* () {
       const result = yield* Effect.tryPromise({
         catch: toSessionHostError,
         try: async () =>
@@ -345,7 +345,7 @@ const runCompaction = Effect.fn("runCompaction")(function* runCompaction(
   return outcome.success;
 });
 
-const maybeAutoCompact = Effect.fn("maybeAutoCompact")(function* maybeAutoCompact(deps: HostDeps) {
+const maybeAutoCompact = Effect.fn("maybeAutoCompact")(function* (deps: HostDeps) {
   const settings = yield* Ref.get(deps.compactionSettingsRef);
   if (!settings.enabled) {
     return;
@@ -370,7 +370,7 @@ const maybeAutoCompact = Effect.fn("maybeAutoCompact")(function* maybeAutoCompac
 });
 
 /** Auto-title: name quick-started threads after their first settled run. */
-const maybeAutoTitle = Effect.fn("maybeAutoTitle")(function* maybeAutoTitle(deps: HostDeps) {
+const maybeAutoTitle = Effect.fn("maybeAutoTitle")(function* (deps: HostDeps) {
   const record = yield* deps.registry.get(deps.threadId);
   if (Option.isNone(record) || !record.value.nameAuto) {
     return;
@@ -417,7 +417,7 @@ const maybeAutoTitle = Effect.fn("maybeAutoTitle")(function* maybeAutoTitle(deps
 });
 
 /** One unit of agent work: the run, then auto-compaction, settled, auto-title. */
-const runCommand = Effect.fn("runCommand")(function* runCommand(
+const runCommand = Effect.fn("runCommand")(function* (
   deps: HostDeps,
   working: Extract<HostStateV, { readonly _tag: "Working" }>,
 ) {
@@ -551,7 +551,7 @@ const HostMachine: HostMachineApi = {
       )
       // Abort settles the in-flight run; elsewhere it is a no-op.
       .on(HostState.Working, HostEvent.AbortRequested, ({ state }) =>
-        Effect.gen(function* make() {
+        Effect.gen(function* () {
           const compactionAbort = yield* Ref.get(deps.compactionAbortRef);
           if (Option.isSome(compactionAbort)) {
             compactionAbort.value.abort();
@@ -591,7 +591,7 @@ const HostMachine: HostMachineApi = {
         ],
         HostEvent.SetAutoCompactionRequested,
         ({ state, event }) =>
-          Effect.gen(function* make() {
+          Effect.gen(function* () {
             yield* Ref.update(deps.compactionSettingsRef, (settings) => ({
               ...settings,
               enabled: event.enabled,
@@ -657,37 +657,37 @@ const HostMachine: HostMachineApi = {
       )
       // Run lifecycle: the state-scoped effects settle their own replies.
       .on(HostState.Working, HostEvent.RunFinished, () =>
-        Effect.gen(function* make() {
+        Effect.gen(function* () {
           yield* deps.pushState("idle");
           return HostState.Idle;
         }),
       )
       .on(HostState.Working, HostEvent.RunFailed, ({ event }) =>
-        Effect.gen(function* make() {
+        Effect.gen(function* () {
           yield* deps.pushState("idle");
           return HostState.Crashed({ message: event.message });
         }),
       )
       .on(HostState.Compacting, HostEvent.CompactFinished, () =>
-        Effect.gen(function* make() {
+        Effect.gen(function* () {
           yield* deps.pushState("idle");
           return HostState.Idle;
         }),
       )
       .on(HostState.Compacting, HostEvent.CompactFailed, () =>
-        Effect.gen(function* make() {
+        Effect.gen(function* () {
           yield* deps.pushState("idle");
           return HostState.Idle;
         }),
       )
       .spawn(HostState.Working, ({ self, state }) =>
-        Effect.gen(function* make() {
+        Effect.gen(function* () {
           yield* runCommand(deps, state);
           yield* self.reply(ReplyOk.make({}));
           yield* self.send(HostEvent.RunFinished);
         }).pipe(
           Effect.catchEager((failure) =>
-            Effect.gen(function* make() {
+            Effect.gen(function* () {
               yield* self.reply(ReplyFailed.make({ message: messageOf(failure) }));
               yield* self.send(HostEvent.RunFailed({ message: messageOf(failure) }));
             }),
@@ -695,13 +695,13 @@ const HostMachine: HostMachineApi = {
         ),
       )
       .spawn(HostState.Compacting, ({ self, state }) =>
-        Effect.gen(function* make() {
+        Effect.gen(function* () {
           const result = yield* runCompaction(deps, "manual", state.customInstructions);
           yield* self.reply(ReplyOk.make({ result }));
           yield* self.send(HostEvent.CompactFinished({ result }));
         }).pipe(
           Effect.catchEager((failure) =>
-            Effect.gen(function* make() {
+            Effect.gen(function* () {
               yield* self.reply(ReplyFailed.make({ message: messageOf(failure) }));
               yield* self.send(HostEvent.CompactFailed({ message: messageOf(failure) }));
             }),

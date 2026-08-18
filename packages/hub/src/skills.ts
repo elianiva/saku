@@ -33,7 +33,7 @@ export const skillNameFromSource = (source: string) =>
 
 /** The hub's skills store (ADR 0007): `SkillsStore.make` builds one over the `KvStore`. */
 export class SkillsStore extends Context.Service<SkillsStore, SkillsStoreApi>()("SkillsStore", {
-  make: Effect.fn("SkillsStore.make")(function* make() {
+  make: Effect.fn("SkillsStore.make")(function* () {
     const kv = yield* KvStore;
     const skills = jsonRecords<SkillInfo>(kv, "skills/");
     const loaded = yield* skills.list();
@@ -42,7 +42,7 @@ export class SkillsStore extends Context.Service<SkillsStore, SkillsStoreApi>()(
     );
 
     return {
-      delete: Effect.fn("delete")(function* deleteSkill(id) {
+      delete: Effect.fn("delete")(function* (id) {
         const current = yield* Ref.get(skillsRef);
         if (!current.has(id)) {
           return false;
@@ -55,7 +55,7 @@ export class SkillsStore extends Context.Service<SkillsStore, SkillsStoreApi>()(
         yield* skills.delete(id);
         return true;
       }),
-      import: Effect.fn("import")(function* importSkill(input) {
+      import: Effect.fn("import")(function* (input) {
         const skill: SkillInfo = {
           id: crypto.randomUUID().replaceAll("-", ""),
           name: skillNameFromSource(input.source),

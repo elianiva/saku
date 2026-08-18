@@ -10,7 +10,6 @@
  * over the env and appended the result — a final plain message.
  */
 
-import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -114,9 +113,16 @@ describe("SessionHost over RemoteEnv", () => {
   const registry = new FakeRegistry(record());
 
   beforeEach(async () => {
-    workdir = await mkdtemp(path.join(tmpdir(), "saku-remote-host-"));
+    workdir = await Effect.runPromise(
+      Effect.provide(NodeFileSystem.layer)(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          return yield* fs.makeTempDirectory({ directory: tmpdir(), prefix: "saku-remote-host-" });
+        }),
+      ),
+    );
     const built = await Effect.runPromise(
-      Effect.gen(function* built() {
+      Effect.gen(function* () {
         const genScope = yield* Scope.make();
         const fs = yield* FileSystem.FileSystem;
         const builtDaemon: EnvDaemonApi = yield* EnvDaemon.make({
@@ -152,7 +158,14 @@ describe("SessionHost over RemoteEnv", () => {
     await Effect.runPromise(host.dispose());
     env.close();
     await Effect.runPromise(Scope.close(scope, Exit.void));
-    await rm(workdir, { force: true, recursive: true });
+    await Effect.runPromise(
+      Effect.provide(NodeFileSystem.layer)(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          yield* fs.remove(workdir, { force: true, recursive: true });
+        }),
+      ).pipe(Effect.catch(() => Effect.void)),
+    );
   });
 
   it("runs a prompt whose bash tool executes on the daemon and records the call", async () => {

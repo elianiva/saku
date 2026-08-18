@@ -145,7 +145,7 @@ export class SakuHubDO {
     const idleStopMs = Math.trunc(
       Number(varOrDefault(env, "SAKU_IDLE_STOP_MS", String(IDLE_STOP_DEFAULT_MS))),
     );
-    return Effect.fn("buildHub")(function* buildHub() {
+    return Effect.fn("buildHub")(function* () {
       return yield* Hub.make({
         idleStop,
         idleStopMs,

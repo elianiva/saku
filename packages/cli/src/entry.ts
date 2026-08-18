@@ -14,7 +14,8 @@
  * The daemon auto-starts on demand for every command except `daemon stop`.
  */
 
-import { Effect, Logger, Match, Option, Result } from "effect";
+import { Effect, FileSystem, Logger, Match, Option, Result } from "effect";
+import { NodeFileSystem } from "@effect/platform-node";
 
 import { WireClient, WireError, shortThreadId, resolveThread } from "@saku/wire";
 import type { ThreadMode } from "@saku/wire";
@@ -48,7 +49,7 @@ const CliLogger = Logger.withConsoleLog(
  * so connect uses that connection info — the storage layout stays in the
  * lifecycle module.
  */
-const connect = Effect.gen(function* connect() {
+const connect = Effect.gen(function* () {
   const lifecycle = yield* workerLifecycle();
   const connection = yield* ensure(lifecycle);
   const client = yield* WireClient.make({
@@ -72,7 +73,7 @@ const fail = (cause: unknown) => {
 
 const pad = (text: string, width: number) => text.padEnd(width).slice(0, width);
 
-const cmdList = Effect.fn("cmdList")(function* cmdList() {
+const cmdList = Effect.fn("cmdList")(function* () {
   const client = yield* connect;
   const threads = yield* client.listThreads().pipe(
     Effect.catchIf(
@@ -107,7 +108,7 @@ const cmdList = Effect.fn("cmdList")(function* cmdList() {
   yield* client.disconnect();
 });
 
-const cmdNew = Effect.fn("cmdNew")(function* cmdNew(
+const cmdNew = Effect.fn("cmdNew")(function* (
   name: string | undefined,
   cwd: string,
   mode: ThreadMode | undefined,
@@ -142,7 +143,7 @@ const cmdNew = Effect.fn("cmdNew")(function* cmdNew(
   yield* client.disconnect();
 });
 
-const cmdRm = Effect.fn("cmdRm")(function* cmdRm(threadArg: string | undefined) {
+const cmdRm = Effect.fn("cmdRm")(function* (threadArg: string | undefined) {
   if (threadArg === undefined) {
     yield* Effect.fail(
       new CliError({ code: "usage", message: "saku rm requires a thread: saku rm <id-or-name>" }),
@@ -198,7 +199,7 @@ const fmtWhen = (ms: number) => {
 
 /** saku pi list [project] — the added projects' pi sessions on this machine
  *  (CONTEXT.md: Project: the window is project-scoped, never a full scan). */
-const cmdPiList = Effect.fn("cmdPiList")(function* cmdPiList(project: string | undefined) {
+const cmdPiList = Effect.fn("cmdPiList")(function* (project: string | undefined) {
   const client = yield* connect;
   const sessions = yield* client.listPiSessions(project).pipe(
     Effect.catchIf(
@@ -240,7 +241,7 @@ const cmdPiList = Effect.fn("cmdPiList")(function* cmdPiList(project: string | u
 /** saku pi import <id-or-path> — adopt a pi session as a saku thread. A
  *  full `.jsonl` path imports directly (explicit gestures bypass the
  *  window); anything else resolves against the added projects' sessions. */
-const cmdPiImport = Effect.fn("cmdPiImport")(function* cmdPiImport(arg: string | undefined) {
+const cmdPiImport = Effect.fn("cmdPiImport")(function* (arg: string | undefined) {
   if (arg === undefined || arg.length === 0) {
     yield* Effect.fail(
       new CliError({
@@ -316,9 +317,11 @@ const cmdPiImport = Effect.fn("cmdPiImport")(function* cmdPiImport(arg: string |
   yield* client.disconnect();
 });
 
-const cmdPi = Effect.fn("cmdPi")(function* cmdPi(sub: string | undefined, arg: string | undefined) {
+const cmdPi = Effect.fn("cmdPi")(function* (sub: string | undefined, arg: string | undefined) {
   yield* Match.value(sub).pipe(
-    Match.withReturnType<Effect.Effect<void, WireError | CliError, Paths>>(),
+    Match.withReturnType<
+      Effect.Effect<void, WireError | CliError, Paths | FileSystem.FileSystem>
+    >(),
     Match.when("list", () => cmdPiList(arg)),
     Match.when("import", () => cmdPiImport(arg)),
     Match.orElse(() =>
@@ -328,14 +331,16 @@ const cmdPi = Effect.fn("cmdPi")(function* cmdPi(sub: string | undefined, arg: s
 });
 
 /** saku project add|list|remove — the window's scope (CONTEXT.md: Project). */
-const cmdProject = Effect.fn("cmdProject")(function* cmdProject(
+const cmdProject = Effect.fn("cmdProject")(function* (
   sub: string | undefined,
   arg: string | undefined,
 ) {
   yield* Match.value(sub).pipe(
-    Match.withReturnType<Effect.Effect<void, WireError | CliError, Paths>>(),
+    Match.withReturnType<
+      Effect.Effect<void, WireError | CliError, Paths | FileSystem.FileSystem>
+    >(),
     Match.when("add", () =>
-      Effect.gen(function* cmdProjectAdd() {
+      Effect.gen(function* () {
         if (arg === undefined || arg.length === 0) {
           yield* Effect.fail(
             new CliError({ code: "usage", message: "saku project add requires a path" }),
@@ -360,7 +365,7 @@ const cmdProject = Effect.fn("cmdProject")(function* cmdProject(
       }),
     ),
     Match.when("list", () =>
-      Effect.gen(function* cmdProjectList() {
+      Effect.gen(function* () {
         const client = yield* connect;
         const projects = yield* client.listProjects().pipe(
           Effect.catchIf(
@@ -385,7 +390,7 @@ const cmdProject = Effect.fn("cmdProject")(function* cmdProject(
       }),
     ),
     Match.when("remove", () =>
-      Effect.gen(function* cmdProjectRemove() {
+      Effect.gen(function* () {
         if (arg === undefined || arg.length === 0) {
           yield* Effect.fail(
             new CliError({ code: "usage", message: "saku project remove requires a path" }),
@@ -416,7 +421,7 @@ const cmdProject = Effect.fn("cmdProject")(function* cmdProject(
 });
 
 /** saku archive|unarchive <thread> — visibility-only (CONTEXT.md: Archive). */
-const cmdArchive = Effect.fn("cmdArchive")(function* cmdArchive(
+const cmdArchive = Effect.fn("cmdArchive")(function* (
   threadArg: string | undefined,
   unarchive: boolean,
 ) {
@@ -478,11 +483,11 @@ const cmdArchive = Effect.fn("cmdArchive")(function* cmdArchive(
   yield* client.disconnect();
 });
 
-const cmdDaemon = Effect.fn("cmdDaemon")(function* cmdDaemon(sub: string | undefined) {
+const cmdDaemon = Effect.fn("cmdDaemon")(function* (sub: string | undefined) {
   yield* Match.value(sub).pipe(
-    Match.withReturnType<Effect.Effect<void, CliError, Paths>>(),
+    Match.withReturnType<Effect.Effect<void, CliError, Paths | FileSystem.FileSystem>>(),
     Match.when("start", () =>
-      Effect.gen(function* cmdDaemonStart() {
+      Effect.gen(function* () {
         const lifecycle = yield* workerLifecycle();
         const current = yield* status(lifecycle);
         if (current.running && current.pid !== undefined) {
@@ -494,7 +499,7 @@ const cmdDaemon = Effect.fn("cmdDaemon")(function* cmdDaemon(sub: string | undef
       }),
     ),
     Match.when("stop", () =>
-      Effect.gen(function* cmdDaemonStop() {
+      Effect.gen(function* () {
         const lifecycle = yield* workerLifecycle();
         const pid = yield* stop(lifecycle);
         yield* Effect.logInfo(
@@ -511,7 +516,7 @@ const cmdDaemon = Effect.fn("cmdDaemon")(function* cmdDaemon(sub: string | undef
     // waiting until it publishes a live socket (the same ensure the
     // on-demand commands use).
     Match.when("restart", () =>
-      Effect.gen(function* cmdDaemonRestart() {
+      Effect.gen(function* () {
         const lifecycle = yield* workerLifecycle();
         const stopped = yield* stop(lifecycle);
         yield* Effect.logInfo(
@@ -525,7 +530,7 @@ const cmdDaemon = Effect.fn("cmdDaemon")(function* cmdDaemon(sub: string | undef
       }),
     ),
     Match.when("status", () =>
-      Effect.gen(function* cmdDaemonStatus() {
+      Effect.gen(function* () {
         const lifecycle = yield* workerLifecycle();
         const current = yield* status(lifecycle);
         yield* Effect.logInfo(
@@ -541,14 +546,11 @@ const cmdDaemon = Effect.fn("cmdDaemon")(function* cmdDaemon(sub: string | undef
   );
 });
 
-const cmdEnv = Effect.fn("cmdEnv")(function* cmdEnv(
-  sub: string | undefined,
-  hubUrl: string | undefined,
-) {
+const cmdEnv = Effect.fn("cmdEnv")(function* (sub: string | undefined, hubUrl: string | undefined) {
   yield* Match.value(sub).pipe(
-    Match.withReturnType<Effect.Effect<void, CliError, Paths>>(),
+    Match.withReturnType<Effect.Effect<void, CliError, Paths | FileSystem.FileSystem>>(),
     Match.when("start", () =>
-      Effect.gen(function* cmdEnvStart() {
+      Effect.gen(function* () {
         const config = yield* ensureEnvConfig(hubUrl).pipe(
           Effect.mapError(
             (error) =>
@@ -571,7 +573,7 @@ const cmdEnv = Effect.fn("cmdEnv")(function* cmdEnv(
       }),
     ),
     Match.when("stop", () =>
-      Effect.gen(function* cmdEnvStop() {
+      Effect.gen(function* () {
         const lifecycle = yield* envLifecycle();
         const pid = yield* stop(lifecycle);
         yield* Effect.logInfo(
@@ -583,7 +585,7 @@ const cmdEnv = Effect.fn("cmdEnv")(function* cmdEnv(
       }),
     ),
     Match.when("status", () =>
-      Effect.gen(function* cmdEnvStatus() {
+      Effect.gen(function* () {
         const lifecycle = yield* envLifecycle();
         const current = yield* status(lifecycle);
         yield* Effect.logInfo(
@@ -616,7 +618,7 @@ usage:
   saku pi import <id-or-path>
 `;
 
-const main = Effect.fn("main")(function* main() {
+const main = Effect.fn("main")(function* () {
   const args = process.argv.slice(2);
   const [command] = args;
   const rest = args.slice(1);
@@ -630,7 +632,9 @@ const main = Effect.fn("main")(function* main() {
   };
 
   yield* Match.value(command).pipe(
-    Match.withReturnType<Effect.Effect<void, WireError | CliError, Paths>>(),
+    Match.withReturnType<
+      Effect.Effect<void, WireError | CliError, Paths | FileSystem.FileSystem>
+    >(),
     Match.when("daemon", () => cmdDaemon(rest[0])),
     Match.when("env", () =>
       cmdEnv(rest[0], rest.includes("--hub") ? rest[rest.indexOf("--hub") + 1] : undefined),
@@ -657,7 +661,9 @@ const main = Effect.fn("main")(function* main() {
 
 try {
   await Effect.runPromise(
-    Effect.provide(Logger.layer([CliLogger]))(Effect.provide(PathsLive)(main())),
+    Effect.provide([NodeFileSystem.layer, Logger.layer([CliLogger])])(
+      Effect.provide(PathsLive)(main()),
+    ),
   );
 } catch (error) {
   fail(error);

@@ -126,7 +126,7 @@ interface TempFileOptions {
  */
 const describeEntry = async (fs: FileSystem.FileSystem, path: string) =>
   await Effect.runPromise(
-    Effect.gen(function* describe() {
+    Effect.gen(function* () {
       const isLink = yield* Effect.isSuccess(fs.readLink(path));
       if (isLink) {
         return {

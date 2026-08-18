@@ -53,7 +53,7 @@ export class Wire extends Context.Service<Wire, WireApi>()("saku/Wire") {}
 
 export const WireLive = Layer.effect(
   Wire,
-  Effect.gen(function* WireLive() {
+  Effect.gen(function* () {
     // The eager client exists from boot so the service always holds one;
     // connect() re-resolves and swaps it as the daemon's endpoint moves.
     const boot = yield* resolveConfig;
@@ -109,7 +109,7 @@ export const WireLive = Layer.effect(
 
     let bridge: Fiber.Fiber<void> | null = null;
     const attach = (client: WireClientApi) =>
-      Effect.gen(function* attachEvents() {
+      Effect.gen(function* () {
         if (bridge !== null) {
           yield* Fiber.interrupt(bridge);
         }
@@ -121,7 +121,7 @@ export const WireLive = Layer.effect(
       });
     yield* attach(current);
 
-    const connect = Effect.fn("connect")(function* connect() {
+    const connect = Effect.fn("connect")(function* () {
       const resolved = yield* resolveConfig;
       if (resolved._tag === "offline") {
         return yield* Effect.fail(

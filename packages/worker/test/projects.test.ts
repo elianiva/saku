@@ -6,7 +6,6 @@
  * the registry's disk round-trip tests.
  */
 
-import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -20,6 +19,22 @@ import { addProject, listProjects, removeProject } from "../src/projects.ts";
 
 /** Resolve the fs + paths services against a pinned temp home (the caller
  *  owns the home's lifecycle), then run the body with them as arguments. */
+const makeTempDir = (prefix: string) =>
+  Effect.provide(NodeFileSystem.layer)(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      return yield* fs.makeTempDirectory({ directory: tmpdir(), prefix });
+    }),
+  );
+
+const removeDir = (dir: string) =>
+  Effect.provide(NodeFileSystem.layer)(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.remove(dir, { force: true, recursive: true });
+    }).pipe(Effect.catch(() => Effect.void)),
+  );
+
 const runStore = async <A, E>(
   body: (fs: FileSystem.FileSystem, paths: PathsLayout) => Effect.Effect<A, E>,
   home: string,
@@ -27,7 +42,7 @@ const runStore = async <A, E>(
   await Effect.runPromise(
     Effect.provide(NodeFileSystem.layer)(
       Effect.provide(PathsTest(home))(
-        Effect.gen(function* runStoreIn() {
+        Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const paths = yield* Paths;
           const outcome = yield* body(fs, paths);
@@ -39,7 +54,7 @@ const runStore = async <A, E>(
 
 describe("projects store", () => {
   it("adds, lists, and removes projects across boots", async () => {
-    const home = await mkdtemp(path.join(tmpdir(), "saku-projects-"));
+    const home = await Effect.runPromise(makeTempDir("saku-projects-"));
     try {
       const first = await runStore((fs, paths) => addProject(fs, paths, "/tmp/work"), home);
       expect(first.path).toBe("/tmp/work");
@@ -63,23 +78,23 @@ describe("projects store", () => {
       // Removing an absent project is a no-op, not an error.
       await runStore((fs, paths) => removeProject(fs, paths, "/never/added"), home);
     } finally {
-      await rm(home, { force: true, recursive: true });
+      await Effect.runPromise(removeDir(home));
     }
   });
 
   it("resolves relative paths to absolute", async () => {
-    const home = await mkdtemp(path.join(tmpdir(), "saku-projects-rel-"));
+    const home = await Effect.runPromise(makeTempDir("saku-projects-rel-"));
     try {
       const project = await runStore((fs, paths) => addProject(fs, paths, "relative/dir"), home);
       expect(project.path.startsWith("/")).toBe(true);
       expect(project.path.endsWith("/relative/dir")).toBe(true);
     } finally {
-      await rm(home, { force: true, recursive: true });
+      await Effect.runPromise(removeDir(home));
     }
   });
 
   it("a missing or corrupt document reads as an empty list", async () => {
-    const home = await mkdtemp(path.join(tmpdir(), "saku-projects-empty-"));
+    const home = await Effect.runPromise(makeTempDir("saku-projects-empty-"));
     try {
       const empty = await runStore((fs, paths) => listProjects(fs, paths), home);
       expect(empty).toHaveLength(0);
@@ -93,7 +108,7 @@ describe("projects store", () => {
       const afterCorrupt = await runStore((fs, paths) => listProjects(fs, paths), home);
       expect(afterCorrupt).toHaveLength(0);
     } finally {
-      await rm(home, { force: true, recursive: true });
+      await Effect.runPromise(removeDir(home));
     }
   });
 });

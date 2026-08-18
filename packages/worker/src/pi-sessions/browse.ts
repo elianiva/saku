@@ -25,7 +25,7 @@ import { PiSessionsError, sessionsRootOf } from "./common.ts";
  *  lossily from the session dir names (the encoding can't distinguish
  *  dashes from separators — good enough for a picker; the added path is
  *  what the user commits). No file reads. */
-const listProjectCandidates = Effect.fn("listProjectCandidates")(function* listProjectCandidates(
+const listProjectCandidates = Effect.fn("listProjectCandidates")(function* (
   fs: FileSystem.FileSystem,
   paths: PathsLayout,
 ) {
@@ -73,7 +73,7 @@ const defaultRootOf = (candidates: readonly string[], home: string) => {
  *  marked with whether pi has sessions for that exact cwd. The tree is
  *  traversed level by level from the picker — the daemon never returns the
  *  whole tree, only the level asked for. */
-export const browseProjectDirs = Effect.fn("browseProjectDirs")(function* browseProjectDirs(
+export const browseProjectDirs = Effect.fn("browseProjectDirs")(function* (
   fs: FileSystem.FileSystem,
   paths: PathsLayout,
   input: string,

@@ -7,7 +7,6 @@
  * env protocol.
  */
 
-import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -116,9 +115,16 @@ describe("BoxProvisioner.make", () => {
   };
 
   beforeEach(async () => {
-    workdir = await mkdtemp(path.join(tmpdir(), "saku-box-"));
+    workdir = await Effect.runPromise(
+      Effect.provide(NodeFileSystem.layer)(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          return yield* fs.makeTempDirectory({ directory: tmpdir(), prefix: "saku-box-" });
+        }),
+      ),
+    );
     const built = await Effect.runPromise(
-      Effect.gen(function* buildDaemon() {
+      Effect.gen(function* () {
         const genScope = yield* Scope.make();
         const fs = yield* FileSystem.FileSystem;
         const api: EnvDaemonApi = yield* EnvDaemon.make({ cwd: workdir, fs, token: TOKEN }).pipe(
@@ -142,7 +148,14 @@ describe("BoxProvisioner.make", () => {
   afterEach(async () => {
     daemonUrl = null;
     await Effect.runPromise(Scope.close(scope, Exit.void));
-    await rm(workdir, { force: true, recursive: true });
+    await Effect.runPromise(
+      Effect.provide(NodeFileSystem.layer)(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          yield* fs.remove(workdir, { force: true, recursive: true });
+        }),
+      ).pipe(Effect.catch(() => Effect.void)),
+    );
   });
 
   it("provisions a sandbox thread: creates the machine, bootstraps, probes, returns both values", async () => {
@@ -201,7 +214,7 @@ describe("BoxProvisioner.make", () => {
       return;
     }
     const fresh = await Effect.runPromise(
-      Effect.gen(function* fresh() {
+      Effect.gen(function* () {
         const freshScope = yield* Scope.make();
         const fs = yield* FileSystem.FileSystem;
         const restarted = yield* EnvDaemon.make({ cwd: workdir, fs, token: TOKEN }).pipe(

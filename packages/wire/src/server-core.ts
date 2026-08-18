@@ -120,14 +120,14 @@ const NO_PAYLOAD = undefined;
 
 /** The wire's server core: the shared transport-free connection discipline. */
 export class WireServer extends Context.Service<WireServer, WireServerApi>()("WireServer", {
-  make: Effect.fn("WireServer.make")(function* make(options: WireServerOptions) {
+  make: Effect.fn("WireServer.make")(function* (options: WireServerOptions) {
     const pid = options.pid ?? (hasProcess(process) ? process.pid : 0);
     const clientsRef = yield* Ref.make<ReadonlySet<Client>>(new Set());
 
     const log = (message: string) =>
       options.log === undefined ? Effect.void : options.log(message);
 
-    const send = Effect.fn("send")(function* send(client: Client, event: WireEvent) {
+    const send = Effect.fn("send")(function* (client: Client, event: WireEvent) {
       // A socket that closed between the check and the send is a no-op;
       // the close handler cleans the client up.
       const sent = Result.try(() => {
@@ -152,10 +152,7 @@ export class WireServer extends Context.Service<WireServer, WireServerApi>()("Wi
         ),
       );
 
-    const handleHello = Effect.fn("handleHello")(function* handleHello(
-      client: Client,
-      hello: Hello,
-    ) {
+    const handleHello = Effect.fn("handleHello")(function* (client: Client, hello: Hello) {
       if (hello.version !== WIRE_VERSION) {
         yield* send(
           client,
@@ -185,7 +182,7 @@ export class WireServer extends Context.Service<WireServer, WireServerApi>()("Wi
       return send(client, ResponseError.make({ error: message, id, ok: false }));
     };
 
-    const handleCommand = Effect.fn("handleCommand")(function* handleCommand(
+    const handleCommand = Effect.fn("handleCommand")(function* (
       client: Client,
       command: WireCommand,
     ) {
@@ -198,7 +195,7 @@ export class WireServer extends Context.Service<WireServer, WireServerApi>()("Wi
       // Routing by command kind: session commands are thread-scoped; threads
       // and skills are hub-level. A session command without a threadId is a
       // protocol error, not a hub command.
-      let run: Effect.Effect<ResponsePayload, unknown>;
+      let run;
       if (isSessionCommand(command.command)) {
         run =
           command.threadId === undefined
@@ -220,7 +217,7 @@ export class WireServer extends Context.Service<WireServer, WireServerApi>()("Wi
       });
     });
 
-    const runConnection = Effect.fn("runConnection")(function* runConnection(socket: ServerSocket) {
+    const runConnection = Effect.fn("runConnection")(function* (socket: ServerSocket) {
       const authed = yield* Ref.make(false);
       const client: Client = { authed, socket };
       yield* Ref.update(clientsRef, (clients) => new Set(clients).add(client));
@@ -271,7 +268,7 @@ export class WireServer extends Context.Service<WireServer, WireServerApi>()("Wi
       });
     });
 
-    const closeClients = Effect.fn("closeClients")(function* closeClients() {
+    const closeClients = Effect.fn("closeClients")(function* () {
       const clients = yield* Ref.get(clientsRef);
       yield* Effect.forEach(
         clients,

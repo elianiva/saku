@@ -147,7 +147,7 @@ const importNameOf = (session: PiSessionData) => {
 };
 
 /** Whether a thread's pi session has ever been created (started). */
-const sessionStarted = Effect.fn("sessionStarted")(function* sessionStarted(
+const sessionStarted = Effect.fn("sessionStarted")(function* (
   fs: FileSystem.FileSystem,
   paths: PathsLayout,
   record: Option.Option<ThreadRecord>,
@@ -172,7 +172,7 @@ export interface SakuDaemonApi {
 
 /** The daemon's service surface: `SakuDaemon.make` builds one. */
 export class SakuDaemon extends Context.Service<SakuDaemon, SakuDaemonApi>()("SakuDaemon", {
-  make: Effect.fn("SakuDaemon.make")(function* make(options: {
+  make: Effect.fn("SakuDaemon.make")(function* (options: {
     registry: ThreadRegistryApi;
     catalog: ModelCatalogApi;
     fs: FileSystem.FileSystem;
@@ -219,7 +219,7 @@ export class SakuDaemon extends Context.Service<SakuDaemon, SakuDaemonApi>()("Sa
         }),
       );
 
-    const infoOf = Effect.fn("infoOf")(function* infoOf(threadId: string) {
+    const infoOf = Effect.fn("infoOf")(function* (threadId: string) {
       const tailSeq = yield* tailSeqOf(threadId);
       const info = yield* registry.toInfo(threadId, tailSeq);
       if (Option.isNone(info)) {
@@ -231,7 +231,7 @@ export class SakuDaemon extends Context.Service<SakuDaemon, SakuDaemonApi>()("Sa
     });
 
     /** Resolve a user-supplied thread id/name/prefix against the registry. */
-    const resolveThreadId = Effect.fn("resolveThreadId")(function* resolveThreadId(input: string) {
+    const resolveThreadId = Effect.fn("resolveThreadId")(function* (input: string) {
       const threads = yield* registry.list();
       const resolved = resolveThread(threads, input);
       if (Result.isFailure(resolved)) {
@@ -242,19 +242,15 @@ export class SakuDaemon extends Context.Service<SakuDaemon, SakuDaemonApi>()("Sa
       return resolved.success.id;
     });
 
-    const runHubCommand = Effect.fn("runHubCommand")(function* runHubCommand(
-      hubCommand: HubCommand,
-    ) {
+    const runHubCommand = Effect.fn("runHubCommand")(function* (hubCommand: HubCommand) {
       return yield* Match.value(hubCommand).pipe(
         Match.withReturnType<Effect.Effect<ResponsePayload, CommandError>>(),
         Match.tagsExhaustive({
-          add_project: Effect.fn("add_project")(function* add_project(
-            command: HubCommandOf<"add_project">,
-          ) {
+          add_project: Effect.fn("add_project")(function* (command: HubCommandOf<"add_project">) {
             const project = yield* addProject(fs, paths, command.path);
             return AddProjectResponse.make({ project });
           }),
-          archive_thread: Effect.fn("archive_thread")(function* archive_thread(
+          archive_thread: Effect.fn("archive_thread")(function* (
             command: HubCommandOf<"archive_thread">,
           ) {
             // Archive is visibility-only (CONTEXT.md: Archive): the trail,
@@ -273,7 +269,7 @@ export class SakuDaemon extends Context.Service<SakuDaemon, SakuDaemonApi>()("Sa
             yield* emitThreadChanged(info);
             return ArchiveThreadResponse.make({ thread: info });
           }),
-          browse_project_dirs: Effect.fn("browse_project_dirs")(function* browse_project_dirs(
+          browse_project_dirs: Effect.fn("browse_project_dirs")(function* (
             command: HubCommandOf<"browse_project_dirs">,
           ) {
             // One level of the add-project tree (CONTEXT.md: Add project):
@@ -290,7 +286,7 @@ export class SakuDaemon extends Context.Service<SakuDaemon, SakuDaemonApi>()("Sa
             );
             return BrowseProjectDirsResponse.make(browse);
           }),
-          create_thread: Effect.fn("create_thread")(function* create_thread(
+          create_thread: Effect.fn("create_thread")(function* (
             command: HubCommandOf<"create_thread">,
           ) {
             const createOptions: CreateThreadInput = { name: command.name };
@@ -309,7 +305,7 @@ export class SakuDaemon extends Context.Service<SakuDaemon, SakuDaemonApi>()("Sa
             return CreateThreadResponse.make({ thread: info });
           }),
           delete_skill: skillsNotServed,
-          delete_thread: Effect.fn("delete_thread")(function* delete_thread(
+          delete_thread: Effect.fn("delete_thread")(function* (
             command: HubCommandOf<"delete_thread">,
           ) {
             const threadId = yield* resolveThreadId(command.threadId);
@@ -330,14 +326,12 @@ export class SakuDaemon extends Context.Service<SakuDaemon, SakuDaemonApi>()("Sa
             yield* emitThreadChanged(info);
             return DeleteThreadResponse.make({});
           }),
-          get_thread: Effect.fn("get_thread")(function* get_thread(
-            command: HubCommandOf<"get_thread">,
-          ) {
+          get_thread: Effect.fn("get_thread")(function* (command: HubCommandOf<"get_thread">) {
             const threadId = yield* resolveThreadId(command.threadId);
             const info = yield* infoOf(threadId);
             return GetThreadResponse.make({ thread: info });
           }),
-          import_pi_session: Effect.fn("import_pi_session")(function* import_pi_session(
+          import_pi_session: Effect.fn("import_pi_session")(function* (
             command: HubCommandOf<"import_pi_session">,
           ) {
             // Adoption is idempotent per pi session file: one thread per
@@ -374,7 +368,7 @@ export class SakuDaemon extends Context.Service<SakuDaemon, SakuDaemonApi>()("Sa
             // Adopt the trail: replay the pi mutations into the thread's own
             // kv store, then back-fill the session id. A failure rolls the
             // record back — an import must be all-or-nothing.
-            const importOutcome = yield* Effect.gen(function* importOutcome() {
+            const importOutcome = yield* Effect.gen(function* () {
               const kv = yield* KvStore;
               return yield* Effect.tryPromise({
                 catch: (error) =>
@@ -403,7 +397,7 @@ export class SakuDaemon extends Context.Service<SakuDaemon, SakuDaemonApi>()("Sa
             return ImportPiSessionResponse.make({ thread: info });
           }),
           import_skill: skillsNotServed,
-          list_pi_sessions: Effect.fn("list_pi_sessions")(function* list_pi_sessions(
+          list_pi_sessions: Effect.fn("list_pi_sessions")(function* (
             command: HubCommandOf<"list_pi_sessions">,
           ) {
             // pi's session files live on the user's machine; only the local
@@ -416,37 +410,28 @@ export class SakuDaemon extends Context.Service<SakuDaemon, SakuDaemonApi>()("Sa
               command.project === undefined
                 ? (yield* listProjects(fs, paths)).map((project) => project.path)
                 : [nodePath.resolve(command.project)];
-            const sessions = yield* listPiSessions(fs, paths, projects).pipe(
-              Effect.mapError(
-                (error) =>
-                  new DaemonError({
-                    cause: error,
-                    code: "pi_sessions",
-                    message: error.message,
-                  }),
-              ),
-            );
+            const sessions = yield* listPiSessions(fs, paths, projects);
             return ListPiSessionsResponse.make({ sessions });
           }),
-          list_projects: Effect.fn("list_projects")(function* list_projects() {
+          list_projects: Effect.fn("list_projects")(function* () {
             const projects = yield* listProjects(fs, paths);
             return ProjectResponse.make({ _tag: "list_projects", projects });
           }),
           list_skills: skillsNotServed,
-          list_threads: Effect.fn("list_threads")(function* list_threads() {
+          list_threads: Effect.fn("list_threads")(function* () {
             const records = yield* registry.list();
             const threads = yield* Effect.forEach(records, (record) => infoOf(record.id), {
               concurrency: "unbounded",
             });
             return ListThreadsResponse.make({ threads });
           }),
-          remove_project: Effect.fn("remove_project")(function* remove_project(
+          remove_project: Effect.fn("remove_project")(function* (
             command: HubCommandOf<"remove_project">,
           ) {
             yield* removeProject(fs, paths, command.path);
             return RemoveProjectResponse.make({});
           }),
-          rename_thread: Effect.fn("rename_thread")(function* rename_thread(
+          rename_thread: Effect.fn("rename_thread")(function* (
             command: HubCommandOf<"rename_thread">,
           ) {
             const threadId = yield* resolveThreadId(command.threadId);
@@ -462,7 +447,7 @@ export class SakuDaemon extends Context.Service<SakuDaemon, SakuDaemonApi>()("Sa
             yield* emitThreadChanged(info);
             return RenameThreadResponse.make({ thread: info });
           }),
-          unarchive_thread: Effect.fn("unarchive_thread")(function* unarchive_thread(
+          unarchive_thread: Effect.fn("unarchive_thread")(function* (
             command: HubCommandOf<"unarchive_thread">,
           ) {
             const threadId = yield* resolveThreadId(command.threadId);
@@ -492,7 +477,7 @@ export class SakuDaemon extends Context.Service<SakuDaemon, SakuDaemonApi>()("Sa
     /** Lazy host: constructed on first command; crashed hosts rebuild. */
     const hostFor = (threadId: string) =>
       hostSemaphore.withPermit(
-        Effect.gen(function* buildHost() {
+        Effect.gen(function* () {
           const hosts = yield* Ref.get(hostsRef);
           const existing = hosts.get(threadId);
           if (existing !== undefined) {
@@ -559,7 +544,7 @@ export class SakuDaemon extends Context.Service<SakuDaemon, SakuDaemonApi>()("Sa
       );
 
     /** The live host only when the thread's session has already started; none otherwise. */
-    const readOnlyHost = Effect.fn("readOnlyHost")(function* readOnlyHost(threadId: string) {
+    const readOnlyHost = Effect.fn("readOnlyHost")(function* (threadId: string) {
       const live = yield* Ref.get(hostsRef);
       const existing = live.get(threadId);
       if (existing !== undefined) {
@@ -576,7 +561,7 @@ export class SakuDaemon extends Context.Service<SakuDaemon, SakuDaemonApi>()("Sa
       return Option.some(yield* hostFor(threadId));
     });
 
-    const handleSessionCommand = Effect.fn("handleSessionCommand")(function* handleSessionCommand(
+    const handleSessionCommand = Effect.fn("handleSessionCommand")(function* (
       threadIdInput: string,
       command: SessionCommandType,
     ) {
@@ -601,7 +586,7 @@ export class SakuDaemon extends Context.Service<SakuDaemon, SakuDaemonApi>()("Sa
     });
     yield* Ref.set(broadcastRef, (event) => core.broadcast(event));
 
-    const close = Effect.fn("close")(function* close() {
+    const close = Effect.fn("close")(function* () {
       const closed = yield* Ref.get(closedRef);
       if (closed) {
         return;
@@ -665,7 +650,7 @@ export class SakuDaemon extends Context.Service<SakuDaemon, SakuDaemonApi>()("Sa
 export const SakuDaemonLive = (options: DaemonOptions = {}) =>
   Layer.effect(
     SakuDaemon,
-    Effect.gen(function* buildLive() {
+    Effect.gen(function* () {
       const registry = yield* ThreadRegistry;
       const catalog = yield* ModelCatalog;
       const fs = yield* FileSystem.FileSystem;

@@ -100,7 +100,7 @@ export interface HubRelayCoreApi {
 
 /** The hub's relay connection logic, transport-free (node ws or DO sockets). */
 export class HubRelayCore extends Context.Service<HubRelayCore, HubRelayCoreApi>()("HubRelayCore", {
-  make: Effect.fn("HubRelayCore.make")(function* make(options: RelayServerOptions) {
+  make: Effect.fn("HubRelayCore.make")(function* (options: RelayServerOptions) {
     const log = options.log ?? (() => Effect.void);
     const envsRef = yield* Ref.make<Map<string, SocketLike>>(new Map());
     const waitingRef = yield* Ref.make<Map<string, Set<SocketLike>>>(new Map());
@@ -304,7 +304,7 @@ export class HubRelayCore extends Context.Service<HubRelayCore, HubRelayCoreApi>
       socket.on("message", onFirst);
     };
 
-    const close = Effect.fn("close")(function* close() {
+    const close = Effect.fn("close")(function* () {
       const closed = yield* Ref.get(closedRef);
       if (closed) {
         return;

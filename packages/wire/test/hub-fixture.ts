@@ -153,7 +153,7 @@ export interface HubFixture {
 }
 
 /** Start the fixture: the real server core on an ephemeral loopback port. */
-export const startHubFixture = Effect.fn("startHubFixture")(function* startHubFixture() {
+export const startHubFixture = Effect.fn("startHubFixture")(function* () {
   const threads = new Map<string, ScriptedThread>();
   const skills = new Map<string, SkillInfo>();
   const sockets = new Set<WebSocket>();
@@ -199,7 +199,7 @@ export const startHubFixture = Effect.fn("startHubFixture")(function* startHubFi
   };
 
   /** Settle one run: append the fake entry, broadcast it, go idle. */
-  const settleRun = Effect.fn("settleRun")(function* settleRun(
+  const settleRun = Effect.fn("settleRun")(function* (
     core: WireServerApi,
     thread: ScriptedThread,
     _text: string,
@@ -230,7 +230,7 @@ export const startHubFixture = Effect.fn("startHubFixture")(function* startHubFi
               message: "projects are served by the local daemon, not the hub",
             }),
           ),
-        archive_thread: Effect.fn("archive_thread")(function* archive_thread(
+        archive_thread: Effect.fn("archive_thread")(function* (
           command: S.Schema.Type<typeof ArchiveThreadCommand>,
         ) {
           const thread = findThread(command.threadId);
@@ -253,7 +253,7 @@ export const startHubFixture = Effect.fn("startHubFixture")(function* startHubFi
               message: "projects are served by the local daemon, not the hub",
             }),
           ),
-        create_thread: Effect.fn("create_thread")(function* create_thread(
+        create_thread: Effect.fn("create_thread")(function* (
           command: S.Schema.Type<typeof CreateThreadCommand>,
         ) {
           const thread = newThread(command);
@@ -262,7 +262,7 @@ export const startHubFixture = Effect.fn("startHubFixture")(function* startHubFi
           yield* threadChanged(core, thread);
           return CreateThreadResponse.make({ thread: threadInfo(thread) });
         }),
-        delete_skill: Effect.fn("delete_skill")(function* delete_skill(
+        delete_skill: Effect.fn("delete_skill")(function* (
           command: S.Schema.Type<typeof DeleteSkillCommand>,
         ) {
           if (!skills.has(command.id)) {
@@ -279,7 +279,7 @@ export const startHubFixture = Effect.fn("startHubFixture")(function* startHubFi
         // The fixture is the hub's shape: pi sessions live on the user's
         // machine, so only the local daemon serves these (mirror of the
         // daemon rejecting hub-only skills commands).
-        delete_thread: Effect.fn("delete_thread")(function* delete_thread(
+        delete_thread: Effect.fn("delete_thread")(function* (
           command: S.Schema.Type<typeof DeleteThreadCommand>,
         ) {
           const thread = findThread(command.threadId);
@@ -295,7 +295,7 @@ export const startHubFixture = Effect.fn("startHubFixture")(function* startHubFi
           yield* threadChanged(core, thread);
           return DeleteThreadResponse.make({});
         }),
-        get_thread: Effect.fn("get_thread")(function* get_thread(
+        get_thread: Effect.fn("get_thread")(function* (
           command: S.Schema.Type<typeof GetThreadCommand>,
         ) {
           const thread = findThread(command.threadId);
@@ -361,7 +361,7 @@ export const startHubFixture = Effect.fn("startHubFixture")(function* startHubFi
               message: "projects are served by the local daemon, not the hub",
             }),
           ),
-        rename_thread: Effect.fn("rename_thread")(function* rename_thread(
+        rename_thread: Effect.fn("rename_thread")(function* (
           command: S.Schema.Type<typeof RenameThreadCommand>,
         ) {
           const thread = findThread(command.threadId);
@@ -383,7 +383,7 @@ export const startHubFixture = Effect.fn("startHubFixture")(function* startHubFi
           yield* threadChanged(core, thread);
           return RenameThreadResponse.make({ thread: threadInfo(thread) });
         }),
-        unarchive_thread: Effect.fn("unarchive_thread")(function* unarchive_thread(
+        unarchive_thread: Effect.fn("unarchive_thread")(function* (
           command: S.Schema.Type<typeof UnarchiveThreadCommand>,
         ) {
           const thread = findThread(command.threadId);
@@ -402,7 +402,7 @@ export const startHubFixture = Effect.fn("startHubFixture")(function* startHubFi
       }),
     );
 
-  const runSessionCommand = Effect.fn("runSessionCommand")(function* runSessionCommand(
+  const runSessionCommand = Effect.fn("runSessionCommand")(function* (
     core: WireServerApi,
     threadId: string,
     command: SessionCommand,
@@ -416,7 +416,7 @@ export const startHubFixture = Effect.fn("startHubFixture")(function* startHubFi
     return yield* Match.value(command).pipe(
       Match.withReturnType<Effect.Effect<ResponsePayload, FixtureError>>(),
       Match.tagsExhaustive({
-        abort: Effect.fn("abort")(function* abort() {
+        abort: Effect.fn("abort")(function* () {
           if (thread.state === "working") {
             thread.state = "idle";
             yield* core.broadcast(
@@ -425,9 +425,7 @@ export const startHubFixture = Effect.fn("startHubFixture")(function* startHubFi
           }
           return AbortResponse.make({});
         }),
-        branch: Effect.fn("branch")(function* branch({
-          entryId,
-        }: S.Schema.Type<typeof BranchCommand>) {
+        branch: Effect.fn("branch")(function* ({ entryId }: S.Schema.Type<typeof BranchCommand>) {
           const entry = thread.entries.find((e) => e.id === entryId);
           if (entry === undefined) {
             return yield* Effect.fail(
@@ -439,7 +437,7 @@ export const startHubFixture = Effect.fn("startHubFixture")(function* startHubFi
           }
           return BranchResponse.make({ leafId: entry.id });
         }),
-        compact: Effect.fn("compact")(function* compact() {
+        compact: Effect.fn("compact")(function* () {
           if (thread.state === "working") {
             return yield* Effect.fail(
               new FixtureError({
@@ -452,7 +450,7 @@ export const startHubFixture = Effect.fn("startHubFixture")(function* startHubFi
             result: { retainedTail: [], summary: "mock", tokensBefore: 0 },
           });
         }),
-        follow_up: Effect.fn("follow_up")(function* follow_up({
+        follow_up: Effect.fn("follow_up")(function* ({
           text,
         }: S.Schema.Type<typeof FollowUpCommand>) {
           if (thread.state === "working") {
@@ -490,9 +488,7 @@ export const startHubFixture = Effect.fn("startHubFixture")(function* startHubFi
               },
             }),
           ),
-        prompt: Effect.fn("prompt")(function* prompt({
-          text,
-        }: S.Schema.Type<typeof PromptCommand>) {
+        prompt: Effect.fn("prompt")(function* ({ text }: S.Schema.Type<typeof PromptCommand>) {
           if (thread.state === "working") {
             return yield* Effect.fail(
               new FixtureError({ kind: "busy", message: "agent is already processing" }),
@@ -509,7 +505,7 @@ export const startHubFixture = Effect.fn("startHubFixture")(function* startHubFi
         }),
         set_auto_compaction: () => Effect.succeed(SetAutoCompactionResponse.make({})),
         set_follow_up_mode: () => Effect.succeed(SetFollowUpModeResponse.make({})),
-        set_model: Effect.fn("set_model")(function* set_model({
+        set_model: Effect.fn("set_model")(function* ({
           modelId,
           provider,
         }: S.Schema.Type<typeof SetModelCommand>) {
@@ -534,7 +530,7 @@ export const startHubFixture = Effect.fn("startHubFixture")(function* startHubFi
             thread.thinkingLevel = level;
             return SetThinkingLevelResponse.make({ level });
           }),
-        steer: Effect.fn("steer")(function* steer({ text }: S.Schema.Type<typeof SteerCommand>) {
+        steer: Effect.fn("steer")(function* ({ text }: S.Schema.Type<typeof SteerCommand>) {
           if (thread.state === "working") {
             return SteerResponse.make({});
           }
@@ -586,7 +582,7 @@ export const startHubFixture = Effect.fn("startHubFixture")(function* startHubFi
       }
     });
 
-  const close = Effect.fn("close")(function* close() {
+  const close = Effect.fn("close")(function* () {
     yield* dropAll();
     yield* Effect.callback<undefined>((resume) => {
       server.close(() => {

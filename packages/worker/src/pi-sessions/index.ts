@@ -60,7 +60,7 @@ const underProjects = (cwd: string, projects: readonly { path: string }[]) => {
 
 /** Scan one session file into its summary; Option.none when it is not a
  * readable pi session (pi's own list skips those silently). */
-const scanFile = Effect.fn("scanFile")(function* scanFile(fs: FileSystem.FileSystem, path: string) {
+const scanFile = Effect.fn("scanFile")(function* (fs: FileSystem.FileSystem, path: string) {
   const content = yield* fs.readFileString(path).pipe(Effect.catch(() => Effect.succeed("")));
   if (content.length === 0) {
     return Option.none();
@@ -101,11 +101,11 @@ const scanFile = Effect.fn("scanFile")(function* scanFile(fs: FileSystem.FileSys
  * project, so pi's lossy dir encoding can never misattribute a session.
  * An empty project list is an empty window — nothing is scanned.
  */
-export const listPiSessions = Effect.fn("listPiSessions")(function* listPiSessions(
+export const listPiSessions = Effect.fn("listPiSessions")(function* (
   fs: FileSystem.FileSystem,
   paths: PathsLayout,
   projects: readonly string[],
-): Effect.fn.Return<readonly PiSessionSummary[], PiSessionsError> {
+) {
   if (projects.length === 0) {
     return [];
   }
@@ -139,7 +139,7 @@ export const listPiSessions = Effect.fn("listPiSessions")(function* listPiSessio
 });
 
 /** Parse one pi session file for adoption (v3 natively, v4 via pi's repo). */
-export const readPiSession = Effect.fn("readPiSession")(function* readPiSession(
+export const readPiSession = Effect.fn("readPiSession")(function* (
   fs: FileSystem.FileSystem,
   paths: PathsLayout,
   path: string,

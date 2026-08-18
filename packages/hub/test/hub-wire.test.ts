@@ -42,7 +42,7 @@ let seq = 0;
 
 beforeEach(async () => {
   world = await Effect.runPromise(
-    Effect.gen(function* buildWorld() {
+    Effect.gen(function* () {
       const scope = yield* Scope.make();
       const registry = yield* HubRegistry.make().pipe(Effect.provide(KvStore.memory()));
       const skills = yield* SkillsStore.make().pipe(Effect.provide(KvStore.memory()));
@@ -125,7 +125,7 @@ class TestError extends tagged<TestError>()("TestError", {
 }) {}
 
 const waitFor = (fn: () => boolean, timeoutMs = 2000) =>
-  Effect.gen(function* poll() {
+  Effect.gen(function* () {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       if (fn()) {

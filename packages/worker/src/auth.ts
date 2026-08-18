@@ -33,7 +33,7 @@ export const readAuthToken = (fs: FileSystem.FileSystem, paths: PathsLayout) =>
   );
 
 /** Read the token, creating it (and its directory) when absent. */
-export const ensureAuthToken = Effect.fn("ensureAuthToken")(function* ensureAuthToken(
+export const ensureAuthToken = Effect.fn("ensureAuthToken")(function* (
   fs: FileSystem.FileSystem,
   paths: PathsLayout,
 ) {

@@ -63,11 +63,11 @@ const writeDoc = (kv: KvStoreApi, projects: readonly ProjectRecord[]) =>
   kv.put(DOC_KEY, new TextEncoder().encode(`${JSON.stringify({ projects })}\n`));
 
 /** The added projects, oldest first. */
-export const listProjects = Effect.fn("listProjects")(function* listProjects(
+export const listProjects = Effect.fn("listProjects")(function* (
   fs: FileSystem.FileSystem,
   paths: PathsLayout,
-): Effect.fn.Return<readonly ProjectRecord[]> {
-  const doc = yield* Effect.gen(function* doc() {
+) {
+  const doc = yield* Effect.gen(function* () {
     const kv = yield* KvStore;
     return yield* readDoc(kv);
   }).pipe(Effect.provide(KvStore.file(fs, paths.sakuDir)));
@@ -75,13 +75,13 @@ export const listProjects = Effect.fn("listProjects")(function* listProjects(
 });
 
 /** Add a project: the path is resolved (absolute), re-adding is a no-op. */
-export const addProject = Effect.fn("addProject")(function* addProject(
+export const addProject = Effect.fn("addProject")(function* (
   fs: FileSystem.FileSystem,
   paths: PathsLayout,
   input: string,
-): Effect.fn.Return<ProjectRecord> {
+) {
   const path = nodePath.resolve(input);
-  return yield* Effect.gen(function* applyAdd() {
+  return yield* Effect.gen(function* () {
     const kv = yield* KvStore;
     const doc = yield* readDoc(kv);
     const existing = doc.projects.find((project) => project.path === path);
@@ -95,13 +95,13 @@ export const addProject = Effect.fn("addProject")(function* addProject(
 });
 
 /** Remove a project from the window; a no-op when it was never added. */
-export const removeProject = Effect.fn("removeProject")(function* removeProject(
+export const removeProject = Effect.fn("removeProject")(function* (
   fs: FileSystem.FileSystem,
   paths: PathsLayout,
   input: string,
-): Effect.fn.Return<void> {
+) {
   const path = nodePath.resolve(input);
-  yield* Effect.gen(function* applyRemove() {
+  yield* Effect.gen(function* () {
     const kv = yield* KvStore;
     const doc = yield* readDoc(kv);
     const remaining = doc.projects.filter((project) => project.path !== path);

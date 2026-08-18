@@ -10,7 +10,6 @@
  */
 
 import { once } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { WebSocket } from "ws";
@@ -35,9 +34,16 @@ describe("env daemon", () => {
   let scope: Scope.Scope;
 
   beforeEach(async () => {
-    workdir = await mkdtemp(path.join(tmpdir(), "saku-env-"));
+    workdir = await Effect.runPromise(
+      Effect.provide(NodeFileSystem.layer)(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          return yield* fs.makeTempDirectory({ directory: tmpdir(), prefix: "saku-env-" });
+        }),
+      ),
+    );
     daemon = await Effect.runPromise(
-      Effect.gen(function* setup() {
+      Effect.gen(function* () {
         scope = yield* Scope.make();
         const fs = yield* FileSystem.FileSystem;
         return yield* EnvDaemon.make({ cwd: workdir, fs, token: TOKEN }).pipe(
@@ -52,7 +58,14 @@ describe("env daemon", () => {
   afterEach(async () => {
     env.close();
     await Effect.runPromise(Scope.close(scope, Exit.void));
-    await rm(workdir, { force: true, recursive: true });
+    await Effect.runPromise(
+      Effect.provide(NodeFileSystem.layer)(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          yield* fs.remove(workdir, { force: true, recursive: true });
+        }),
+      ).pipe(Effect.catch(() => Effect.void)),
+    );
   });
 
   it("answers hello with the workspace, pid and version", async () => {

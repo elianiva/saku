@@ -157,7 +157,7 @@ const runOp = async (
     readonly pid: number;
     readonly send: (frame: JsonValue) => void;
   },
-): Promise<RunOpOutcome> => {
+) => {
   const fail = (error: FileError | ExecutionError) => ({
     error: serializePiError(error),
     ok: false as const,
@@ -288,7 +288,7 @@ const runOp = async (
  * Total: every failure is a frame + close, never a thrown effect.
  * Resolves when the socket closes.
  */
-export const handleEnvConnection = Effect.fn("handleEnvConnection")(function* handleEnvConnection(
+export const handleEnvConnection = Effect.fn("handleEnvConnection")(function* (
   socket: WebSocket,
   ctx: EnvConnectionContext,
 ) {
@@ -457,7 +457,7 @@ export const handleEnvConnection = Effect.fn("handleEnvConnection")(function* ha
 
 /** The env daemon: `EnvDaemon.make(options)` builds the token-gated server. */
 export class EnvDaemon extends Context.Service<EnvDaemon, EnvDaemonApi>()("EnvDaemon", {
-  make: Effect.fn("EnvDaemon.make")(function* make(options: EnvDaemonOptions) {
+  make: Effect.fn("EnvDaemon.make")(function* (options: EnvDaemonOptions) {
     const { token, fs } = options;
     const log = options.log ?? (() => Effect.void);
     const ctx: EnvConnectionContext = {

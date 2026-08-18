@@ -21,6 +21,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@effect/platform-node": "rc",
     "@saku/env": "workspace:*",
     "@saku/wire": "workspace:*",
     "@saku/worker": "workspace:*",

@@ -84,7 +84,7 @@ export const pollUntilReady = <E extends RemoteMachineProviderError>(
 ) => {
   const intervalMs = options.intervalMs ?? 1000;
   const timeoutMs = options.timeoutMs ?? 5 * 60 * 1000;
-  const attempt = Effect.gen(function* attempt() {
+  const attempt = Effect.gen(function* () {
     const machine = yield* provider.get(machineId);
     if (provider.isReady(machine)) {
       return machine;

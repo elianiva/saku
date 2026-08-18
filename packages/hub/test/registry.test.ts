@@ -25,7 +25,7 @@ afterEach(async () => {
   if (home !== "") {
     await Effect.runPromise(
       Effect.provide(NodeFileSystem.layer)(
-        Effect.gen(function* cleanup() {
+        Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           yield* fs
             .remove(home, { force: true, recursive: true })
@@ -103,7 +103,7 @@ describe("HubRegistry.make", () => {
   it("survives a rebuild over the file backend (restart persistence)", async () => {
     const { fs, dir } = await Effect.runPromise(
       Effect.provide(NodeFileSystem.layer)(
-        Effect.gen(function* buildWorld() {
+        Effect.gen(function* () {
           const f = yield* FileSystem.FileSystem;
           const d = yield* f.makeTempDirectory({ prefix: "saku-hub-registry-" });
           return { dir: d, fs: f };

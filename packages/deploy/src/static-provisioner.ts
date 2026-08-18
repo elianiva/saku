@@ -11,7 +11,7 @@ import { HubError } from "@saku/hub/core";
 import type { DeploymentEnv } from "./env.ts";
 
 export const staticProvisioner = (env: DeploymentEnv) => ({
-  ensure: Effect.fn("ensure")(function* ensure() {
+  ensure: Effect.fn("ensure")(function* () {
     const url = env.SAKU_ENV_URL;
     const token = env.SAKU_ENV_TOKEN;
     if (url === undefined || url.length === 0 || token === undefined || token.length === 0) {

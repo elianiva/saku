@@ -46,7 +46,7 @@ export interface RelayClientApi {
 }
 
 /** One registration attempt: dial, hello, then serve until the socket dies. */
-const runRegistration = Effect.fn("runRegistration")(function* runRegistration(
+const runRegistration = Effect.fn("runRegistration")(function* (
   options: RelayClientOptions,
   ctx: EnvConnectionContext,
 ) {
@@ -107,7 +107,7 @@ const runRegistration = Effect.fn("runRegistration")(function* runRegistration(
 export class EnvRelayClient extends Context.Service<EnvRelayClient, RelayClientApi>()(
   "EnvRelayClient",
   {
-    make: Effect.fn("EnvRelayClient.make")(function* make(options: RelayClientOptions) {
+    make: Effect.fn("EnvRelayClient.make")(function* (options: RelayClientOptions) {
       const log = options.log ?? (() => Effect.void);
       const ctx: EnvConnectionContext = {
         cwd: options.hello.cwd ?? process.cwd(),
@@ -117,7 +117,7 @@ export class EnvRelayClient extends Context.Service<EnvRelayClient, RelayClientA
       };
       const runningRef = yield* Ref.make(true);
       const connectedRef = yield* Ref.make(false);
-      const loop = Effect.gen(function* loop() {
+      const loop = Effect.gen(function* () {
         while (yield* Ref.get(runningRef)) {
           const registered = yield* runRegistration(options, ctx);
           yield* Ref.set(connectedRef, registered);
@@ -133,7 +133,7 @@ export class EnvRelayClient extends Context.Service<EnvRelayClient, RelayClientA
       yield* Effect.addFinalizer(() => Fiber.interrupt(fiber));
       return {
         connected: () => Ref.get(connectedRef),
-        stop: Effect.fn("stop")(function* stop() {
+        stop: Effect.fn("stop")(function* () {
           yield* Ref.set(runningRef, false);
           yield* Fiber.interrupt(fiber);
         }),

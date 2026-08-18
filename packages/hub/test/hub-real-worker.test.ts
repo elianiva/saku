@@ -58,7 +58,7 @@ beforeEach(async () => {
   // test layout (`PathsTest`) alive until afterEach closes it.
   const scope = await Effect.runPromise(Scope.make());
   const { fs, paths, url } = await Effect.runPromise(
-    Effect.gen(function* built() {
+    Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const layout = yield* Paths;
       const registry = yield* HubRegistry.make().pipe(Effect.provide(KvStore.memory()));
@@ -108,7 +108,7 @@ class TestError extends tagged<TestError>()("TestError", {
 
 /** Poll until `fn` holds (hub event forks + agent stream land asynchronously). */
 const waitFor = (fn: () => boolean | Promise<boolean>, timeoutMs = 3000) =>
-  Effect.gen(function* poll() {
+  Effect.gen(function* () {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       const done = yield* Effect.promise(async () => await fn());

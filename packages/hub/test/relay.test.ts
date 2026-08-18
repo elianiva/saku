@@ -9,7 +9,6 @@
  * exec through the pipe, auth failures, and unknown envs.
  */
 
-import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -44,9 +43,16 @@ describe("hub relay", () => {
   let registrationScope: Scope.Scope | undefined;
 
   beforeEach(async () => {
-    workdir = await mkdtemp(path.join(tmpdir(), "saku-relay-"));
+    workdir = await Effect.runPromise(
+      Effect.provide(NodeFileSystem.layer)(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          return yield* fs.makeTempDirectory({ directory: tmpdir(), prefix: "saku-relay-" });
+        }),
+      ),
+    );
     const built = await Effect.runPromise(
-      Effect.gen(function* built() {
+      Effect.gen(function* () {
         const builtScope = yield* Scope.make();
         const fs = yield* FileSystem.FileSystem;
         const daemon = yield* EnvDaemon.make({ cwd: workdir, fs, token: ENV_TOKEN }).pipe(
@@ -66,12 +72,19 @@ describe("hub relay", () => {
       await Effect.runPromise(Scope.close(registrationScope, Exit.void));
     }
     await Effect.runPromise(Scope.close(scope, Exit.void));
-    await rm(workdir, { force: true, recursive: true });
+    await Effect.runPromise(
+      Effect.provide(NodeFileSystem.layer)(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          yield* fs.remove(workdir, { force: true, recursive: true });
+        }),
+      ).pipe(Effect.catch(() => Effect.void)),
+    );
   });
 
   /** Poll until `fn` holds (the relay's async forks land asynchronously). */
   const waitFor = (fn: () => boolean | Promise<boolean>, timeoutMs = 2000) =>
-    Effect.gen(function* poll() {
+    Effect.gen(function* () {
       const deadline = Date.now() + timeoutMs;
       while (Date.now() < deadline) {
         const done = yield* Effect.promise(async () => await fn());
@@ -86,7 +99,7 @@ describe("hub relay", () => {
   /** Register the env daemon with the relay and wait for the registration. */
   const register = async () => {
     registrationScope = await Effect.runPromise(
-      Effect.gen(function* registerScope() {
+      Effect.gen(function* () {
         const regScope = yield* Scope.make();
         const fs = yield* FileSystem.FileSystem;
         yield* EnvRelayClient.make({
@@ -151,7 +164,7 @@ describe("hub relay", () => {
 
   it("rejects a daemon registration with a bad token", async () => {
     await Effect.runPromise(
-      Effect.gen(function* badRegistration() {
+      Effect.gen(function* () {
         const badScope = yield* Scope.make();
         const fs = yield* FileSystem.FileSystem;
         yield* EnvRelayClient.make({

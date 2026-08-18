@@ -70,7 +70,7 @@ export interface IdleStopApi {
 
 /** The idle-stop policy: `IdleStop.make(deps)` arms the window per sandbox thread. */
 export class IdleStop extends Context.Service<IdleStop, IdleStopApi>()("IdleStop", {
-  make: Effect.fn("IdleStop.make")(function* make(deps: IdleStopDeps) {
+  make: Effect.fn("IdleStop.make")(function* (deps: IdleStopDeps) {
     const { registry, provisioner, workerRef, infoOf, emitThreadChanged } = deps;
     const { controller } = deps;
     const timersRef = yield* Ref.make<Map<string, NodeJS.Timeout>>(new Map());
@@ -80,7 +80,7 @@ export class IdleStop extends Context.Service<IdleStop, IdleStopApi>()("IdleStop
     // replaced by the real policy below, after `arm`'s definition.
     let fire: IdleStopApi["fire"] = onFireBeforeAssignment;
 
-    const arm = Effect.fn("arm")(function* arm(threadId: string) {
+    const arm = Effect.fn("arm")(function* (threadId: string) {
       const record = yield* registry.get(threadId);
       if (Option.isNone(record)) {
         return;
@@ -101,10 +101,7 @@ export class IdleStop extends Context.Service<IdleStop, IdleStopApi>()("IdleStop
       }
       // Any activity resets the window: clear and re-arm.
       const timers = yield* Ref.get(timersRef);
-      const existing = timers.get(threadId);
-      if (existing !== undefined) {
-        clearTimeout(existing);
-      }
+      clearTimeout(timers.get(threadId));
       const timer = setTimeout(() => {
         // The forked fire is best-effort from the timer's perspective: a
         // failing fire (release/handle errors are already swallowed inside)
@@ -121,7 +118,7 @@ export class IdleStop extends Context.Service<IdleStop, IdleStopApi>()("IdleStop
       yield* Ref.update(timersRef, (map) => new Map(map).set(threadId, timer));
     });
 
-    const disarm = Effect.fn("disarm")(function* disarm(threadId: string) {
+    const disarm = Effect.fn("disarm")(function* (threadId: string) {
       if (controller !== undefined) {
         yield* controller.disarm(threadId);
         return;
@@ -140,7 +137,7 @@ export class IdleStop extends Context.Service<IdleStop, IdleStopApi>()("IdleStop
     });
 
     /** The idle-stop trigger: suspend the remote machine, flip the env axis, broadcast. */
-    fire = Effect.fn("fire")(function* fireImpl(threadId: string) {
+    fire = Effect.fn("fire")(function* (threadId: string) {
       yield* disarm(threadId);
       const record = yield* registry.get(threadId);
       if (Option.isNone(record)) {
@@ -166,7 +163,7 @@ export class IdleStop extends Context.Service<IdleStop, IdleStopApi>()("IdleStop
       yield* emitThreadChanged(after);
     });
 
-    const close: Effect.Effect<void> = Ref.get(timersRef).pipe(
+    const close = Ref.get(timersRef).pipe(
       Effect.tap((timers) =>
         Effect.sync(() => {
           for (const timer of timers.values()) {

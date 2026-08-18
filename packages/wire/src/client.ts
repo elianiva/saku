@@ -213,7 +213,7 @@ const settleConnect = (deps: ClientDeps, outcome: Result.Result<HelloOk, WireErr
     ),
   );
 
-const emit = Effect.fn("emit")(function* emit<K extends ClientEventKind>(
+const emit = Effect.fn("emit")(function* <K extends ClientEventKind>(
   deps: ClientDeps,
   kind: K,
   payload: ClientEvents[K],
@@ -261,10 +261,7 @@ const resolveResponse = (
   );
 
 /** Dispatch one decoded server frame in `Connected`. */
-const handleFrame = Effect.fn("handleFrame")(function* handleFrame(
-  deps: ClientDeps,
-  frame: WireEvent,
-) {
+const handleFrame = Effect.fn("handleFrame")(function* (deps: ClientDeps, frame: WireEvent) {
   yield* Match.value(frame).pipe(
     Match.withReturnType<Effect.Effect<void>>(),
     Match.tagsExhaustive({
@@ -292,10 +289,7 @@ const handleFrame = Effect.fn("handleFrame")(function* handleFrame(
 });
 
 /** Decode one frame line, or surface the failure as an error event. */
-const decodeFrameLine = Effect.fn("decodeFrameLine")(function* decodeFrameLine(
-  deps: ClientDeps,
-  line: string,
-) {
+const decodeFrameLine = Effect.fn("decodeFrameLine")(function* (deps: ClientDeps, line: string) {
   const parsed = Result.try(() => parseFrame(line));
   if (Result.isFailure(parsed)) {
     yield* emit(deps, "error", { message: "malformed JSON frame from server" });
@@ -359,7 +353,7 @@ const makeMachine = (deps: ClientDeps) =>
       }),
     )
     .on(ClientState.Connecting, ClientEvent.Opened, ({ event }) =>
-      Effect.gen(function* onOpened() {
+      Effect.gen(function* () {
         const sent = Result.try(() => {
           event.socket.send(
             serializeFrame(
@@ -380,7 +374,7 @@ const makeMachine = (deps: ClientDeps) =>
       }),
     )
     .on(ClientState.Connecting, ClientEvent.Errored, () =>
-      Effect.gen(function* onConnectErrored() {
+      Effect.gen(function* () {
         yield* settleConnect(
           deps,
           Result.fail(
@@ -392,7 +386,7 @@ const makeMachine = (deps: ClientDeps) =>
       }),
     )
     .on(ClientState.Connecting, ClientEvent.Closed, () =>
-      Effect.gen(function* onConnectClosed() {
+      Effect.gen(function* () {
         yield* settleConnect(
           deps,
           Result.fail(
@@ -403,7 +397,7 @@ const makeMachine = (deps: ClientDeps) =>
       }),
     )
     .on(ClientState.Handshaking, ClientEvent.Frame, ({ state, event }) =>
-      Effect.gen(function* onHandshakeFrame() {
+      Effect.gen(function* () {
         const decoded = yield* decodeFrameLine(deps, event.line).pipe(Effect.option);
         if (Option.isNone(decoded)) {
           // Malformed; the error event was emitted.
@@ -426,7 +420,7 @@ const makeMachine = (deps: ClientDeps) =>
       }),
     )
     .on(ClientState.Handshaking, ClientEvent.Closed, () =>
-      Effect.gen(function* onHandshakeClosed() {
+      Effect.gen(function* () {
         yield* settleConnect(
           deps,
           Result.fail(
@@ -437,7 +431,7 @@ const makeMachine = (deps: ClientDeps) =>
       }),
     )
     .on(ClientState.Connected, ClientEvent.Frame, ({ state, event }) =>
-      Effect.gen(function* onConnectedFrame() {
+      Effect.gen(function* () {
         const decoded = yield* decodeFrameLine(deps, event.line).pipe(Effect.option);
         if (Option.isSome(decoded)) {
           yield* handleFrame(deps, decoded.value);
@@ -446,7 +440,7 @@ const makeMachine = (deps: ClientDeps) =>
       }),
     )
     .on(ClientState.Connected, ClientEvent.Closed, () =>
-      Effect.gen(function* onConnectedClosed() {
+      Effect.gen(function* () {
         yield* failAllPending(
           deps,
           new WireError({ code: "disconnected", message: "connection closed" }),
@@ -456,7 +450,7 @@ const makeMachine = (deps: ClientDeps) =>
       }),
     )
     .on(ClientState.Connected, ClientEvent.CommandSent, ({ state, event }) =>
-      Effect.gen(function* onCommandSent() {
+      Effect.gen(function* () {
         const sent = Result.try(() => {
           state.socket.send(serializeFrame(event.frame));
         });
@@ -471,7 +465,7 @@ const makeMachine = (deps: ClientDeps) =>
       }),
     )
     .onAny(ClientEvent.DisconnectRequested, ({ state }) =>
-      Effect.gen(function* onDisconnectRequested() {
+      Effect.gen(function* () {
         yield* settleConnect(
           deps,
           Result.fail(new WireError({ code: "disconnected", message: "client disconnected" })),
@@ -662,9 +656,7 @@ export interface WireClientApi {
 
 /** A console's connection to the hub: `WireClient.make(options)` builds one. */
 export class WireClient extends Context.Service<WireClient, WireClientApi>()("WireClient", {
-  make: Effect.fn("WireClient.make")(function* make(
-    options: WorkerClientOptions,
-  ): Effect.fn.Return<WireClientApi> {
+  make: Effect.fn("WireClient.make")(function* (options: WorkerClientOptions) {
     const pendingRef = yield* Ref.make<Pending>(new Map());
     const connectRef = yield* Ref.make<Option.Option<ConnectDeferred>>(Option.none());
     const seqRef = yield* Ref.make(0);
@@ -689,7 +681,7 @@ export class WireClient extends Context.Service<WireClient, WireClientApi>()("Wi
     const actor = yield* Machine.spawn(makeMachine(deps));
     yield* actor.start;
 
-    const connect = Effect.fn("connect")(function* connect() {
+    const connect = Effect.fn("connect")(function* () {
       const deferred = yield* Deferred.make<HelloOk, WireError>();
       yield* Ref.set(connectRef, Option.some(deferred));
       yield* actor.send(ClientEvent.ConnectRequested);
@@ -724,7 +716,7 @@ export class WireClient extends Context.Service<WireClient, WireClientApi>()("Wi
       );
     };
 
-    const disconnect = Effect.fn("disconnect")(function* disconnect() {
+    const disconnect = Effect.fn("disconnect")(function* () {
       yield* failAllPending(
         deps,
         new WireError({ code: "disconnected", message: "client disconnected" }),
@@ -749,7 +741,7 @@ export class WireClient extends Context.Service<WireClient, WireClientApi>()("Wi
     const nextRequestId = () =>
       Ref.updateAndGet(seqRef, (n) => n + 1).pipe(Effect.map((n) => `req_${n}`));
 
-    const request = Effect.fn("request")(function* request<
+    const request = Effect.fn("request")(function* <
       A extends object,
       K extends ResponsePayload["_tag"],
       T,
