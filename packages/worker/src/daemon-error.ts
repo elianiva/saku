@@ -6,24 +6,22 @@
 
 import { Schema } from "effect";
 
-/** Alias of `Schema.TaggedError` so oxlint's Error-name call heuristic
- * doesn't demand `new` on the factory call (which would break typecheck). */
-const taggedError = Schema.TaggedError;
+/** The daemon error codes (`DaemonError.code`) — single source of truth. */
+export const DaemonErrorCodes = Schema.Literals([
+  "unknown_thread",
+  "empty_name",
+  "skills_not_served",
+  "pi_sessions",
+  "already_imported",
+  "startup",
+  "resolution",
+] as const);
+
+export type DaemonErrorCode = typeof DaemonErrorCodes.Type;
 
 /** A command-level or startup failure owned by the daemon (resolve/validation/listen). */
-export class DaemonError extends taggedError<DaemonError>()("DaemonError", {
+export class DaemonError extends Schema.TaggedError<DaemonError>()("DaemonError", {
   cause: Schema.optional(Schema.Unknown),
-  code: Schema.Literals([
-    "unknown_thread",
-    "empty_name",
-    "skills_not_served",
-    "pi_sessions_not_served",
-    "pi_sessions",
-    "already_imported",
-    "unknown_command",
-    "startup",
-    "resolution",
-    "projects",
-  ]),
+  code: DaemonErrorCodes,
   message: Schema.String,
 }) {}

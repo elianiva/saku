@@ -25,7 +25,7 @@ import type { EnvHandle } from "@saku/env";
 import type { ThreadEnvState, ThreadInfo, ThreadMode, ThreadState } from "@saku/wire";
 
 import type { HubError } from "./hub-error.ts";
-import { jsonRecords, KvStore } from "@saku/store";
+import { HubRecordKey, jsonRecords, KvStore } from "@saku/store";
 
 /** The hub's registry record; `ThreadInfo` is its wire projection. */
 export interface HubRecord {
@@ -115,7 +115,7 @@ export class HubRegistry extends Context.Service<HubRegistry, HubRegistryApi>()(
         return Option.none();
       }
       const next = fn(record);
-      yield* records.put(`${next.id}/record`, next);
+      yield* records.put(HubRecordKey.create(next.id), next);
       yield* Ref.update(recordsRef, (map) => new Map(map).set(threadId, next));
       return Option.some(next);
     });
@@ -139,7 +139,7 @@ export class HubRegistry extends Context.Service<HubRegistry, HubRegistryApi>()(
           remoteMachineId: null,
           sessionId: null,
         };
-        yield* records.put(`${record.id}/record`, record);
+        yield* records.put(HubRecordKey.create(record.id), record);
         yield* Ref.update(recordsRef, (map) => new Map(map).set(record.id, record));
         yield* Ref.update(statesRef, (map) => new Map(map).set(record.id, "idle"));
         yield* Ref.update(tailSeqsRef, (map) => new Map(map).set(record.id, 0));
@@ -165,7 +165,7 @@ export class HubRegistry extends Context.Service<HubRegistry, HubRegistryApi>()(
           next.delete(threadId);
           return next;
         });
-        yield* records.delete(`${threadId}/record`);
+        yield* records.delete(HubRecordKey.create(threadId));
         return true;
       }),
       get: (threadId) =>

@@ -8,7 +8,7 @@
  * binary type is rejected — frames are text) and on Node (Buffer/ArrayBuffer).
  */
 
-import { Schema as S } from "effect";
+import { Effect, Schema as S } from "effect";
 
 import type { Hello } from "./hello.ts";
 import type { WireCommand, WireEvent } from "./envelope.ts";
@@ -32,13 +32,9 @@ export type SocketMessage = string | ArrayBuffer | ArrayBufferView | Blob;
 /** Everything the transport frames: the wire's own vocabulary, or any JSON value. */
 export type WireFrame = WireCommand | WireEvent | Hello;
 
-// Aliased so the TaggedError class declaration below stays a plain call
-// (oxlint's throw-new-error would demand `new`, which breaks the schema
-// typecheck — `TaggedError` is a function returning a class, not a class).
-const tagged = S.TaggedError;
 
 /** A malformed wire frame (the transport's decode failure). */
-export class WireFrameError extends tagged<WireFrameError>()("WireFrameError", {
+export class WireFrameError extends S.TaggedError<WireFrameError>()("WireFrameError", {
   message: S.String,
 }) {}
 
@@ -73,7 +69,8 @@ export const decodeFrame = (data: SocketMessage): string => {
   });
 };
 
-const decodeJson = S.decodeUnknownSync(opaque<JsonValue>());
+const decodeJson = (value: unknown) =>
+  Effect.runSync(S.decodeUnknownEffect(opaque<JsonValue>())(value));
 
 /** Parse one frame line; returns the decoded JSON or undefined for blank lines. */
 export const parseFrame = (line: string): JsonValue | undefined => {

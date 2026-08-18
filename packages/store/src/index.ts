@@ -8,5 +8,6 @@
  */
 
 export { KvStore, type DoStorageLike, type KvEntry, type KvStoreApi } from "./kv.ts";
+export { HubRecordKey, LogKey, SessionPrefix, WorkerRecordKey } from "./keys.ts";
 export { isNotFound } from "./platform-error.ts";
 export { jsonRecords, type RecordCollection } from "./records.ts";

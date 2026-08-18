@@ -15,7 +15,7 @@ import type { SessionRepo } from "@earendil-works/pi-agent-core";
 import { DoSessionRepo } from "../src/do-session-repo.ts";
 import type { DoSessionMetadata } from "../src/do-session.ts";
 import type { KvEntry, KvStoreApi } from "@saku/store";
-import { KvStore } from "@saku/store";
+import { KvStore, LogKey, SessionPrefix } from "@saku/store";
 import type { SessionMutation } from "../src/session-state.ts";
 
 import { assistantMessage } from "./fakes.ts";
@@ -155,7 +155,7 @@ describe("durability", () => {
       const put = async (seq: number, mutation: SessionMutation) => {
         await Effect.runPromise(
           kv.put(
-            `session/${id}/log/${String(seq).padStart(12, "0")}`,
+            `${SessionPrefix.create(id)}${LogKey.create(seq)}`,
             new TextEncoder().encode(JSON.stringify(mutation)),
           ),
         );

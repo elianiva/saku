@@ -659,12 +659,8 @@ const main = Effect.fn("main")(function* () {
   );
 });
 
-try {
-  await Effect.runPromise(
-    Effect.provide([NodeFileSystem.layer, Logger.layer([CliLogger])])(
-      Effect.provide(PathsLive)(main()),
-    ),
-  );
-} catch (error) {
-  fail(error);
-}
+await Effect.runPromise(
+  Effect.provide([NodeFileSystem.layer, Logger.layer([CliLogger])])(
+    Effect.provide(PathsLive)(main()),
+  ).pipe(Effect.catch((error) => Effect.sync(() => fail(error)))),
+);

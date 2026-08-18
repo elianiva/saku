@@ -3,8 +3,7 @@
  * record — id, name, cwd, mode, session id, auto-title flag — schema,
  * type, and decoder, in their own module so the isolate entry (the
  * thread DO) can decode `/create` payloads against it without pulling
- * the node-bound file registry (`registry.ts` → `paths.ts`). The same
- * split as `registry-error.ts`.
+ * the node-bound file registry (`registry.ts` → `paths.ts`).
  */
 
 import { Schema } from "effect";

@@ -23,13 +23,12 @@
  * - `/disarm-idle`     — `deleteAlarm()`
  */
 
-import { Effect, Option } from "effect";
+import { DateTime, Effect, Option } from "effect";
 import { RemoteEnv, workerdSocketFactory } from "@saku/env/remote";
 import type { EnvHandle } from "@saku/env/remote";
 import {
   SessionHost,
   SessionHostError,
-  RegistryError,
   runSessionCommand,
 } from "@saku/worker/isolate";
 import type { HostRegistryApi, ModelCatalogApi, ThreadRecord } from "@saku/worker/isolate";
@@ -119,35 +118,62 @@ export class SakuThreadDO {
 
   async fetch(request: Request) {
     const path = new URL(request.url).pathname;
-    try {
-      if (path === "/create") {
-        return await this.handleCreate(request);
-      }
-      if (path === "/delete") {
-        return await this.handleDelete();
-      }
-      if (path === "/command") {
-        return await this.handleCommand(request);
-      }
-      if (path === "/set-env-handle") {
-        return await this.handleSetEnvHandle(request);
-      }
-      if (path === "/arm-idle") {
-        await this.state.storage.setAlarm(Date.now() + this.idleStopMs());
-        return jsonOk({});
-      }
-      if (path === "/disarm-idle") {
-        await this.state.storage.deleteAlarm();
-        return jsonOk({});
-      }
-      return jsonError("malformed", `unknown path: ${path}`);
-    } catch (error) {
-      // The tagged `CommandError` (SessionHostError | RegistryError) rejects
-      // through the boundary; the envelope keeps its kind, so the hub never
-      // matches on message text.
-      const { kind, message } = rpcErrorOf(error);
-      return jsonError(kind, message);
-    }
+    const self = this;
+    return await Effect.runPromise(
+      Effect.gen(function* () {
+        if (path === "/create") {
+          return yield* Effect.tryPromise({
+            catch: (error) => error,
+            try: () => self.handleCreate(request),
+          });
+        }
+        if (path === "/delete") {
+          return yield* Effect.tryPromise({
+            catch: (error) => error,
+            try: () => self.handleDelete(),
+          });
+        }
+        if (path === "/command") {
+          return yield* Effect.tryPromise({
+            catch: (error) => error,
+            try: () => self.handleCommand(request),
+          });
+        }
+        if (path === "/set-env-handle") {
+          return yield* Effect.tryPromise({
+            catch: (error) => error,
+            try: () => self.handleSetEnvHandle(request),
+          });
+        }
+        if (path === "/arm-idle") {
+          const now = yield* DateTime.now;
+          yield* Effect.tryPromise({
+            catch: (error) => error,
+            try: () =>
+              self.state.storage.setAlarm(DateTime.toEpochMillis(now) + self.idleStopMs()),
+          });
+          return jsonOk({});
+        }
+        if (path === "/disarm-idle") {
+          yield* Effect.tryPromise({
+            catch: (error) => error,
+            try: () => self.state.storage.deleteAlarm(),
+          });
+          return jsonOk({});
+        }
+        return jsonError("malformed", `unknown path: ${path}`);
+      }).pipe(
+        Effect.catch((error) =>
+          Effect.sync(() => {
+            // The tagged `CommandError` (SessionHostError) rejects
+            // through the boundary; the envelope keeps its kind, so the hub never
+            // matches on message text.
+            const { kind, message } = rpcErrorOf(error);
+            return jsonError(kind, message);
+          }),
+        ),
+      ),
+    );
   }
 
   /** The durable alarm: idle-stop fired — the hub pulls the trigger. */
@@ -238,7 +264,7 @@ export class SakuThreadDO {
     if (record === undefined) {
       return jsonError("malformed", "unknown thread");
     }
-    // The tagged `CommandError` (SessionHostError | RegistryError) rejects
+    // The tagged `CommandError` (SessionHostError) rejects
     // through the boundary; the fetch catch above serializes its kind into
     // the envelope.
     const result = await Effect.runPromise(this.runCommand(record, command));
@@ -413,17 +439,15 @@ export class SakuThreadDO {
           }
           const next: ThreadRecord = { ...current(), ...patch };
           this.record = next;
+          // A DO-storage defect dies: the registry seam's error channel is
+          // `never`, and an unpersistable record is a fatal defect, not a
+          // command rejection (the same posture as the KvStore seam).
           yield* Effect.tryPromise({
-            catch: (error) =>
-              new RegistryError({
-                cause: error,
-                message: "persist thread record",
-                op: "persist",
-              }),
+            catch: (error) => error,
             try: async () => {
               await this.state.storage.put(RECORD_KEY, next);
             },
-          });
+          }).pipe(Effect.orDie);
           if (patch.sessionId !== undefined) {
             push({ sessionId: patch.sessionId });
           }

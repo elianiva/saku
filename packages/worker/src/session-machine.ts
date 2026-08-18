@@ -35,7 +35,6 @@ import type {
   CompactResult,
   LogItem,
   ProvisionedEntry,
-  Session,
   ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import { clampThinkingLevel, getSupportedThinkingLevels } from "@earendil-works/pi-ai";
@@ -46,12 +45,13 @@ import type {
   Model,
   UserMessage,
 } from "@earendil-works/pi-ai";
-import { THINKING_LEVELS, ThinkingLevelSchema, WireModelInfo } from "@saku/wire";
+import { opaque, THINKING_LEVELS, ThinkingLevelSchema, WireModelInfo } from "@saku/wire";
 import type { SessionWireEvent, ThreadState } from "@saku/wire";
 
 import type { ModelCatalogApi } from "./model-catalog.ts";
 import type { HostRegistryApi, ThreadRecord } from "./registry.ts";
 import { SessionHostError, messageOf, toSessionHostError } from "./session-host-error.ts";
+import type { TrailSession } from "./trail-session.ts";
 
 /** The session's mutation lane (the wire's blocking-prompt semantics live on it). */
 export const LANE = "main";
@@ -79,7 +79,7 @@ export type HostStateV = Schema.Schema.Type<typeof HostState>;
 /** The reply every command carries: the command's value, or the failure. */
 // The compact result is pi's own type, carried opaque (ADR 0005): the
 // guard checks nothing, the declared type is the contract.
-const CompactResultOpaque = Schema.declare<CompactResult>((_u): _u is CompactResult => true);
+const CompactResultOpaque = opaque<CompactResult>();
 const ReplyOk = Schema.TaggedStruct("reply_ok", {
   level: Schema.optional(ThinkingLevelSchema),
   model: Schema.optional(Schema.Union([Schema.Null, WireModelInfo])),
@@ -144,7 +144,7 @@ export const hostStateOf = (state: HostStateV) =>
 export interface HostDeps {
   readonly threadId: string;
   readonly agent: Agent;
-  readonly session: Session;
+  readonly trail: TrailSession;
   readonly catalog: ModelCatalogApi;
   readonly registry: HostRegistryApi;
   readonly sink: HostEventSink;
@@ -169,7 +169,7 @@ const AUTO_TITLE_PROMPT = (text: string) =>
   `Generate a short but descriptive session title (5-12 words) for this conversation. Be specific enough to distinguish it from similar topics. Include key terms, file names, or project context when present. Reply ONLY with the title, no quotes, no punctuation, no extra text.\n\n${text.slice(0, 2000)}`;
 
 /** The entry portion of a session log, in sequence order. */
-export const entriesFromLog = (log: readonly LogItem[]) =>
+export const entriesOf = (log: readonly LogItem[]) =>
   log
     .filter((item): item is Extract<LogItem, { kind: "entry" }> => item.kind === "entry")
     .map((item) => item.entry);
@@ -191,18 +191,14 @@ const applyThinkingLevel = Effect.fn("applyThinkingLevel")(function* (
   }
   yield* Ref.set(deps.thinkingLevelRef, effective);
   deps.agent.state.thinkingLevel = effective;
-  const entry = yield* Effect.tryPromise({
-    catch: toSessionHostError,
-    try: async () =>
-      await deps.session.appendEntry(
-        {
-          id: deps.session.idGenerator.next(),
-          thinkingLevel: effective,
-          type: "thinking_level_change",
-        },
-        LANE,
-      ),
-  });
+  const entry = yield* deps.trail.appendEntry(
+    {
+      id: deps.trail.idGenerator.next(),
+      thinkingLevel: effective,
+      type: "thinking_level_change",
+    },
+    LANE,
+  );
   deps.sink({ entry, type: "entry_appended" });
   return effective;
 });
@@ -229,14 +225,10 @@ const applyModel = Effect.fn("applyModel")(function* (
   }
   yield* Ref.set(deps.modelRef, model);
   deps.agent.state.model = model;
-  const entry = yield* Effect.tryPromise({
-    catch: toSessionHostError,
-    try: async () =>
-      await deps.session.appendEntry(
-        { id: deps.session.idGenerator.next(), modelId, provider, type: "model_change" },
-        LANE,
-      ),
-  });
+  const entry = yield* deps.trail.appendEntry(
+    { id: deps.trail.idGenerator.next(), modelId, provider, type: "model_change" },
+    LANE,
+  );
   deps.sink({ entry, type: "entry_appended" });
   yield* applyThinkingLevel(deps, yield* Ref.get(deps.thinkingLevelRef));
   return model;
@@ -258,11 +250,8 @@ const runCompaction = Effect.fn("runCompaction")(function* (
     );
   }
   const settings = yield* Ref.get(deps.compactionSettingsRef);
-  const log = yield* Effect.tryPromise({
-    catch: toSessionHostError,
-    try: async () => await deps.session.getLog(),
-  });
-  const preparation = prepareCompaction(entriesFromLog(log), settings);
+  const log = yield* deps.trail.getLog();
+  const preparation = prepareCompaction(entriesOf(log), settings);
   if (!preparation.ok) {
     return yield* Effect.fail(
       new SessionHostError({
@@ -284,48 +273,48 @@ const runCompaction = Effect.fn("runCompaction")(function* (
   const outcome = yield* Effect.result(
     Effect.gen(function* () {
       const result = yield* Effect.tryPromise({
-        catch: toSessionHostError,
-        try: async () =>
-          await compact(
+        catch: (error) =>
+          new SessionHostError({ cause: error, kind: "pi_seam", message: messageOf(error) }),
+        try: async () => {
+          const outcome = await compact(
             prepared,
             deps.catalog.models,
             model,
             customInstructions,
             abortController.signal,
             thinkingLevel,
-          ),
-      });
-      if (!result.ok) {
-        return yield* Effect.fail(toSessionHostError(result.error));
-      }
-      const compacted = yield* Effect.tryPromise({
-        catch: toSessionHostError,
-        try: async () => {
-          const entry: ProvisionedEntry<CompactionEntry> = {
-            id: deps.session.idGenerator.next(),
-            retainedTail: result.value.retainedTail,
-            summary: result.value.summary,
-            tokensBefore: result.value.tokensBefore,
-            type: "compaction",
-          };
-          if (result.value.details !== undefined) {
-            entry.details = result.value.details;
+          );
+          if (!outcome.ok) {
+            throw outcome.error;
           }
-          if (result.value.usage !== undefined) {
-            entry.usage = result.value.usage;
-          }
-          return await deps.session.appendEntry(entry, LANE);
+          return outcome.value;
         },
       });
+      const compacted = yield* deps.trail.appendEntry(
+        (() => {
+          const entry: ProvisionedEntry<CompactionEntry> = {
+            id: deps.trail.idGenerator.next(),
+            retainedTail: result.retainedTail,
+            summary: result.summary,
+            tokensBefore: result.tokensBefore,
+            type: "compaction",
+          };
+          if (result.details !== undefined) {
+            entry.details = result.details;
+          }
+          if (result.usage !== undefined) {
+            entry.usage = result.usage;
+          }
+          return entry;
+        })(),
+        LANE,
+      );
       deps.sink({ entry: compacted, type: "entry_appended" });
       // Rebuild the live context from the compacted trail.
-      const newLog = yield* Effect.tryPromise({
-        catch: toSessionHostError,
-        try: async () => await deps.session.getLog(),
-      });
-      deps.agent.state.messages = buildSessionContext(entriesFromLog(newLog)).messages;
-      deps.sink({ aborted: false, reason, result: result.value, type: "compaction_end" });
-      return result.value;
+      const newLog = yield* deps.trail.getLog();
+      deps.agent.state.messages = buildSessionContext(entriesOf(newLog)).messages;
+      deps.sink({ aborted: false, reason, result, type: "compaction_end" });
+      return result;
     }).pipe(Effect.ensuring(Ref.set(deps.compactionAbortRef, Option.none()))),
   );
   if (Result.isFailure(outcome)) {
@@ -358,11 +347,8 @@ const maybeAutoCompact = Effect.fn("maybeAutoCompact")(function* (deps: HostDeps
   if (assistant.stopReason === "aborted" || assistant.stopReason === "error") {
     return;
   }
-  const log = yield* Effect.tryPromise({
-    catch: toSessionHostError,
-    try: async () => await deps.session.getLog(),
-  });
-  const context = buildSessionContext(entriesFromLog(log));
+  const log = yield* deps.trail.getLog();
+  const context = buildSessionContext(entriesOf(log));
   const estimate = estimateContextTokens(context.messages);
   if (shouldCompact(estimate.tokens, model.contextWindow, settings)) {
     yield* runCompaction(deps, "threshold");
@@ -609,15 +595,7 @@ const HostMachine: HostMachineApi = {
         ],
         HostEvent.SetSessionNameRequested,
         ({ state, event }) =>
-          safeReply(
-            state,
-            Effect.tryPromise({
-              catch: toSessionHostError,
-              try: async () => {
-                await deps.session.setName(event.name);
-              },
-            }).pipe(Effect.map(() => ReplyOk.make({}))),
-          ),
+          safeReply(state, deps.trail.setName(event.name).pipe(Effect.map(() => ReplyOk.make({})))),
       )
       .on(
         [

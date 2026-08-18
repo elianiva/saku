@@ -76,12 +76,13 @@ export const createModelCatalog = (options: {
   }
 
   return {
-    available: () => Effect.tryPromise(async () => await models.getAvailable()),
+    available: () => Effect.tryPromise(() => models.getAvailable()),
     getModel: (providerId, modelId) => models.getModel(providerId, modelId),
     hasAuth: (providerId) =>
-      Effect.tryPromise(async () => await models.checkAuth(providerId))
-        .pipe(Effect.map((check) => check !== undefined))
-        .pipe(Effect.catchEager(() => Effect.succeed(false))),
+      Effect.tryPromise(() => models.checkAuth(providerId)).pipe(
+        Effect.map((check) => check !== undefined),
+        Effect.catch(() => Effect.succeed(false)),
+      ),
     models,
     toWireInfo: (model) => ({
       contextWindow: model.contextWindow,

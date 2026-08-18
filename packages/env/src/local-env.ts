@@ -177,13 +177,13 @@ export class LocalEnv implements ExecutionEnv {
   }
 
   async absolutePath(path: string): Promise<PiResult<string, FileError>> {
-    return await Promise.resolve(ok(absolute(this.cwd, path)));
+    return ok(absolute(this.cwd, path));
   }
 
   async joinPath(parts: string[]): Promise<PiResult<string, FileError>> {
     // joinPath is pure; the instance stays pinned to its workspace via `cwd`.
     void this.cwd;
-    return await Promise.resolve(ok(pathModule.join(...parts)));
+    return ok(pathModule.join(...parts));
   }
 
   async readTextFile(path: string): Promise<PiResult<string, FileError>> {
@@ -385,7 +385,6 @@ export class LocalEnv implements ExecutionEnv {
 
   async cleanup() {
     // Nothing to release; the FileSystem service is caller-owned.
-    await Promise.resolve(this.cwd);
   }
 
   async exec(

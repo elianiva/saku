@@ -15,7 +15,6 @@
 export { DoSessionStorage, type DoSessionMetadata } from "./do-session.ts";
 export { DoSessionRepo } from "./do-session-repo.ts";
 export { buildTools } from "./tools.ts";
-export { RegistryError } from "./registry-error.ts";
 export {
   SessionHost,
   SessionHostError,

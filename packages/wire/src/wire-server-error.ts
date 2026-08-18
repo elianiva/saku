@@ -10,8 +10,13 @@ import { Schema } from "effect";
 // typecheck — `TaggedError` is a function returning a class, not a class).
 const tagged = Schema.TaggedError;
 
+/** The wire-server error codes (`WireServerError.code`) — single source of truth. */
+export const WireServerErrorCodes = Schema.Literals(["missing_thread_id"] as const);
+
+export type WireServerErrorCode = typeof WireServerErrorCodes.Type;
+
 /** A protocol violation detected by the server core. */
 export class WireServerError extends tagged<WireServerError>()("WireServerError", {
-  code: Schema.Literals(["missing_thread_id"]),
+  code: WireServerErrorCodes,
   message: Schema.String,
 }) {}

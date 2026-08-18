@@ -61,12 +61,10 @@ export const fakeToolCall = (): AssistantMessage => ({
 });
 
 export const fakeApiKeyAuth = () => ({
-  check: async () =>
-    await Promise.resolve({ source: "configured API key", type: "api_key" as const }),
-  login: async () => await Promise.resolve({ key: "fake", type: "api_key" as const }),
+  check: async () => ({ source: "configured API key", type: "api_key" as const }),
+  login: async () => ({ key: "fake", type: "api_key" as const }),
   name: "API key",
-  resolve: async () =>
-    await Promise.resolve({ auth: { apiKey: "fake" }, source: "configured API key" }),
+  resolve: async () => ({ auth: { apiKey: "fake" }, source: "configured API key" }),
 });
 
 /** The scripted provider: a canned stream, no network. First stream call of
@@ -85,19 +83,17 @@ export const fakeProvider = () => {
     reasoning: false,
   };
   let calls = 0;
+  // The scripted stream: first call of a turn carries the tool call, later
+  // calls answer with text (`stream` and `streamSimple` are the same).
+  const fakeStream = () => {
+    const stream = createAssistantMessageEventStream();
+    calls += 1;
+    stream.end(calls % 2 === 1 ? fakeToolCall() : fakeText());
+    return stream;
+  };
   const streams: ProviderStreams = {
-    stream: () => {
-      const stream = createAssistantMessageEventStream();
-      calls += 1;
-      stream.end(calls % 2 === 1 ? fakeToolCall() : fakeText());
-      return stream;
-    },
-    streamSimple: () => {
-      const stream = createAssistantMessageEventStream();
-      calls += 1;
-      stream.end(calls % 2 === 1 ? fakeToolCall() : fakeText());
-      return stream;
-    },
+    stream: fakeStream,
+    streamSimple: fakeStream,
   };
   return createProvider({
     api: streams,

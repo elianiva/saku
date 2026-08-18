@@ -12,15 +12,20 @@ import { Schema } from "effect";
 // typecheck — `TaggedError` is a function returning a class, not a class).
 const tagged = Schema.TaggedError;
 
+/** The wire error codes (`WireError.code`) — single source of truth. */
+export const WireErrorCodes = Schema.Literals([
+  "disconnected",
+  "handshake",
+  "timeout",
+  "decode",
+  "refused",
+  "command_failed",
+] as const);
+
+export type WireErrorCode = typeof WireErrorCodes.Type;
+
 export class WireError extends tagged<WireError>()("WireError", {
   cause: Schema.optional(Schema.Unknown),
-  code: Schema.Literals([
-    "disconnected",
-    "handshake",
-    "timeout",
-    "decode",
-    "refused",
-    "command_failed",
-  ]),
+  code: WireErrorCodes,
   message: Schema.String,
 }) {}

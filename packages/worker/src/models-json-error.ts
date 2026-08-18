@@ -6,11 +6,7 @@
 
 import { Schema } from "effect";
 
-/** Alias of `Schema.TaggedError` so oxlint's Error-name call heuristic
- * doesn't demand `new` on the factory call (which would break typecheck). */
-const taggedError = Schema.TaggedError;
-
 /** A models.json configuration problem (missing api/baseUrl, unknown api implementation, empty provider). */
-export class ModelsJsonError extends taggedError<ModelsJsonError>()("ModelsJsonError", {
+export class ModelsJsonError extends Schema.TaggedError<ModelsJsonError>()("ModelsJsonError", {
   message: Schema.String,
 }) {}

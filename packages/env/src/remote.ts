@@ -206,98 +206,103 @@ export class RemoteEnv implements ExecutionEnv {
 
   /** Open the connection, attach through the relay if configured, hello. */
   async connect(): Promise<EnvHelloOk> {
-    if (this.socket !== null) {
-      throw new EnvConnectionError({ kind: "already_connected", message: "already connected" });
-    }
+    const self = this;
     return await Effect.runPromise(
-      Effect.callback<EnvHelloOk, EnvConnectionError>((resume) => {
-        let settled = false;
-        const fail = (error: EnvConnectionError) => {
-          if (settled) {
-            return;
-          }
-          settled = true;
-          if (this.onceHelloTimer !== undefined) {
-            clearTimeout(this.onceHelloTimer);
-          }
-          this.onceHello = undefined;
-          this.socket = null;
-          resume(Effect.fail(error));
-        };
-        const socket = this.socketFactory(this.url);
-        this.socket = socket;
-        socket.on("open", () => {
-          if (this.relay !== undefined) {
-            socket.send(
-              serializeFrame(
-                RelayAttach.make({
-                  envId: this.relay.envId,
-                  token: this.relay.token,
-                  version: ENV_VERSION,
-                }),
-              ),
-            );
-          }
-          socket.send(
-            serializeFrame(
-              EnvHello.make({ cwd: this.cwd, token: this.token, version: ENV_VERSION }),
-            ),
+      Effect.gen(function* () {
+        if (self.socket !== null) {
+          return yield* Effect.fail(
+            new EnvConnectionError({ kind: "already_connected", message: "already connected" }),
           );
-        });
-        socket.on("message", (data) => {
-          if (isSocketMessage(data)) {
-            this.onMessage(data);
-          }
-        });
-        socket.on("error", (error) => {
-          const message =
-            error instanceof Error ? error.message : (JSON.stringify(error) ?? "undefined");
-          // The socket callback is outside the Effect runtime: fork the log.
-          void Effect.runFork(this.log(`env connection error: ${message}`));
-          fail(
-            new EnvConnectionError({
-              cause: error,
-              kind: "socket_error",
-              message: `env connection failed: ${message}`,
-            }),
-          );
-        });
-        socket.on("close", () => {
-          const wasConnected = this.connected;
-          this.socket = null;
-          this.failAll(CONNECTION_LOST);
-          if (!wasConnected) {
-            fail(
-              new EnvConnectionError({
-                kind: "closed_before_hello",
-                message: "env connection closed before hello",
-              }),
-            );
-          }
-        });
-        this.onceHello = {
-          reject: (error) => {
-            fail(error);
-            this.socket?.close();
-          },
-          resolve: (hello) => {
+        }
+        return yield* Effect.callback<EnvHelloOk, EnvConnectionError>((resume) => {
+          let settled = false;
+          const fail = (error: EnvConnectionError) => {
             if (settled) {
               return;
             }
             settled = true;
-            if (this.onceHelloTimer !== undefined) {
-              clearTimeout(this.onceHelloTimer);
+            if (self.onceHelloTimer !== undefined) {
+              clearTimeout(self.onceHelloTimer);
             }
-            this.onceHello = undefined;
-            this.connected = true;
-            resume(Effect.succeed(hello));
-          },
-        };
-        this.onceHelloTimer = setTimeout(() => {
-          fail(new EnvConnectionError({ kind: "hello_timeout", message: "env hello timed out" }));
-          this.socket?.close();
-        }, 15_000);
-        return Effect.void;
+            self.onceHello = undefined;
+            self.socket = null;
+            resume(Effect.fail(error));
+          };
+          const socket = self.socketFactory(self.url);
+          self.socket = socket;
+          socket.on("open", () => {
+            if (self.relay !== undefined) {
+              socket.send(
+                serializeFrame(
+                  RelayAttach.make({
+                    envId: self.relay.envId,
+                    token: self.relay.token,
+                    version: ENV_VERSION,
+                  }),
+                ),
+              );
+            }
+            socket.send(
+              serializeFrame(
+                EnvHello.make({ cwd: self.cwd, token: self.token, version: ENV_VERSION }),
+              ),
+            );
+          });
+          socket.on("message", (data) => {
+            if (isSocketMessage(data)) {
+              self.onMessage(data);
+            }
+          });
+          socket.on("error", (error) => {
+            const message =
+              error instanceof Error ? error.message : (JSON.stringify(error) ?? "undefined");
+            // The socket callback is outside the Effect runtime: fork the log.
+            void Effect.runFork(self.log(`env connection error: ${message}`));
+            fail(
+              new EnvConnectionError({
+                cause: error,
+                kind: "socket_error",
+                message: `env connection failed: ${message}`,
+              }),
+            );
+          });
+          socket.on("close", () => {
+            const wasConnected = self.connected;
+            self.socket = null;
+            self.failAll(CONNECTION_LOST);
+            if (!wasConnected) {
+              fail(
+                new EnvConnectionError({
+                  kind: "closed_before_hello",
+                  message: "env connection closed before hello",
+                }),
+              );
+            }
+          });
+          self.onceHello = {
+            reject: (error) => {
+              fail(error);
+              self.socket?.close();
+            },
+            resolve: (hello) => {
+              if (settled) {
+                return;
+              }
+              settled = true;
+              if (self.onceHelloTimer !== undefined) {
+                clearTimeout(self.onceHelloTimer);
+              }
+              self.onceHello = undefined;
+              self.connected = true;
+              resume(Effect.succeed(hello));
+            },
+          };
+          self.onceHelloTimer = setTimeout(() => {
+            fail(new EnvConnectionError({ kind: "hello_timeout", message: "env hello timed out" }));
+            self.socket?.close();
+          }, 15_000);
+          return Effect.void;
+        });
       }),
     );
   }
@@ -577,7 +582,6 @@ export class RemoteEnv implements ExecutionEnv {
 
   async cleanup() {
     // The connection outlives individual ops; close() releases it.
-    await Promise.resolve(this.connected);
   }
 
   async exec(

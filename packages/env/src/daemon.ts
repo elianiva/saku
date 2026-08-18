@@ -74,11 +74,6 @@ const NO_PAYLOAD = undefined;
 const isAddressObject = (address: AddressInfo | string | null): address is AddressInfo =>
   address !== null && typeof address !== "string";
 
-const DECODE_FIRST = Schema.decodeUnknownSync(EnvHello);
-const DECODE_REQUEST = Schema.decodeUnknownSync(EnvRequest);
-const DECODE_ABORT = Schema.decodeUnknownSync(EnvAbort);
-const DECODE_OP = Schema.decodeUnknownSync(EnvOp);
-
 export interface EnvDaemonOptions {
   readonly token: string;
   /** Listen host; default loopback (a remote provider may front it). */
@@ -107,7 +102,7 @@ export interface EnvConnectionContext {
 }
 
 const decodeOp = (value: Schema.Json) =>
-  Result.try(() => DECODE_OP(value)).pipe(Result.mapError(String));
+  Schema.decodeUnknownResult(EnvOp)(value).pipe(Result.mapError(String));
 
 /**
  * Encode one op's response payload with the protocol's payload table
@@ -117,11 +112,6 @@ const decodeOp = (value: Schema.Json) =>
  */
 /** The response payload type of an op, read from the payload table (protocol.ts). */
 type OpPayload = (typeof EnvPayloadSchema)[EnvOpType["_tag"]]["Type"];
-
-/** One op's execution outcome: the raw payload, or the wire error. */
-type RunOpOutcome =
-  | { readonly ok: true; readonly payload: OpPayload }
-  | { readonly ok: false; readonly error: EnvError };
 
 /**
  * Encode one op's response payload with the protocol's payload table
@@ -147,7 +137,14 @@ interface TempFileOptions {
  * resolve the `Match.tagsExhaustive` result, so the contract is spelled
  * out for it (tsc infers the same shape).
  */
-const runOp = async (
+/**
+ * Run one env operation against the connection's `ExecutionEnv`. The env
+ * methods return promises (pi's contract), so each branch bridges into
+ * Effect-land once via `Effect.tryPromise` — the single promise boundary
+ * in the pipeline. `exec` streams stdout/stderr through `send` and
+ * registers its aborter keyed by the request id.
+ */
+const runOp = (
   env: ExecutionEnv,
   id: string,
   op: EnvOpType,
@@ -163,121 +160,140 @@ const runOp = async (
     ok: false as const,
   });
 
-  return await Match.value(op).pipe(
+  /** Bridge a promise into an Effect, catching unexpected rejections. */
+  const fromEnv = <T>(promise: Promise<T>) =>
+    Effect.tryPromise({ try: () => promise, catch: (error: unknown) => error });
+
+  return Match.value(op).pipe(
     Match.tagsExhaustive({
-      absolute_path: async ({ path }) => {
-        const outcome = await env.absolutePath(path);
-        return outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error);
-      },
-      append_file: async ({ path, content, encoding }) => {
-        const bytes = encoding === "base64" ? Buffer.from(content, "base64") : content;
-        const outcome = await env.appendFile(path, bytes);
-        return outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error);
-      },
-      canonical_path: async ({ path }) => {
-        const outcome = await env.canonicalPath(path);
-        return outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error);
-      },
-      create_dir: async ({ path, recursive }) => {
-        const outcome = await env.createDir(path, { recursive: recursive ?? true });
-        return outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error);
-      },
-      create_temp_dir: async ({ prefix }) => {
-        const outcome = await env.createTempDir(prefix);
-        return outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error);
-      },
-      create_temp_file: async ({ prefix, suffix }) => {
-        const options: TempFileOptions = {};
-        if (prefix !== undefined) {
-          options.prefix = prefix;
-        }
-        if (suffix !== undefined) {
-          options.suffix = suffix;
-        }
-        const outcome = await env.createTempFile(options);
-        return outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error);
-      },
-      exec: async ({ command, cwd, env: opEnv, timeout, inheritEnv }) => {
-        const controller = new AbortController();
-        ctx.aborters.set(id, () => {
-          controller.abort();
-        });
-        const options: ShellExecOptions = { abortSignal: controller.signal };
-        if (cwd !== undefined) {
-          options.cwd = cwd;
-        }
-        if (opEnv !== undefined) {
-          options.env = opEnv;
-        }
-        if (timeout !== undefined) {
-          options.timeout = timeout;
-        }
-        if (inheritEnv !== undefined) {
-          options.inheritEnv = inheritEnv;
-        }
-        options.onStdout = (text) => {
-          ctx.send(EnvStream.make({ id, kind: "stdout", text }));
-        };
-        options.onStderr = (text) => {
-          ctx.send(EnvStream.make({ id, kind: "stderr", text }));
-        };
-        const outcome = await env.exec(command, options);
-        return outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error);
-      },
-      exists: async ({ path }) => {
-        const outcome = await env.exists(path);
-        return outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error);
-      },
-      file_info: async ({ path }) => {
-        const outcome = await env.fileInfo(path);
-        return outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error);
-      },
-      health: () => ({
+      absolute_path: ({ path }) =>
+        Effect.gen(function* () {
+          const outcome = yield* fromEnv(env.absolutePath(path));
+          return outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error);
+        }),
+      append_file: ({ path, content, encoding }) =>
+        Effect.gen(function* () {
+          const bytes = encoding === "base64" ? Buffer.from(content, "base64") : content;
+          const outcome = yield* fromEnv(env.appendFile(path, bytes));
+          return outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error);
+        }),
+      canonical_path: ({ path }) =>
+        Effect.gen(function* () {
+          const outcome = yield* fromEnv(env.canonicalPath(path));
+          return outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error);
+        }),
+      create_dir: ({ path, recursive }) =>
+        Effect.gen(function* () {
+          const outcome = yield* fromEnv(env.createDir(path, { recursive: recursive ?? true }));
+          return outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error);
+        }),
+      create_temp_dir: ({ prefix }) =>
+        Effect.gen(function* () {
+          const outcome = yield* fromEnv(env.createTempDir(prefix));
+          return outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error);
+        }),
+      create_temp_file: ({ prefix, suffix }) =>
+        Effect.gen(function* () {
+          const options: TempFileOptions = {};
+          if (prefix !== undefined) {
+            options.prefix = prefix;
+          }
+          if (suffix !== undefined) {
+            options.suffix = suffix;
+          }
+          const outcome = yield* fromEnv(env.createTempFile(options));
+          return outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error);
+        }),
+      exec: ({ command, cwd, env: opEnv, timeout, inheritEnv }) =>
+        Effect.gen(function* () {
+          const controller = new AbortController();
+          ctx.aborters.set(id, () => {
+            controller.abort();
+          });
+          const options: ShellExecOptions = { abortSignal: controller.signal };
+          if (cwd !== undefined) {
+            options.cwd = cwd;
+          }
+          if (opEnv !== undefined) {
+            options.env = opEnv;
+          }
+          if (timeout !== undefined) {
+            options.timeout = timeout;
+          }
+          if (inheritEnv !== undefined) {
+            options.inheritEnv = inheritEnv;
+          }
+          options.onStdout = (text) => {
+            ctx.send(EnvStream.make({ id, kind: "stdout", text }));
+          };
+          options.onStderr = (text) => {
+            ctx.send(EnvStream.make({ id, kind: "stderr", text }));
+          };
+          const outcome = yield* fromEnv(env.exec(command, options));
+          return outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error);
+        }),
+      exists: ({ path }) =>
+        Effect.gen(function* () {
+          const outcome = yield* fromEnv(env.exists(path));
+          return outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error);
+        }),
+      file_info: ({ path }) =>
+        Effect.gen(function* () {
+          const outcome = yield* fromEnv(env.fileInfo(path));
+          return outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error);
+        }),
+      health: () => Effect.succeed({
         ok: true as const,
         payload: { cwd: ctx.cwd, pid: ctx.pid, version: ENV_VERSION },
       }),
-      join_path: async ({ parts }) => {
-        const outcome = await env.joinPath([...parts]);
-        return outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error);
-      },
-      list_dir: async ({ path }) => {
-        const outcome = await env.listDir(path);
-        return outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error);
-      },
-      read_binary_file: async ({ path }) => {
-        const outcome = await env.readBinaryFile(path);
-        if (!outcome.ok) {
-          return fail(outcome.error);
-        }
-        return { ok: true as const, payload: Buffer.from(outcome.value).toString("base64") };
-      },
-      read_text_file: async ({ path }) => {
-        const outcome = await env.readTextFile(path);
-        return outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error);
-      },
-      read_text_lines: async ({ path, maxLines }) => {
-        const outcome = await env.readTextLines(
-          path,
-          maxLines === undefined ? undefined : { maxLines },
-        );
-        return outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error);
-      },
-      remove: async ({ path, recursive, force }) => {
-        const outcome = await env.remove(path, {
-          force: force ?? false,
-          recursive: recursive ?? false,
-        });
-        return outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error);
-      },
-      rename_file: async ({ sourcePath, destinationPath }) => {
-        const outcome = await env.renameFile(sourcePath, destinationPath);
-        return outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error);
-      },
-      write_file: async ({ path, content, encoding }) => {
-        const bytes = encoding === "base64" ? Buffer.from(content, "base64") : content;
-        const outcome = await env.writeFile(path, bytes);
-        return outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error);
-      },
+      join_path: ({ parts }) =>
+        Effect.gen(function* () {
+          const outcome = yield* fromEnv(env.joinPath([...parts]));
+          return outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error);
+        }),
+      list_dir: ({ path }) =>
+        Effect.gen(function* () {
+          const outcome = yield* fromEnv(env.listDir(path));
+          return outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error);
+        }),
+      read_binary_file: ({ path }) =>
+        Effect.gen(function* () {
+          const outcome = yield* fromEnv(env.readBinaryFile(path));
+          if (!outcome.ok) {
+            return fail(outcome.error);
+          }
+          return { ok: true as const, payload: Buffer.from(outcome.value).toString("base64") };
+        }),
+      read_text_file: ({ path }) =>
+        Effect.gen(function* () {
+          const outcome = yield* fromEnv(env.readTextFile(path));
+          return outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error);
+        }),
+      read_text_lines: ({ path, maxLines }) =>
+        Effect.gen(function* () {
+          const outcome = yield* fromEnv(
+            env.readTextLines(path, maxLines === undefined ? undefined : { maxLines }),
+          );
+          return outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error);
+        }),
+      remove: ({ path, recursive, force }) =>
+        Effect.gen(function* () {
+          const outcome = yield* fromEnv(
+            env.remove(path, { force: force ?? false, recursive: recursive ?? false }),
+          );
+          return outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error);
+        }),
+      rename_file: ({ sourcePath, destinationPath }) =>
+        Effect.gen(function* () {
+          const outcome = yield* fromEnv(env.renameFile(sourcePath, destinationPath));
+          return outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error);
+        }),
+      write_file: ({ path, content, encoding }) =>
+        Effect.gen(function* () {
+          const bytes = encoding === "base64" ? Buffer.from(content, "base64") : content;
+          const outcome = yield* fromEnv(env.writeFile(path, bytes));
+          return outcome.ok ? { ok: true as const, payload: outcome.value } : fail(outcome.error);
+        }),
     }),
   );
 };
@@ -333,7 +349,7 @@ export const handleEnvConnection = Effect.fn("handleEnvConnection")(function* (
           hello.finish(Result.fail(parsed.success.message ?? "env_error"));
           return;
         }
-        const decoded = Result.try(() => DECODE_FIRST(parsed.success));
+        const decoded = Schema.decodeUnknownResult(EnvHello)(parsed.success);
         if (Result.isFailure(decoded)) {
           hello.finish(Result.fail("expected env_hello"));
           return;
@@ -371,7 +387,7 @@ export const handleEnvConnection = Effect.fn("handleEnvConnection")(function* (
   const env = new LocalEnv(cwd, ctx.fs);
   send(EnvHelloOk.make({ cwd, pid: process.pid, version: ENV_VERSION }));
 
-  const onMessage = async (data: SocketMessage) => {
+  const onMessage = (data: SocketMessage) => {
     const parsed = Result.try(() => parseFrame(decodeFrame(data)));
     if (Result.isFailure(parsed) || parsed.success === undefined) {
       return;
@@ -380,7 +396,7 @@ export const handleEnvConnection = Effect.fn("handleEnvConnection")(function* (
       return;
     }
     if (parsed.success._tag === "env_abort") {
-      const decoded = Result.try(() => DECODE_ABORT(parsed.success));
+      const decoded = Schema.decodeUnknownResult(EnvAbort)(parsed.success);
       if (Result.isFailure(decoded)) {
         return;
       }
@@ -390,7 +406,7 @@ export const handleEnvConnection = Effect.fn("handleEnvConnection")(function* (
     if (parsed.success._tag !== "env_request") {
       return;
     }
-    const request = Result.try(() => DECODE_REQUEST(parsed.success));
+    const request = Schema.decodeUnknownResult(EnvRequest)(parsed.success);
     if (Result.isFailure(request)) {
       send(
         EnvResponseError.make({
@@ -409,34 +425,42 @@ export const handleEnvConnection = Effect.fn("handleEnvConnection")(function* (
       );
       return;
     }
-    try {
-      const outcome = await runOp(env, id, op.success, { aborters, cwd, pid: process.pid, send });
-      if (outcome.ok) {
-        send(
-          EnvResponseOk.make({
-            id,
-            ok: true,
-            payload: encodePayload(op.success, outcome.payload),
-          }),
-        );
-      } else {
-        send(EnvResponseError.make({ error: outcome.error, id, ok: false }));
-      }
-    } catch (error) {
-      send(
-        EnvResponseError.make({
-          error: { kind: "unknown", message: String(error) },
-          id,
-          ok: false,
+    // `runOp` is now an Effect — fork it into the connection's scope.
+    Effect.runFork(
+      runOp(env, id, op.success, { aborters, cwd, pid: process.pid, send }).pipe(
+        Effect.matchEffect({
+          onSuccess: (outcome) =>
+            Effect.sync(() => {
+              if (outcome.ok) {
+                send(
+                  EnvResponseOk.make({
+                    id,
+                    ok: true,
+                    payload: encodePayload(op.success, outcome.payload),
+                  }),
+                );
+              } else {
+                send(EnvResponseError.make({ error: outcome.error, id, ok: false }));
+              }
+            }),
+          onFailure: (error) =>
+            Effect.sync(() => {
+              send(
+                EnvResponseError.make({
+                  error: { kind: "unknown", message: String(error) },
+                  id,
+                  ok: false,
+                }),
+              );
+            }),
         }),
-      );
-    } finally {
-      aborters.delete(id);
-    }
+        Effect.ensuring(Effect.sync(() => aborters.delete(id))),
+      ),
+    );
   };
   socket.on("message", (data) => {
     if (isSocketMessage(data)) {
-      void onMessage(data);
+      onMessage(data);
     }
   });
 

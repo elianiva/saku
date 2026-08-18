@@ -6,7 +6,6 @@
 
 import { Effect, Schedule, Schema } from "effect";
 
-const taggedError = Schema.TaggedError;
 
 /** A remote machine returned by a provider. Status stays provider-defined. */
 export interface RemoteMachine {
@@ -28,7 +27,7 @@ export interface CommandResult {
 }
 
 /** A generic timeout after a provider kept a machine unready. */
-export class RemoteMachineError extends taggedError<RemoteMachineError>()("RemoteMachineError", {
+export class RemoteMachineError extends Schema.TaggedError<RemoteMachineError>()("RemoteMachineError", {
   machineId: Schema.optional(Schema.String),
   message: Schema.String,
   status: Schema.optional(Schema.String),

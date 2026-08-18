@@ -10,15 +10,20 @@ import { Schema } from "effect";
 // typecheck — `TaggedError` is a function returning a class, not a class).
 const tagged = Schema.TaggedError;
 
+/** The env-connection error kinds (`EnvConnectionError.kind`) — single source of truth. */
+export const EnvConnectionErrorKinds = Schema.Literals([
+  "already_connected",
+  "socket_error",
+  "closed_before_hello",
+  "hello_timeout",
+  "rejected",
+] as const);
+
+export type EnvConnectionErrorKind = typeof EnvConnectionErrorKinds.Type;
+
 /** A connection-level failure of the env protocol (connect/hello). */
 export class EnvConnectionError extends tagged<EnvConnectionError>()("EnvConnectionError", {
   cause: Schema.optional(Schema.Unknown),
-  kind: Schema.Literals([
-    "already_connected",
-    "socket_error",
-    "closed_before_hello",
-    "hello_timeout",
-    "rejected",
-  ]),
+  kind: EnvConnectionErrorKinds,
   message: Schema.String,
 }) {}

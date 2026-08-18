@@ -43,7 +43,10 @@ export const ensureAuthToken = Effect.fn("ensureAuthToken")(function* (
   }
   yield* ensureSakuDirs(fs, paths);
   const token = randomBytes(32).toString("hex");
-  yield* fs.writeFileString(paths.authPath, `${token}\n`, { mode: 0o600 });
+  // The chmod is the exact-permission guarantee: a write's mode argument
+  // would be masked by the umask, and the token is always freshly created
+  // here (an existing readable token returned above).
+  yield* fs.writeFileString(paths.authPath, `${token}\n`);
   yield* fs.chmod(paths.authPath, 0o600);
   return token;
 });

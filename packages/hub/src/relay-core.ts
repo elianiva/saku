@@ -24,9 +24,6 @@ import { ENV_VERSION, EnvErrorFrame, RelayAttach, RelayHello } from "@saku/env";
 
 import type { SocketLike } from "./socket.ts";
 
-const DECODE_HELLO = Schema.decodeUnknownSync(RelayHello);
-const DECODE_ATTACH = Schema.decodeUnknownSync(RelayAttach);
-
 /** The payload a socket listener receives (message data, an error, a close payload, or nothing). */
 type SocketPayload = Parameters<Parameters<SocketLike["on"]>[1]>[0];
 
@@ -259,7 +256,7 @@ export class HubRelayCore extends Context.Service<HubRelayCore, HubRelayCoreApi>
         }
         const frame = parsed.success;
         if (frame._tag === "relay_hello") {
-          const hello = Result.try(() => DECODE_HELLO(parsed.success));
+          const hello = Schema.decodeUnknownResult(RelayHello)(parsed.success);
           if (Result.isFailure(hello)) {
             failSocket(socket, "undecodable relay_hello");
             return;
@@ -283,7 +280,7 @@ export class HubRelayCore extends Context.Service<HubRelayCore, HubRelayCoreApi>
           return;
         }
         if (frame._tag === "relay_attach") {
-          const decoded = Result.try(() => DECODE_ATTACH(parsed.success));
+          const decoded = Schema.decodeUnknownResult(RelayAttach)(parsed.success);
           if (Result.isFailure(decoded)) {
             failSocket(socket, "undecodable relay_attach");
             return;

@@ -134,7 +134,7 @@ export const decodeSessionEvent = (event: SessionWireEvent) => {
  * never crashes the trail).
  */
 export const decodeEntry = Effect.fn("decodeEntry")(function* (entry: Entry) {
-  const decoded = Result.try(() => S.decodeUnknownSync(EntryProjection)(entry));
+  const decoded = yield* S.decodeUnknownEffect(EntryProjection)(entry).pipe(Effect.result);
   if (Result.isFailure(decoded)) {
     yield* Effect.logWarning("dropping undecodable trail entry", decoded.failure);
     return Option.none();

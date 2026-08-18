@@ -62,7 +62,7 @@ const fail = (path: string, error: Error) =>
   );
 
 const jsonlFsOf = (fs: FileSystem.FileSystem): JsonlSessionRepoFileSystem => ({
-  absolutePath: async (filePath) => await Promise.resolve(ok(nodePath.resolve(filePath))),
+  absolutePath: async (filePath) => ok(nodePath.resolve(filePath)),
   appendFile: async (filePath, content) => {
     const outcome = await Effect.runPromise(
       fs
@@ -100,7 +100,7 @@ const jsonlFsOf = (fs: FileSystem.FileSystem): JsonlSessionRepoFileSystem => ({
     );
     return Result.isSuccess(outcome) ? ok(outcome.success) : err(fail(filePath, outcome.failure));
   },
-  joinPath: async (parts) => await Promise.resolve(ok(parts.join("/"))),
+  joinPath: async (parts) => ok(parts.join("/")),
   listDir: async (filePath) => {
     const outcome = await Effect.runPromise(fs.readDirectory(filePath).pipe(Effect.result));
     return Result.isSuccess(outcome)

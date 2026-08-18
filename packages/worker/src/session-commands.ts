@@ -124,10 +124,31 @@ export const runSessionCommand = <E>(
             }),
           ),
         ),
+      // Stats are a pure projection of the trail (message/usage counts): a
+      // never-started thread's trail is empty, so its stats are zeroed — served
+      // read-only like the other reads, never starting the session (ADR 0004).
       get_session_stats: () =>
-        deps.hostFor(threadId).pipe(
-          Effect.flatMap((host) => host.getSessionStats()),
-          Effect.map((stats) => GetSessionStatsResponse.make({ stats })),
+        deps.readOnlyHost(threadId).pipe(
+          Effect.flatMap(
+            Option.match({
+              onNone: () =>
+                Effect.succeed(
+                  GetSessionStatsResponse.make({
+                    stats: {
+                      cachedTokens: 0,
+                      costTotal: 0,
+                      messageCount: 0,
+                      totalTokens: 0,
+                      uncachedTokens: 0,
+                    },
+                  }),
+                ),
+              onSome: (host) =>
+                host
+                  .getSessionStats()
+                  .pipe(Effect.map((stats) => GetSessionStatsResponse.make({ stats }))),
+            }),
+          ),
         ),
       get_state: () =>
         deps.readOnlyHost(threadId).pipe(

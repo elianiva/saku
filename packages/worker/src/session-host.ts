@@ -56,12 +56,12 @@ import { DoSessionRepo } from "./do-session-repo.ts";
 import { KvStore } from "@saku/store";
 import type { ModelCatalogApi } from "./model-catalog.ts";
 import { buildTools } from "./tools.ts";
-import type { RegistryError } from "./registry-error.ts";
 import type { HostRegistryApi, ThreadRecord } from "./registry.ts";
 import { SessionHostError, toSessionHostError } from "./session-host-error.ts";
 import { handleAgentEvent } from "./agent-events.ts";
+import { makeTrailSession } from "./trail-session.ts";
 import {
-  entriesFromLog,
+  entriesOf,
   hostStateOf,
   wireStateOf,
   LANE,
@@ -80,11 +80,14 @@ import type {
 export { SessionHostError } from "./session-host-error.ts";
 export type { HostEventSink, SessionHostState as HostState } from "./session-machine.ts";
 
+/** How long `dispose` waits for a stuck host (a run that never settles) before giving up and draining the actor anyway. */
+const DISPOSE_SETTLE_TIMEOUT = Duration.seconds(10);
+
 /** Narrow a trail `thinking_level_change` value to a supported level (trail values predate wire validation). */
-const isThinkingLevel = (level: string): level is ThinkingLevel =>
-  // SAFETY: THINKING_LEVELS is the canonical supported set; reading it as
-  // string[] only widens `includes`'s parameter to accept the trail string.
-  (THINKING_LEVELS as readonly string[]).includes(level);
+// A Set from the canonical ladder: `has` takes any string, so the
+// `readonly string[]` cast the array's `includes` needed disappears.
+const THINKING_LEVELS_SET = new Set<string>(THINKING_LEVELS);
+const isThinkingLevel = (level: string): level is ThinkingLevel => THINKING_LEVELS_SET.has(level);
 
 export interface SessionHost {
   readonly threadId: string;
@@ -186,17 +189,15 @@ export const SessionHost = {
       if (record.sessionId === null) {
         // First touch (or a crash between repo creation and the registry update
         // on a previous boot): back-fill the stable session id.
-        yield* registry
-          .update(threadId, { sessionId: threadId })
-          .pipe(Effect.mapError(toSessionHostError));
+        yield* registry.update(threadId, { sessionId: threadId });
       }
 
-      const entries = entriesFromLog(
-        yield* Effect.tryPromise({
-          catch: toSessionHostError,
-          try: async () => await session.getLog(),
-        }),
-      );
+      // The Effect adapter: every async Session method crosses the pi promise
+      // boundary here, once, instead of at ~35 call sites (the machine, the
+      // host value, the agent-event projection all use `trail`).
+      const trail = makeTrailSession(session);
+
+      const entries = entriesOf(yield* trail.getLog());
       const context = buildSessionContext(entries);
 
       // Recover model + thinking level from the entry trail. A fresh thread
@@ -224,10 +225,7 @@ export const SessionHost = {
       }
 
       // Recovery: an unfinished operation means the daemon died mid-run.
-      const openOperations = yield* Effect.tryPromise({
-        catch: toSessionHostError,
-        try: async () => await session.findOpenOperations(LANE, { limit: 1 }),
-      });
+      const openOperations = yield* trail.findOpenOperations(LANE, { limit: 1 });
       const initialState: HostStateV =
         openOperations.length > 0 ? HostState.Interrupted : HostState.Idle;
 
@@ -259,28 +257,20 @@ export const SessionHost = {
         agent.state.messages = context.messages;
       } else {
         if (model !== null) {
-          yield* Effect.tryPromise({
-            catch: toSessionHostError,
-            try: async () =>
-              await session.appendEntry(
-                {
-                  id: session.idGenerator.next(),
-                  modelId: model.id,
-                  provider: model.provider,
-                  type: "model_change",
-                },
-                LANE,
-              ),
-          });
+          yield* trail.appendEntry(
+            {
+              id: trail.idGenerator.next(),
+              modelId: model.id,
+              provider: model.provider,
+              type: "model_change",
+            },
+            LANE,
+          );
         }
-        yield* Effect.tryPromise({
-          catch: toSessionHostError,
-          try: async () =>
-            await session.appendEntry(
-              { id: session.idGenerator.next(), thinkingLevel, type: "thinking_level_change" },
-              LANE,
-            ),
-        });
+        yield* trail.appendEntry(
+          { id: trail.idGenerator.next(), thinkingLevel, type: "thinking_level_change" },
+          LANE,
+        );
       }
 
       // Refs shared by the machine and the value (volatile config; the durable
@@ -306,14 +296,20 @@ export const SessionHost = {
         onRecordChanged: options.onRecordChanged,
         pushState: (state) => registry.setState(threadId, state),
         registry,
-        session,
+        trail,
         sink: options.sink,
         thinkingLevelRef,
         threadId,
       };
 
+      // The trail append is the durability point: a failure here must be
+      // visible, never an unhandled rejection in pi's subscriber — log the
+      // full cause and keep the session alive (one dropped event must not
+      // kill the agent).
       const unsubscribeAgent = agent.subscribe(async (event: AgentEvent, _signal: AbortSignal) => {
-        await Effect.runPromise(handleAgentEvent(deps, event));
+        await Effect.runPromise(
+          handleAgentEvent(deps, event).pipe(Effect.catchCause(Effect.logError)),
+        );
       });
 
       const actor = yield* Machine.spawn(HostMachine.make(deps));
@@ -336,18 +332,11 @@ export const SessionHost = {
         );
 
       const getEntries = Effect.fn("getEntries")(function* (sinceSeq?: number) {
-        const log = yield* Effect.tryPromise({
-          catch: toSessionHostError,
-          try: async () =>
-            await session.getLog(sinceSeq === undefined ? {} : { afterSeq: sinceSeq }),
-        });
-        const logEntries = entriesFromLog(log);
+        const log = yield* trail.getLog(sinceSeq === undefined ? {} : { afterSeq: sinceSeq });
+        const logEntries = entriesOf(log);
         const last = log.at(-1);
         const tailSeq = last === undefined ? (sinceSeq ?? 0) : last.seq;
-        const leafId = yield* Effect.tryPromise({
-          catch: toSessionHostError,
-          try: async () => await session.getLeafId(),
-        });
+        const leafId = yield* trail.getLeafId();
         return { entries: logEntries, leafId, tailSeq };
       });
 
@@ -359,9 +348,11 @@ export const SessionHost = {
           compactionAbort.value.abort();
         }
         agent.abort();
+        // A stuck host (a run that never settles) costs this long on daemon
+        // close before the dispose gives up and drains the actor anyway.
         yield* actor
           .waitFor((state) => state._tag !== "Working" && state._tag !== "Compacting")
-          .pipe(Effect.timeout(Duration.seconds(10)), Effect.ignore);
+          .pipe(Effect.timeout(DISPOSE_SETTLE_TIMEOUT), Effect.ignore);
         yield* actor.drain;
         // Best-effort teardown: a cleanup failure is a typed pi-seam
         // failure, swallowed by the dispose's `Effect.ignore` below.
@@ -385,10 +376,7 @@ export const SessionHost = {
               }),
             );
           }
-          const entry = yield* Effect.tryPromise({
-            catch: toSessionHostError,
-            try: async () => await session.getEntry(entryId),
-          });
+          const entry = yield* trail.getEntry(entryId);
           if (entry === undefined) {
             return yield* Effect.fail(
               new SessionHostError({
@@ -397,12 +385,7 @@ export const SessionHost = {
               }),
             );
           }
-          yield* Effect.tryPromise({
-            catch: toSessionHostError,
-            try: async () => {
-              await session.moveLane(LANE, entryId);
-            },
-          });
+          yield* trail.moveLane(LANE, entryId);
           return entryId;
         }),
         compact: (customInstructions) =>
@@ -427,17 +410,10 @@ export const SessionHost = {
             ),
           ),
         getEntries,
-        getSessionStats: () =>
-          Effect.tryPromise({
-            catch: toSessionHostError,
-            try: async () => await session.getStats(),
-          }),
+        getSessionStats: () => trail.getStats(),
         getState: Effect.fn("getState")(function* () {
           const [name, { tailSeq }, snapshot, modelValue, thinkingLevelValue] = yield* Effect.all([
-            Effect.tryPromise({
-              catch: toSessionHostError,
-              try: async () => await session.getName(),
-            }),
+            trail.getName(),
             getEntries(),
             actor.snapshot,
             Ref.get(modelRef),

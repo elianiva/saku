@@ -179,16 +179,6 @@ interface ClientDeps {
   readonly listeners: ListenerRegistry;
 }
 
-const DECODE = Schema.decodeUnknownSync(WireEvent);
-
-/**
- * The single boundary where pi's opaque event payloads cross to the
- * projected `SessionWireEvent` (ADR 0005): pi's vocabulary travels the wire
- * unvalidated — saku never re-schemas it — so the narrow to pi's types
- * happens here, by name, never with a bare `as` in the method bodies.
- */
-const decodePiEvent = Schema.decodeUnknownSync(opaque<SessionWireEvent>());
-
 /** Whether a decoded response payload is the variant its command carries. */
 const isResponseVariant = <K extends ResponsePayload["_tag"]>(
   payload: ResponsePayload,
@@ -271,7 +261,9 @@ const handleFrame = Effect.fn("handleFrame")(function* (deps: ClientDeps, frame:
         // pi's event vocabulary crosses the wire unvalidated); the console
         // narrows it to the projected `SessionWireEvent` at this boundary.
         emit(deps, "event", {
-          event: decodePiEvent(eventFrame.event),
+          event: Effect.runSync(
+            Schema.decodeUnknownEffect(opaque<SessionWireEvent>())(eventFrame.event),
+          ),
           threadId: eventFrame.threadId,
         }),
       hello_ok: (helloFrame) => emit(deps, "hello_ok", helloFrame),
@@ -295,7 +287,7 @@ const decodeFrameLine = Effect.fn("decodeFrameLine")(function* (deps: ClientDeps
     yield* emit(deps, "error", { message: "malformed JSON frame from server" });
     return yield* Effect.fail(new WireError({ code: "decode", message: "malformed frame" }));
   }
-  const decoded = Result.try(() => DECODE(parsed.success));
+  const decoded = yield* Schema.decodeUnknownEffect(WireEvent)(parsed.success).pipe(Effect.result);
   if (Result.isFailure(decoded)) {
     yield* emit(deps, "error", { message: `undecodable wire frame: ${String(decoded.failure)}` });
     return yield* Effect.fail(new WireError({ code: "decode", message: "undecodable frame" }));

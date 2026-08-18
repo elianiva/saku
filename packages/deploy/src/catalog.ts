@@ -39,11 +39,11 @@ const deploymentAuthContext = (env: DeploymentEnv): AuthContext => ({
   env: async (name) => {
     const key = DEPLOYMENT_VARS.find((varName) => varName === name);
     const value = key === undefined ? undefined : env[key];
-    return await Promise.resolve(isNonEmptyString(value) ? value : undefined);
+    return isNonEmptyString(value) ? value : undefined;
   },
   // No filesystem in a DO: file probes answer "no" (the default context's
   // node:fs import also fails soft there — this is the honest answer).
-  fileExists: async () => await Promise.resolve(false),
+  fileExists: async () => false,
 });
 
 /** Build the thread DO's catalog from the deployment's bindings. */

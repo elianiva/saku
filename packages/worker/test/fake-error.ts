@@ -5,11 +5,7 @@
 
 import { Schema } from "effect";
 
-/** Alias of `Schema.TaggedError` so oxlint's Error-name call heuristic
- * doesn't demand `new` on the factory call (which would break typecheck). */
-const taggedError = Schema.TaggedError;
-
 /** A scripted failure of the fake catalog (an unimplemented or failing surface). */
-export class FakeError extends taggedError<FakeError>()("FakeError", {
+export class FakeError extends Schema.TaggedError<FakeError>()("FakeError", {
   message: Schema.String,
 }) {}

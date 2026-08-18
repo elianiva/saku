@@ -7,6 +7,7 @@
  * accepts objects made every persisted thread invisible after a restart).
  */
 
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 

@@ -28,12 +28,8 @@ import { assistantMessage, fakeCatalog, FakeRegistry } from "./fakes.ts";
 const THREAD_ID = "0123456789abcdef0123456789abcdef";
 const ENV_TOKEN = "remote-host-token";
 
-/** Alias of `Schema.TaggedError` so oxlint's Error-name call heuristic
- * doesn't demand `new` on the factory call (which would break typecheck). */
-const taggedError = Schema.TaggedError;
-
 /** A polling assertion that gave up (the host machine hadn't moved in time). */
-class TestError extends taggedError<TestError>()("TestError", {
+class TestError extends Schema.TaggedError<TestError>()("TestError", {
   message: Schema.String,
 }) {}
 

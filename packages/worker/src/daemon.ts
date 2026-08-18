@@ -1,21 +1,22 @@
 /**
  * The daemon (daemon.ts): the worker's WebSocket server, provided as a
- * scoped resource layer (`SakuDaemonLive` — the daemon-entry process runs it
- * under `Effect.never` and interrupts the fiber to shut down).
+ * scoped resource layer (`SakuDaemonLive` — the daemon-entry process runs
+ * it under `Effect.never` and interrupts the fiber to shut down).
  *
  * Serves the wire protocol (ADR 0004) over WebSocket on 127.0.0.1 (random
  * port), authenticates consoles by token, routes wire commands to the
  * registry or to per-thread session hosts, and fans session events out to
- * every connected console (stateless routing — no attach/detach). The URL is
- * published to `~/.saku/worker.url` (the CLI reads it to connect).
+ * every connected console (stateless routing — no attach/detach). The URL
+ * is published to `~/.saku/worker.url` (the CLI reads it to connect).
  *
  * This is the transitional local spine: the hub (ADR 0001) will own the
  * wire's server side in production; the daemon keeps the local stack alive
  * and speaks exactly the same protocol. Both implementations share the
  * transport-free connection core of `@saku/wire/server` (hello/version
  * auth, command routing, fan-out) and the session-command dispatch of
- * `./session-commands.ts` — the daemon contributes only the registry-based
- * hub commands, the lazy per-thread hosts, and the lifecycle.
+ * `./session-commands.ts` — the daemon contributes only the hub-command
+ * dispatch (`./hub-commands.ts`), the lazy per-thread hosts
+ * (`./host-cache.ts`), and the lifecycle.
  *
  * `SakuDaemon.make` builds the daemon inside an `Effect.gen` (the same shape
  * as `@effect/platform-node`'s `NodeSocketServer` factory): all state that
@@ -28,39 +29,13 @@
 
 import type { WebSocketServer } from "ws";
 import { NodeFileSystem } from "@effect/platform-node";
-import nodePath from "node:path";
-import { Context, Effect, FileSystem, Match, Layer, Option, Ref, Result, Semaphore } from "effect";
+import { Context, Effect, FileSystem, Layer, Option, Ref, Result } from "effect";
 
-import {
-  AddProjectResponse,
-  ArchiveThreadResponse,
-  BrowseProjectDirsResponse,
-  CreateThreadResponse,
-  DeleteThreadResponse,
-  EventFrame,
-  GetThreadResponse,
-  ImportPiSessionResponse,
-  ListPiSessionsResponse,
-  ListThreadsResponse,
-  ProjectResponse,
-  RemoveProjectResponse,
-  RenameThreadResponse,
-  ThreadChanged,
-  UnarchiveThreadResponse,
-  resolveThread,
-  shortThreadId,
-} from "@saku/wire";
+import { EventFrame, ThreadChanged, resolveThread } from "@saku/wire";
 import type {
-  PiSessionCommand,
-  ProjectCommand,
-  ResponsePayload,
   SessionCommand as SessionCommandType,
   SessionWireEvent,
-  SkillCommand,
-  ThreadCommand,
   ThreadInfo,
-  ThreadMode,
-  ThreadState,
   WireEvent,
 } from "@saku/wire";
 import { listenWs, WireServer, wsUrlOf } from "@saku/wire/server";
@@ -70,51 +45,35 @@ import { ensureAuthToken, ensureSakuDirs } from "./auth.ts";
 import { DaemonError } from "./daemon-error.ts";
 import { Paths, PathsLive, PathsTest } from "./paths.ts";
 import type { PathsLayout } from "./paths.ts";
-import { KvStore } from "@saku/store";
-import { LocalEnv } from "@saku/env";
 import {
   ThreadRegistry,
   ThreadRegistryLive,
   ThreadRegistryTest,
   RegistryKvLive,
 } from "./registry.ts";
-import type { HostRegistryApi, ThreadRecord, ThreadRegistryApi } from "./registry.ts";
-import type { RegistryError } from "./registry-error.ts";
+import type { ThreadRegistryApi } from "./registry.ts";
 import { ModelCatalog, ModelCatalogLive, ModelCatalogTest } from "./model-catalog.ts";
 import type { ModelCatalogApi } from "./model-catalog.ts";
-import { SessionHost, SessionHostError } from "./session-host.ts";
 import { runSessionCommand } from "./session-commands.ts";
-import { DoSessionRepo } from "./do-session-repo.ts";
-import { browseProjectDirs, listPiSessions, readPiSession } from "./pi-sessions/index.ts";
-import type { PiSessionData } from "./pi-sessions/index.ts";
-import { addProject, listProjects, removeProject } from "./projects.ts";
+import { runHubCommand } from "./hub-commands.ts";
+import type { HubCommandDeps } from "./hub-commands.ts";
+import { HostCache } from "./host-cache.ts";
 
 export interface DaemonOptions {
   /** Override the URL file path (tests). Defaults to ~/.saku/worker.url. */
   urlPath?: string;
 }
 
-/** The failures a wire command handler can produce. */
-type CommandError = DaemonError | RegistryError | SessionHostError;
-
-/** The wire command union the daemon routes (the four command families). */
-type HubCommand = ThreadCommand | SkillCommand | PiSessionCommand | ProjectCommand;
-
-/** The hub command with the given wire tag. */
-type HubCommandOf<Tag extends HubCommand["_tag"]> = Extract<HubCommand, { readonly _tag: Tag }>;
-
 /** The daemon's log line (the process's stdout is the worker.log file). */
 const log = (message: string) => Effect.logInfo(`[saku-worker] ${message}`);
 
-/** The skills store is hub-hosted (ADR 0007); the local daemon deliberately
- * does not implement it. */
-const skillsNotServed = () =>
-  Effect.fail(
-    new DaemonError({
-      code: "skills_not_served",
-      message: "skills are served by the hub, not the local daemon",
-    }),
-  );
+/**
+ * Fork a fire-and-forget effect with a terminal error handler: a failing
+ * socket callback must never be silent (the socket events carry no error
+ * channel back to the caller), so every fork logs its full cause.
+ */
+const fork = <E>(effect: Effect.Effect<void, E>) =>
+  void Effect.runFork(effect.pipe(Effect.catchCause(Effect.logError)));
 
 /** The daemon's startup phase failures (dirs/token/listen), all tagged. */
 const startup = (message: string) => (error: Error) =>
@@ -123,44 +82,6 @@ const startup = (message: string) => (error: Error) =>
     code: "startup",
     message: `${message}: ${error.message}`,
   });
-
-/** The create-thread fields the registry accepts (registry.ts's input contract). */
-interface CreateThreadInput {
-  autoName?: boolean;
-  cwd?: string;
-  mode?: ThreadMode;
-  name: string;
-}
-
-/** The adopted thread's default name: the session name, the first message,
- * the cwd's last segment, or a fixed fallback (pi's own list semantics). */
-const importNameOf = (session: PiSessionData) => {
-  if (session.name !== undefined) {
-    return session.name;
-  }
-  const first = session.firstMessage;
-  if (first !== undefined && first !== "(no messages)") {
-    return first.length > 80 ? `${first.slice(0, 80)}…` : first;
-  }
-  const fromCwd = session.cwd.split("/").findLast(Boolean);
-  return fromCwd ?? "pi session";
-};
-
-/** Whether a thread's pi session has ever been created (started). */
-const sessionStarted = Effect.fn("sessionStarted")(function* (
-  fs: FileSystem.FileSystem,
-  paths: PathsLayout,
-  record: Option.Option<ThreadRecord>,
-  threadId: string,
-) {
-  if (Option.isSome(record) && record.value.sessionId !== null) {
-    return true;
-  }
-  // The session's metadata key is written before any mutation (do-session.ts),
-  // so its presence means the session was created.
-  const metaPath = `${paths.threadTrailRoot(threadId)}/session/${threadId}/meta`;
-  return yield* fs.exists(metaPath).pipe(Effect.catch(() => Effect.succeed(false)));
-});
 
 /** The daemon's service surface. */
 export interface SakuDaemonApi {
@@ -184,12 +105,8 @@ export class SakuDaemon extends Context.Service<SakuDaemon, SakuDaemonApi>()("Sa
     // process's stdout — the CLI spawns it with worker.log as stdout, so
     // console output IS the log file.
     const { registry, catalog, fs, paths, urlPath } = options;
-    const hostsRef = yield* Ref.make<ReadonlyMap<string, SessionHost>>(new Map());
     const closedRef = yield* Ref.make(false);
     const serverRef = yield* Ref.make<Option.Option<WebSocketServer>>(Option.none());
-    // Serializes host construction: two concurrent first-touch commands must
-    // not build two live hosts for one thread.
-    const hostSemaphore = yield* Semaphore.make(1);
 
     // The wire core is built after the handlers (they close over the fan-out
     // helpers), so the broadcast seam is a ref filled once the core exists.
@@ -208,28 +125,6 @@ export class SakuDaemon extends Context.Service<SakuDaemon, SakuDaemonApi>()("Sa
         Effect.flatMap((broadcast) => broadcast(ThreadChanged.make({ thread }))),
       );
 
-    const tailSeqOf = (threadId: string) =>
-      Ref.get(hostsRef).pipe(
-        Effect.flatMap((hosts) => {
-          const host = hosts.get(threadId);
-          if (host === undefined) {
-            return Effect.succeed(0);
-          }
-          return host.getEntries().pipe(Effect.map(({ tailSeq }) => tailSeq));
-        }),
-      );
-
-    const infoOf = Effect.fn("infoOf")(function* (threadId: string) {
-      const tailSeq = yield* tailSeqOf(threadId);
-      const info = yield* registry.toInfo(threadId, tailSeq);
-      if (Option.isNone(info)) {
-        return yield* Effect.fail(
-          new DaemonError({ code: "unknown_thread", message: `unknown thread: ${threadId}` }),
-        );
-      }
-      return info.value;
-    });
-
     /** Resolve a user-supplied thread id/name/prefix against the registry. */
     const resolveThreadId = Effect.fn("resolveThreadId")(function* (input: string) {
       const threads = yield* registry.list();
@@ -242,230 +137,16 @@ export class SakuDaemon extends Context.Service<SakuDaemon, SakuDaemonApi>()("Sa
       return resolved.success.id;
     });
 
-    const runHubCommand = Effect.fn("runHubCommand")(function* (hubCommand: HubCommand) {
-      return yield* Match.value(hubCommand).pipe(
-        Match.withReturnType<Effect.Effect<ResponsePayload, CommandError>>(),
-        Match.tagsExhaustive({
-          add_project: Effect.fn("add_project")(function* (command: HubCommandOf<"add_project">) {
-            const project = yield* addProject(fs, paths, command.path);
-            return AddProjectResponse.make({ project });
-          }),
-          archive_thread: Effect.fn("archive_thread")(function* (
-            command: HubCommandOf<"archive_thread">,
-          ) {
-            // Archive is visibility-only (CONTEXT.md: Archive): the trail,
-            // session, and env are untouched; unarchive is always possible.
-            const threadId = yield* resolveThreadId(command.threadId);
-            const archived = yield* registry.archive(threadId);
-            if (Option.isNone(archived)) {
-              return yield* Effect.fail(
-                new DaemonError({
-                  code: "unknown_thread",
-                  message: `unknown thread: ${command.threadId}`,
-                }),
-              );
-            }
-            const info = yield* infoOf(threadId);
-            yield* emitThreadChanged(info);
-            return ArchiveThreadResponse.make({ thread: info });
-          }),
-          browse_project_dirs: Effect.fn("browse_project_dirs")(function* (
-            command: HubCommandOf<"browse_project_dirs">,
-          ) {
-            // One level of the add-project tree (CONTEXT.md: Add project):
-            // the subdirectories of the requested path, candidates marked.
-            const browse = yield* browseProjectDirs(fs, paths, command.path).pipe(
-              Effect.mapError(
-                (error) =>
-                  new DaemonError({
-                    cause: error,
-                    code: "pi_sessions",
-                    message: error.message,
-                  }),
-              ),
-            );
-            return BrowseProjectDirsResponse.make(browse);
-          }),
-          create_thread: Effect.fn("create_thread")(function* (
-            command: HubCommandOf<"create_thread">,
-          ) {
-            const createOptions: CreateThreadInput = { name: command.name };
-            if (command.cwd !== undefined) {
-              createOptions.cwd = command.cwd;
-            }
-            if (command.mode !== undefined) {
-              createOptions.mode = command.mode;
-            }
-            if (command.autoName !== undefined) {
-              createOptions.autoName = command.autoName;
-            }
-            const record = yield* registry.create(createOptions);
-            const info = yield* infoOf(record.id);
-            yield* emitThreadChanged(info);
-            return CreateThreadResponse.make({ thread: info });
-          }),
-          delete_skill: skillsNotServed,
-          delete_thread: Effect.fn("delete_thread")(function* (
-            command: HubCommandOf<"delete_thread">,
-          ) {
-            const threadId = yield* resolveThreadId(command.threadId);
-            // Capture the info before the record is removed — the broadcast
-            // tells every console the thread is gone.
-            const info = yield* infoOf(threadId);
-            const hosts = yield* Ref.get(hostsRef);
-            const host = hosts.get(threadId);
-            if (host !== undefined) {
-              yield* host.dispose();
-              yield* Ref.update(hostsRef, (current) => {
-                const next = new Map(current);
-                next.delete(threadId);
-                return next;
-              });
-            }
-            yield* registry.delete(threadId);
-            yield* emitThreadChanged(info);
-            return DeleteThreadResponse.make({});
-          }),
-          get_thread: Effect.fn("get_thread")(function* (command: HubCommandOf<"get_thread">) {
-            const threadId = yield* resolveThreadId(command.threadId);
-            const info = yield* infoOf(threadId);
-            return GetThreadResponse.make({ thread: info });
-          }),
-          import_pi_session: Effect.fn("import_pi_session")(function* (
-            command: HubCommandOf<"import_pi_session">,
-          ) {
-            // Adoption is idempotent per pi session file: one thread per
-            // source (the record's provenance field is the key).
-            const records = yield* registry.list();
-            const adopted = records.find(
-              (record) => record.source?.kind === "pi" && record.source.path === command.path,
-            );
-            if (adopted !== undefined) {
-              return yield* Effect.fail(
-                new DaemonError({
-                  code: "already_imported",
-                  message: `already imported as ${shortThreadId(adopted.id)} (${adopted.name})`,
-                }),
-              );
-            }
-            const session = yield* readPiSession(fs, paths, command.path).pipe(
-              Effect.mapError(
-                (error) =>
-                  new DaemonError({
-                    cause: error,
-                    code: "pi_sessions",
-                    message: error.message,
-                  }),
-              ),
-            );
-            const name = importNameOf(session);
-            const record = yield* registry.create({
-              cwd: session.cwd,
-              mode: "local",
-              name,
-              source: { kind: "pi", path: command.path, sessionId: session.id },
-            });
-            // Adopt the trail: replay the pi mutations into the thread's own
-            // kv store, then back-fill the session id. A failure rolls the
-            // record back — an import must be all-or-nothing.
-            const importOutcome = yield* Effect.gen(function* () {
-              const kv = yield* KvStore;
-              return yield* Effect.tryPromise({
-                catch: (error) =>
-                  new DaemonError({
-                    cause: error,
-                    code: "pi_sessions",
-                    message: `failed to import ${command.path}: ${error instanceof Error ? error.message : String(error)}`,
-                  }),
-                try: async () =>
-                  await new DoSessionRepo(kv).import(record.id, {
-                    createdAt: session.createdAt,
-                    cwd: session.cwd,
-                    mutations: session.mutations,
-                  }),
-              });
-            })
-              .pipe(Effect.provide(KvStore.file(fs, paths.threadTrailRoot(record.id))))
-              .pipe(Effect.result);
-            if (Result.isFailure(importOutcome)) {
-              yield* registry.delete(record.id);
-              return yield* Effect.fail(importOutcome.failure);
-            }
-            yield* registry.update(record.id, { sessionId: record.id });
-            const info = yield* infoOf(record.id);
-            yield* emitThreadChanged(info);
-            return ImportPiSessionResponse.make({ thread: info });
-          }),
-          import_skill: skillsNotServed,
-          list_pi_sessions: Effect.fn("list_pi_sessions")(function* (
-            command: HubCommandOf<"list_pi_sessions">,
-          ) {
-            // pi's session files live on the user's machine; only the local
-            // daemon can read them (the mirror of skills_not_served). The
-            // list is the window's scope (CONTEXT.md: Project): a filter
-            // arg scopes to one project, otherwise every added project.
-            // Unreadable dirs read as empty (pi's own list skips those
-            // silently); failures surface as DaemonError(pi_sessions).
-            const projects =
-              command.project === undefined
-                ? (yield* listProjects(fs, paths)).map((project) => project.path)
-                : [nodePath.resolve(command.project)];
-            const sessions = yield* listPiSessions(fs, paths, projects);
-            return ListPiSessionsResponse.make({ sessions });
-          }),
-          list_projects: Effect.fn("list_projects")(function* () {
-            const projects = yield* listProjects(fs, paths);
-            return ProjectResponse.make({ _tag: "list_projects", projects });
-          }),
-          list_skills: skillsNotServed,
-          list_threads: Effect.fn("list_threads")(function* () {
-            const records = yield* registry.list();
-            const threads = yield* Effect.forEach(records, (record) => infoOf(record.id), {
-              concurrency: "unbounded",
-            });
-            return ListThreadsResponse.make({ threads });
-          }),
-          remove_project: Effect.fn("remove_project")(function* (
-            command: HubCommandOf<"remove_project">,
-          ) {
-            yield* removeProject(fs, paths, command.path);
-            return RemoveProjectResponse.make({});
-          }),
-          rename_thread: Effect.fn("rename_thread")(function* (
-            command: HubCommandOf<"rename_thread">,
-          ) {
-            const threadId = yield* resolveThreadId(command.threadId);
-            const name = command.name.trim();
-            if (name.length === 0) {
-              return yield* Effect.fail(
-                new DaemonError({ code: "empty_name", message: "name must not be empty" }),
-              );
-            }
-            // A user rename wins over auto-title forever (CONTEXT.md: Auto-title).
-            yield* registry.update(threadId, { name, nameAuto: false });
-            const info = yield* infoOf(threadId);
-            yield* emitThreadChanged(info);
-            return RenameThreadResponse.make({ thread: info });
-          }),
-          unarchive_thread: Effect.fn("unarchive_thread")(function* (
-            command: HubCommandOf<"unarchive_thread">,
-          ) {
-            const threadId = yield* resolveThreadId(command.threadId);
-            const unarchived = yield* registry.unarchive(threadId);
-            if (Option.isNone(unarchived)) {
-              return yield* Effect.fail(
-                new DaemonError({
-                  code: "unknown_thread",
-                  message: `unknown thread: ${command.threadId}`,
-                }),
-              );
-            }
-            const info = yield* infoOf(threadId);
-            yield* emitThreadChanged(info);
-            return UnarchiveThreadResponse.make({ thread: info });
-          }),
-        }),
-      );
+    // The lazy per-thread hosts: the host cache owns the hosts map, the
+    // construction semaphore, and the state→thread_changed broadcast wrap.
+    const hostCache = yield* HostCache.make({
+      catalog,
+      emitSessionEvent,
+      emitThreadChanged,
+      fs,
+      log,
+      paths,
+      registry,
     });
 
     /** `catalog.available()` already projected to wire info. */
@@ -474,108 +155,34 @@ export class SakuDaemon extends Context.Service<SakuDaemon, SakuDaemonApi>()("Sa
         .available()
         .pipe(Effect.map((models) => models.map((model) => catalog.toWireInfo(model))));
 
-    /** Lazy host: constructed on first command; crashed hosts rebuild. */
-    const hostFor = (threadId: string) =>
-      hostSemaphore.withPermit(
-        Effect.gen(function* () {
-          const hosts = yield* Ref.get(hostsRef);
-          const existing = hosts.get(threadId);
-          if (existing !== undefined) {
-            if (existing.threadState !== "crashed") {
-              return existing;
-            }
-            yield* log(`thread ${threadId.slice(0, 8)} crashed; rebuilding host`);
-            yield* existing.dispose();
-            yield* Ref.update(hostsRef, (current) => {
-              const next = new Map(current);
-              next.delete(threadId);
-              return next;
-            });
-          }
-          const record = yield* registry.get(threadId);
-          if (Option.isNone(record)) {
-            return yield* Effect.fail(
-              new SessionHostError({
-                kind: "unknown_thread",
-                message: `unknown thread: ${threadId}`,
-              }),
-            );
-          }
-          // The registry's setState is an in-memory ref (not persisted, not
-          // broadcast); consoles must hear working → idle, so wrap it: every
-          // state push fans a thread_changed out (CONTEXT.md: Thread — state
-          // is a channel every console reads). The host view is the narrow
-          // seam (get/update/setState) adapted over the full registry.
-          const broadcastState = (id: string, state: ThreadState) =>
-            registry.setState(id, state).pipe(
-              Effect.flatMap(() => infoOf(id)),
-              Effect.flatMap((info) => emitThreadChanged(info)),
-              Effect.ignore,
-            );
-          const registryWithBroadcast: HostRegistryApi = {
-            get: (id) => registry.get(id),
-            setState: (id, state) => broadcastState(id, state),
-            update: (id, patch) => registry.update(id, patch),
-          };
-          const host = yield* SessionHost.create({
-            catalog,
-            env: new LocalEnv(record.value.cwd, fs),
-            onRecordChanged: (changed) => {
-              void Effect.runFork(
-                infoOf(changed.id)
-                  .pipe(Effect.flatMap((info) => emitThreadChanged(info)))
-                  .pipe(Effect.catch(() => Effect.void)),
-              );
-            },
-            record: record.value,
-            registry: registryWithBroadcast,
-            sink: (event) => {
-              void Effect.runFork(emitSessionEvent(threadId, event));
-            },
-            threadId,
-          }).pipe(
-            // The daemon's trail is file-backed under the thread's directory;
-            // a Durable Object passes its own storage through the same seam.
-            Effect.provide(KvStore.file(fs, paths.threadTrailRoot(threadId))),
-          );
-          yield* Ref.update(hostsRef, (current) => new Map(current).set(threadId, host));
-          return host;
-        }),
-      );
-
-    /** The live host only when the thread's session has already started; none otherwise. */
-    const readOnlyHost = Effect.fn("readOnlyHost")(function* (threadId: string) {
-      const live = yield* Ref.get(hostsRef);
-      const existing = live.get(threadId);
-      if (existing !== undefined) {
-        return Option.some(existing);
-      }
-      const record = yield* registry.get(threadId);
-      if (Option.isNone(record)) {
-        return Option.none();
-      }
-      const started = yield* sessionStarted(fs, paths, record, threadId);
-      if (!started) {
-        return Option.none();
-      }
-      return Option.some(yield* hostFor(threadId));
-    });
-
     const handleSessionCommand = Effect.fn("handleSessionCommand")(function* (
       threadIdInput: string,
       command: SessionCommandType,
     ) {
       const threadId = yield* resolveThreadId(threadIdInput);
       return yield* runSessionCommand(
-        { availableModels, hostFor, readOnlyHost },
+        {
+          availableModels,
+          hostFor: hostCache.hostFor,
+          readOnlyHost: hostCache.readOnlyHost,
+        },
         threadId,
         command,
       );
     });
 
+    const hubCommandDeps: HubCommandDeps = {
+      emitThreadChanged,
+      fs,
+      hostCache,
+      paths,
+      registry,
+      resolveThreadId,
+    };
+
     const core: WireServerApi = yield* WireServer.make({
       handlers: {
-        runHubCommand,
+        runHubCommand: (command) => runHubCommand(hubCommandDeps, command),
         runSessionCommand: handleSessionCommand,
       },
       log,
@@ -593,9 +200,7 @@ export class SakuDaemon extends Context.Service<SakuDaemon, SakuDaemonApi>()("Sa
       }
       yield* Ref.set(closedRef, true);
       yield* core.close();
-      const hosts = yield* Ref.get(hostsRef);
-      yield* Effect.forEach([...hosts.values()], (host) => host.dispose(), { discard: true });
-      yield* Ref.set(hostsRef, new Map());
+      yield* hostCache.disposeAll();
       const server = yield* Ref.get(serverRef);
       if (Option.isSome(server)) {
         yield* Effect.callback((resume) => {
@@ -616,11 +221,11 @@ export class SakuDaemon extends Context.Service<SakuDaemon, SakuDaemonApi>()("Sa
     // startup failures, exactly as the hand-rolled listener was.
     const server = yield* listenWs<DaemonError>({
       onConnection: (socket) => {
-        void Effect.runFork(Effect.scoped(core.runConnection(socket)));
+        fork(Effect.scoped(core.runConnection(socket)));
       },
       onError: (error) => {
         // The listenWs mapper is a sync callback: fork the log.
-        void Effect.runFork(log(`server error: ${error.message}`));
+        fork(log(`server error: ${error.message}`));
         return new DaemonError({ cause: error, code: "startup", message: error.message });
       },
     });
@@ -684,7 +289,7 @@ export const SakuDaemonTest = (home?: string) =>
   );
 
 /** The daemon with its dependencies wired: what daemon-entry runs. */
-export const SakuDaemonLayer: Layer.Layer<SakuDaemon, DaemonError | RegistryError> =
+export const SakuDaemonLayer: Layer.Layer<SakuDaemon, DaemonError> =
   SakuDaemonLive().pipe(
     Layer.provide(ThreadRegistryLive),
     // The registry's store: a file backend rooted at the threads dir (the

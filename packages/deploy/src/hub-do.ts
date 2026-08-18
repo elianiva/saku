@@ -51,9 +51,6 @@ const opaque = <T>() =>
     description: "opaque payload, carried unvalidated (ADR 0005)",
   });
 
-/** The boundary where the push channel's opaque event crosses to the projected `SessionWireEvent`. */
-const decodeSessionEvent = Schema.decodeUnknownSync(opaque<SessionWireEvent>());
-
 export const IDLE_STOP_DEFAULT_MS = 300_000;
 
 /** The Box adapter with the deployment's key and embedded bundle.
@@ -245,13 +242,19 @@ export class SakuHubDO {
     return await Match.value(push).pipe(
       Match.tagsExhaustive({
         idleStopFired: async ({ threadId }) => {
-          try {
-            await Effect.runPromise(hub.idleStopFired(threadId));
-            return jsonOk({});
-          } catch (error) {
-            const { kind, message } = rpcErrorOf(error);
-            return jsonError(kind, message);
-          }
+          return await Effect.runPromise(
+            Effect.gen(function* () {
+              yield* hub.idleStopFired(threadId);
+              return jsonOk({});
+            }).pipe(
+              Effect.catch((error) =>
+                Effect.sync(() => {
+                  const { kind, message } = rpcErrorOf(error);
+                  return jsonError(kind, message);
+                }),
+              ),
+            ),
+          );
         },
         report: ({ threadId, report }) => {
           hub.events.report(threadId, report);
@@ -260,7 +263,11 @@ export class SakuHubDO {
         sessionEvent: ({ threadId, event, tailSeq }) => {
           // The event is opaque to the hub (ADR 0005) — the same seam
           // the wire client applies to `EventFrame.event`.
-          hub.events.sessionEvent(threadId, decodeSessionEvent(event), tailSeq);
+          hub.events.sessionEvent(
+            threadId,
+            Effect.runSync(Schema.decodeUnknownEffect(opaque<SessionWireEvent>())(event)),
+            tailSeq,
+          );
           return jsonOk({});
         },
       }),

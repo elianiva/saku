@@ -79,19 +79,18 @@ export const fakeCatalog = (options: { completions?: string[] } = {}) => {
   const completions = [...(options.completions ?? [])];
   const models: MutableModels = {
     cancelDeferred: async () => {
-      await Promise.resolve();
+      // noop
     },
     checkAuth: async (): Promise<AuthCheck | undefined> => {
-      await Promise.resolve();
       return undefined;
     },
     clearProviders: () => {
       // scripted: no providers to clear
     },
-    complete: async () => await Promise.resolve(assistantMessage("")),
+    complete: async () => assistantMessage(""),
     completeSimple: async (_model, _context, _options) => {
       const text = completions.shift() ?? "a canned completion";
-      return await Promise.resolve(assistantMessage(text));
+      return assistantMessage(text);
     },
     deleteProvider: (_id) => {
       // scripted: no providers to delete
@@ -100,10 +99,9 @@ export const fakeCatalog = (options: { completions?: string[] } = {}) => {
       throw new FakeError({ message: "fake fetchDeferred" });
     },
     getAuth: async (): Promise<AuthResult | undefined> => {
-      await Promise.resolve();
       return undefined;
     },
-    getAvailable: async () => await Promise.resolve([testModel()]),
+    getAvailable: async () => [testModel()],
     getModel: () => testModel(),
     getModels: () => [testModel()],
     getProvider: (): Provider | undefined => undefined,
@@ -112,9 +110,9 @@ export const fakeCatalog = (options: { completions?: string[] } = {}) => {
       throw new FakeError({ message: "fake login" });
     },
     logout: async () => {
-      await Promise.resolve();
+      // noop
     },
-    refresh: async () => await Promise.resolve({ aborted: false, errors: new Map() }),
+    refresh: async () => ({ aborted: false, errors: new Map() }),
     setProvider: (_provider) => {
       // scripted: no providers to set
     },

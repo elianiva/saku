@@ -19,13 +19,11 @@ import { HUB_INSTANCE } from "./env.ts";
 import type { DeploymentEnv } from "./env.ts";
 import type { CommandPayload, CreatePayload, HubPush, SetEnvHandlePayload } from "./do-protocol.ts";
 
-/** Tagged errors in this file are declared through this alias (Schema.TaggedError). */
-const taggedError = Schema.TaggedError;
 
 /** A failed DO-to-DO call: the endpoint, the error kind, and the message. */
-export class RpcError extends taggedError<RpcError>()("RpcError", {
+export class RpcError extends Schema.TaggedError<RpcError>()("RpcError", {
   cause: Schema.optional(Schema.Unknown),
-  /** The failure's discriminator (a SessionHostError kind, a RegistryError op, "malformed"). */
+  /** The failure's discriminator (a SessionHostError kind, a HubError kind, or "malformed"). */
   kind: Schema.String,
   message: Schema.String,
   path: Schema.String,
@@ -64,56 +62,97 @@ const CommandResultPayload = Schema.Struct({
   tailSeq: Schema.Number,
 });
 
-/** Parse and validate one DO's JSON response into the envelope, or throw the RPC error. */
-const parseEnvelope = async (response: Response, path: string, failure: string) => {
-  const parsed = Schema.decodeUnknownOption(RpcEnvelopeSchema)(await response.json());
-  if (Option.isNone(parsed)) {
-    throw new RpcError({
-      kind: "malformed",
-      message: `${failure} (${response.status})`,
-      path,
-      status: response.status,
+/** Parse and validate one DO's JSON response into the envelope, or surface the RPC error. */
+const parseEnvelope = (response: Response, path: string, failure: string) =>
+  Effect.gen(function* () {
+    const json = yield* Effect.tryPromise({
+      catch: () =>
+        new RpcError({
+          kind: "malformed",
+          message: `${failure} (${response.status})`,
+          path,
+          status: response.status,
+        }),
+      try: () => response.json(),
     });
-  }
-  const envelope = parsed.value;
-  if (!response.ok || !envelope.ok) {
-    const error = envelope.ok ? undefined : envelope.error;
-    throw new RpcError({
-      kind: error?.kind ?? "malformed",
-      message: error?.message ?? `${failure} (${response.status})`,
-      path,
-      status: response.status,
-    });
-  }
-  return envelope;
-};
+    const parsed = Schema.decodeUnknownOption(RpcEnvelopeSchema)(json);
+    if (Option.isNone(parsed)) {
+      return yield* Effect.fail(
+        new RpcError({
+          kind: "malformed",
+          message: `${failure} (${response.status})`,
+          path,
+          status: response.status,
+        }),
+      );
+    }
+    const envelope = parsed.value;
+    if (!response.ok || !envelope.ok) {
+      const error = envelope.ok ? undefined : envelope.error;
+      return yield* Effect.fail(
+        new RpcError({
+          kind: error?.kind ?? "malformed",
+          message: error?.message ?? `${failure} (${response.status})`,
+          path,
+          status: response.status,
+        }),
+      );
+    }
+    return envelope;
+  });
+
+/** Fetch from a DO stub, surfacing network errors as RpcError. */
+const fetchDo = (
+  stub: { fetch: (url: string, init?: RequestInit) => Promise<Response> },
+  url: string,
+  body: string,
+  path: string,
+) =>
+  Effect.tryPromise({
+    catch: (error) =>
+      new RpcError({
+        kind: "unknown",
+        message: String(error),
+        path,
+      }),
+    try: () =>
+      stub.fetch(url, {
+        body,
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      }),
+  });
 
 /** Call one endpoint on the hub DO. */
-export const hubRpc = async (env: DeploymentEnv, path: string, body: HubPush) => {
-  const stub = env.HUB.get(env.HUB.idFromName(HUB_INSTANCE));
-  const response = await stub.fetch(`https://hub.internal${path}`, {
-    body: JSON.stringify(body),
-    headers: { "content-type": "application/json" },
-    method: "POST",
+export const hubRpc = (env: DeploymentEnv, path: string, body: HubPush) =>
+  Effect.gen(function* () {
+    const stub = env.HUB.get(env.HUB.idFromName(HUB_INSTANCE));
+    const response = yield* fetchDo(
+      stub,
+      `https://hub.internal${path}`,
+      JSON.stringify(body),
+      path,
+    );
+    return yield* parseEnvelope(response, path, `hub rpc ${path} failed`);
   });
-  return await parseEnvelope(response, path, `hub rpc ${path} failed`);
-};
 
 /** Call one endpoint on a thread DO (the instance named by threadId). */
-export const threadRpc = async (
+export const threadRpc = (
   env: DeploymentEnv,
   threadId: string,
   path: string,
   body: ThreadRpcBody,
-) => {
-  const stub = env.THREAD.get(env.THREAD.idFromName(threadId));
-  const response = await stub.fetch(`https://thread.internal${path}`, {
-    body: JSON.stringify(body),
-    headers: { "content-type": "application/json" },
-    method: "POST",
+) =>
+  Effect.gen(function* () {
+    const stub = env.THREAD.get(env.THREAD.idFromName(threadId));
+    const response = yield* fetchDo(
+      stub,
+      `https://thread.internal${path}`,
+      JSON.stringify(body),
+      path,
+    );
+    return yield* parseEnvelope(response, path, `thread rpc ${path} failed`);
   });
-  return await parseEnvelope(response, path, `thread rpc ${path} failed`);
-};
 
 /**
  * The worker's record for the `/create` RPC: the hub's registry record
@@ -135,37 +174,35 @@ const workerRecordOf = (record: HubRecord) => ({
 export const threadWorkerRef = (env: DeploymentEnv): ThreadWorkerRef => ({
   close: () => Effect.void,
   command: (threadId, command) =>
-    Effect.tryPromise({
-      catch: toHubError("thread command"),
-      try: async () => {
-        const envelope = await threadRpc(env, threadId, "/command", { command });
-        const payload = Schema.decodeUnknownOption(CommandResultPayload)(envelope.payload);
-        if (Option.isNone(payload)) {
-          throw new RpcError({
+    Effect.gen(function* () {
+      const envelope = yield* threadRpc(env, threadId, "/command", { command });
+      const payload = Schema.decodeUnknownOption(CommandResultPayload)(envelope.payload);
+      if (Option.isNone(payload)) {
+        return yield* Effect.fail(
+          new RpcError({
             kind: "malformed",
             message: "thread rpc /command returned a malformed payload",
             path: "/command",
-          });
-        }
-        return payload.value;
-      },
-    }),
+          }),
+        );
+      }
+      return payload.value;
+    }).pipe(Effect.catch((e) => Effect.fail(toHubError("thread command")(e)))),
   create: (threadId, record) =>
-    Effect.tryPromise({
-      catch: toHubError("create thread worker"),
-      try: async () =>
-        await threadRpc(env, threadId, "/create", { record: workerRecordOf(record) }),
-    }).pipe(Effect.andThen(Effect.void)),
+    threadRpc(env, threadId, "/create", { record: workerRecordOf(record) }).pipe(
+      Effect.andThen(Effect.void),
+      Effect.catch((e) => Effect.fail(toHubError("create thread worker")(e))),
+    ),
   delete: (threadId) =>
-    Effect.tryPromise({
-      catch: toHubError("delete thread worker"),
-      try: async () => await threadRpc(env, threadId, "/delete", {}),
-    }).pipe(Effect.andThen(Effect.void)),
+    threadRpc(env, threadId, "/delete", {}).pipe(
+      Effect.andThen(Effect.void),
+      Effect.catch((e) => Effect.fail(toHubError("delete thread worker")(e))),
+    ),
   setEnvHandle: (threadId, handle) =>
-    Effect.tryPromise({
-      catch: toHubError("set env handle"),
-      try: async () => await threadRpc(env, threadId, "/set-env-handle", { handle }),
-    }).pipe(Effect.andThen(Effect.void)),
+    threadRpc(env, threadId, "/set-env-handle", { handle }).pipe(
+      Effect.andThen(Effect.void),
+      Effect.catch((e) => Effect.fail(toHubError("set env handle")(e))),
+    ),
 });
 
 /** Set (or clear) a thread's env handle from the hub. */
@@ -174,33 +211,31 @@ export const setThreadEnvHandle = (
   threadId: string,
   handle: EnvHandle | null,
 ) =>
-  Effect.tryPromise({
-    catch: toHubError("set env handle"),
-    try: async () => await threadRpc(env, threadId, "/set-env-handle", { handle }),
-  }).pipe(Effect.andThen(Effect.void));
+  threadRpc(env, threadId, "/set-env-handle", { handle }).pipe(
+    Effect.andThen(Effect.void),
+    Effect.catch((e) => Effect.fail(toHubError("set env handle")(e))),
+  );
 
 /** The idle-stop controller: arm/disarm the thread DO's durable alarm. */
 export const threadIdleStop = (env: DeploymentEnv) => ({
   arm: (threadId: string) =>
-    Effect.tryPromise({
-      catch: toHubError("arm idle-stop"),
-      try: async () => await threadRpc(env, threadId, "/arm-idle", {}),
-    }).pipe(Effect.andThen(Effect.void)),
+    threadRpc(env, threadId, "/arm-idle", {}).pipe(
+      Effect.andThen(Effect.void),
+      Effect.catch((e) => Effect.fail(toHubError("arm idle-stop")(e))),
+    ),
   disarm: (threadId: string) =>
-    Effect.tryPromise({
-      catch: toHubError("disarm idle-stop"),
-      try: async () => await threadRpc(env, threadId, "/disarm-idle", {}),
-    }).pipe(Effect.result, Effect.asVoid),
+    threadRpc(env, threadId, "/disarm-idle", {}).pipe(
+      Effect.catch((e) => Effect.fail(toHubError("disarm idle-stop")(e))),
+      Effect.result,
+      Effect.asVoid,
+    ),
 });
 
 /** Push a report/event/idle-stop firing to the hub (best-effort). */
 export const pushToHub = (env: DeploymentEnv, push: HubPush) => {
-  void (async () => {
-    try {
-      await hubRpc(env, "/push", push);
-    } catch (error) {
-      // The push is a plain promise boundary: fork the log.
-      void Effect.runFork(Effect.logError(`[thread-do] hub push failed: ${String(error)}`));
-    }
-  })();
+  void Effect.runPromise(
+    hubRpc(env, "/push", push).pipe(
+      Effect.catch((error) => Effect.logError(`[thread-do] hub push failed: ${String(error)}`)),
+    ),
+  );
 };

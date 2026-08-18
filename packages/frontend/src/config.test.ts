@@ -37,8 +37,8 @@ const stubFetch = (body: JsonValue) => {
       if (body === null) {
         return { ok: false };
       }
-      const response = { json: async () => await Promise.resolve(body), ok: true };
-      return await Promise.resolve(response);
+      const response = { json: async () => body, ok: true };
+      return response;
     }),
   );
 };

@@ -12,44 +12,33 @@ import { Schema } from "effect";
 // The canonical user-facing message helper lives in the wire's server core
 // (wire/src/server-core.ts); the hub re-exports it rather than re-defining it.
 export { messageOf } from "@saku/wire/server";
-// Aliased so the TaggedError class declaration below stays a plain call
-// (oxlint's throw-new-error would demand `new`, which breaks the schema
-// typecheck — `TaggedError` is a function returning a class, not a class).
-const tagged = Schema.TaggedError;
 
-/** The hub error categories (`HubError.kind`). */
-export type HubErrorKind =
+/** The hub error categories (`HubError.kind`) — single source of truth. */
+export const HubErrorKinds = Schema.Literals([
   // thread lookups/record failures surfaced as hub errors
-  | "registry"
+  "registry",
   // workerRef forwarding/create failures
-  | "worker"
+  "worker",
   // env ensure/release failures
-  | "provisioner"
+  "provisioner",
   // unknown/ambiguous thread input
-  | "resolution"
+  "resolution",
   // unknown skill
-  | "skills"
+  "skills",
   // local-daemon-only commands (the hub never sees ~/.pi)
-  | "pi_sessions"
+  "pi_sessions",
   // local-daemon-only commands (the window's scope lives on the machine)
-  | "projects"
+  "projects",
   // command validation (empty name, missing threadId)
-  | "command"
+  "command",
   // the hub's wire server failed to come up
-  | "startup";
+  "startup",
+] as const);
 
-export class HubError extends tagged<HubError>()("HubError", {
+export type HubErrorKind = typeof HubErrorKinds.Type;
+
+export class HubError extends Schema.TaggedError<HubError>()("HubError", {
   cause: Schema.optional(Schema.Unknown),
-  kind: Schema.Literals([
-    "registry",
-    "worker",
-    "provisioner",
-    "resolution",
-    "skills",
-    "pi_sessions",
-    "projects",
-    "command",
-    "startup",
-  ]),
+  kind: HubErrorKinds,
   message: Schema.String,
 }) {}

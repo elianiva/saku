@@ -19,10 +19,9 @@ import type {
 } from "../remote-machine.ts";
 import type { EnvProvisioner } from "../provisioner.ts";
 
-const taggedError = Schema.TaggedError;
 
 /** A failure of the Box API (auth, limits, provisioning, transport). */
-export class BoxError extends taggedError<BoxError>()("BoxError", {
+export class BoxError extends Schema.TaggedError<BoxError>()("BoxError", {
   body: Schema.optional(Schema.Unknown),
   message: Schema.String,
   status: Schema.optional(Schema.Number),
@@ -100,7 +99,9 @@ export const BoxApi = {
           new BoxError({ body: error, message: `box api read failed: ${String(error)}` }),
         try: async () => await response.text(),
       });
-      const parsed = Result.try(() => Schema.decodeUnknownSync(EnvelopeSchema)(JSON.parse(text)));
+      const parsed = yield* Schema.decodeUnknownEffect(EnvelopeSchema)(JSON.parse(text)).pipe(
+        Effect.result,
+      );
       const envelope = Result.isSuccess(parsed) ? parsed.success : undefined;
       if (!response.ok) {
         return yield* Effect.fail(

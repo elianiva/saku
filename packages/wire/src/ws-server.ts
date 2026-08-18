@@ -31,8 +31,13 @@ import { Effect, Schema } from "effect";
 // typecheck — `TaggedError` is a function returning a class, not a class).
 const tagged = Schema.TaggedError;
 
+/** The ws-server error kinds (`WsServerError.kind`) — single source of truth. */
+export const WsServerErrorKinds = Schema.Literals(["no_address"] as const);
+
+export type WsServerErrorKind = typeof WsServerErrorKinds.Type;
+
 export class WsServerError extends tagged<WsServerError>()("WsServerError", {
-  kind: Schema.Literals(["no_address"]),
+  kind: WsServerErrorKinds,
   message: Schema.String,
 }) {}
 

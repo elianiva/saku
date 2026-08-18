@@ -33,8 +33,6 @@ const CredentialSchema = Schema.declare((value): value is Credential => {
   return value.type === "api_key" || value.type === "oauth";
 });
 
-const DECODE_AUTH_JSON = Schema.decodeUnknownSync(Schema.Record(Schema.String, CredentialSchema));
-
 /** Credential store over pi's auth.json (`Record<providerId, Credential>`). */
 export class AuthJsonCredentialStore implements CredentialStore {
   private readonly path: string;
@@ -66,7 +64,9 @@ export class AuthJsonCredentialStore implements CredentialStore {
       }
       // SAFETY: JSON.parse returns any; pinning to unknown makes the
       // boundary decode the only validation the file content passes through.
-      const parsed = Result.try(() => DECODE_AUTH_JSON(JSON.parse(content.success) as unknown));
+      const parsed = Schema.decodeUnknownResult(Schema.Record(Schema.String, CredentialSchema))(
+        JSON.parse(content.success) as unknown,
+      );
       if (Result.isFailure(parsed)) {
         yield* Effect.logError(`[worker] failed to read auth.json: ${String(parsed.failure)}`);
         return new AuthJsonCredentialStore(path, fs, {});
@@ -76,16 +76,14 @@ export class AuthJsonCredentialStore implements CredentialStore {
   }
 
   async read(providerId: string) {
-    return await Promise.resolve(this.data[providerId]);
+    return this.data[providerId];
   }
 
   async list() {
-    return await Promise.resolve(
-      Object.entries(this.data).map(([providerId, credential]) => ({
-        providerId,
-        type: credential.type,
-      })),
-    );
+    return Object.entries(this.data).map(([providerId, credential]) => ({
+      providerId,
+      type: credential.type,
+    }));
   }
 
   async modify(

@@ -5,7 +5,6 @@
 
 import { describe, expect, it } from "vitest";
 import { tmpdir } from "node:os";
-import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { NodeFileSystem } from "@effect/platform-node";
 import type { Layer } from "effect";
@@ -43,16 +42,12 @@ const record = (): ThreadRecord => ({
   sessionId: null,
 });
 
-/** Wait for the host's lifecycle tag (the machine moves asynchronously). */
 /** A polling assertion that gave up (the host machine hadn't moved in time). */
-/** Alias of `Schema.TaggedError` so oxlint's Error-name call heuristic
- * doesn't demand `new` on the factory call (which would break typecheck). */
-const taggedError = Schema.TaggedError;
-
-class TestError extends taggedError<TestError>()("TestError", {
+class TestError extends Schema.TaggedError<TestError>()("TestError", {
   message: Schema.String,
 }) {}
 
+/** Wait for the host's lifecycle tag (the machine moves asynchronously). */
 const waitForState = async (host: SessionHost, state: HostState, timeoutMs = 3000) => {
   const deadline = Date.now() + timeoutMs;
   const poll = async (): Promise<void> => {

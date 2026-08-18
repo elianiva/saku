@@ -9,16 +9,15 @@
  *
  * Provided as a service (`ThreadRegistryLive`) so the daemon's command
  * handlers compose it with the catalog; missing records are `Option.none`,
- * storage defects die on the seam (error channel `never` — the shape keeps
- * its `RegistryError` channel, but the layer no longer produces it).
+ * storage defects die on the seam (error channel `never` — the registry has
+ * no recoverable failures of its own).
  */
 
-import { Context, Effect, FileSystem, Layer, Option, Ref } from "effect";
+import { Context, DateTime, Effect, FileSystem, Layer, Option, Ref } from "effect";
 import type { ThreadInfo, ThreadMode, ThreadSource, ThreadState } from "@saku/wire";
 
-import { jsonRecords, KvStore } from "@saku/store";
+import { jsonRecords, KvStore, WorkerRecordKey } from "@saku/store";
 import { Paths, PathsTest } from "./paths.ts";
-import type { RegistryError } from "./registry-error.ts";
 import type { ThreadRecord } from "./registry-record.ts";
 
 export { ThreadRecordSchema, type ThreadRecord } from "./registry-record.ts";
@@ -30,17 +29,17 @@ export { ThreadRecordSchema, type ThreadRecord } from "./registry-record.ts";
  * create/delete threads or project wire info — the hub/daemon own those.
  */
 export interface HostRegistryApi {
-  readonly get: (threadId: string) => Effect.Effect<Option.Option<ThreadRecord>, RegistryError>;
+  readonly get: (threadId: string) => Effect.Effect<Option.Option<ThreadRecord>>;
   readonly update: (
     threadId: string,
     patch: Partial<Pick<ThreadRecord, "name" | "sessionId" | "nameAuto">>,
-  ) => Effect.Effect<Option.Option<ThreadRecord>, RegistryError>;
+  ) => Effect.Effect<Option.Option<ThreadRecord>>;
   /** Liveness state derived by hosts; not persisted (re-derived at boot). */
   readonly setState: (threadId: string, state: ThreadState) => Effect.Effect<void>;
 }
 
 export interface ThreadRegistryApi extends HostRegistryApi {
-  readonly list: () => Effect.Effect<readonly ThreadRecord[], RegistryError>;
+  readonly list: () => Effect.Effect<readonly ThreadRecord[]>;
   readonly create: (input: {
     name: string;
     /** Defaults to the daemon's working directory (local-only semantics, ADR 0003). */
@@ -49,15 +48,13 @@ export interface ThreadRegistryApi extends HostRegistryApi {
     autoName?: boolean;
     /** Adoption provenance for imported pi sessions (pi-sessions). */
     source?: ThreadSource;
-  }) => Effect.Effect<ThreadRecord, RegistryError>;
+  }) => Effect.Effect<ThreadRecord>;
   /** Archive a thread: visibility-only, the trail is untouched (CONTEXT.md: Archive). */
-  readonly archive: (threadId: string) => Effect.Effect<Option.Option<ThreadRecord>, RegistryError>;
+  readonly archive: (threadId: string) => Effect.Effect<Option.Option<ThreadRecord>>;
   /** Unarchive a thread: back to the active list, nothing else changes. */
-  readonly unarchive: (
-    threadId: string,
-  ) => Effect.Effect<Option.Option<ThreadRecord>, RegistryError>;
+  readonly unarchive: (threadId: string) => Effect.Effect<Option.Option<ThreadRecord>>;
   /** Delete the record AND the thread's directory (sessions included). */
-  readonly delete: (threadId: string) => Effect.Effect<boolean, RegistryError>;
+  readonly delete: (threadId: string) => Effect.Effect<boolean>;
   /** Wire projection: registry view + derived state. */
   readonly toInfo: (threadId: string, tailSeq: number) => Effect.Effect<Option.Option<ThreadInfo>>;
 }
@@ -95,14 +92,11 @@ const indexLoaded = (loaded: readonly ThreadRecord[]) => {
   const records = new Map<string, ThreadRecord>();
   const states = new Map<string, ThreadState>();
   for (const record of loaded) {
-    // Records written before auto-title (ADR 0006) have no nameAuto field;
-    // records written before archive have no archivedAt (the schema's
-    // optionalWith default fills null, this normalizes belt-and-braces).
-    records.set(record.id, {
-      ...record,
-      archivedAt: record.archivedAt ?? null,
-      nameAuto: record.nameAuto,
-    });
+    // Records written before archive have no archivedAt; the schema's
+    // optionalKey normalizes the missing key to null, this re-states it
+    // belt-and-braces. (nameAuto is required since ADR 0006 — records
+    // without it fail decode and are skipped by the layer.)
+    records.set(record.id, { ...record, archivedAt: record.archivedAt ?? null });
     states.set(record.id, "idle");
   }
   return { records, states };
@@ -159,16 +153,18 @@ export const ThreadRegistryLive = Layer.effect(
         if (record === undefined) {
           return Option.none();
         }
-        const next: ThreadRecord = { ...record, archivedAt: Date.now() };
-        yield* recordsStore.put(`${threadId}/thread.json`, next);
+        const now = yield* DateTime.now;
+        const next: ThreadRecord = { ...record, archivedAt: DateTime.toEpochMillis(now) };
+        yield* recordsStore.put(WorkerRecordKey.create(threadId), next);
         yield* Ref.update(recordsRef, (records) => new Map(records).set(threadId, next));
         return Option.some(next);
       }),
       create: Effect.fn("create")(function* (input) {
+        const now = yield* DateTime.now;
         const record = withRecordSource(
           {
             archivedAt: null,
-            createdAt: Date.now(),
+            createdAt: DateTime.toEpochMillis(now),
             cwd: input.cwd ?? cwdOf() ?? "/",
             id: crypto.randomUUID().replaceAll("-", ""),
             mode: input.mode ?? "local",
@@ -178,7 +174,7 @@ export const ThreadRegistryLive = Layer.effect(
           },
           input.source,
         );
-        yield* recordsStore.put(`${record.id}/thread.json`, record);
+        yield* recordsStore.put(WorkerRecordKey.create(record.id), record);
         yield* Ref.update(recordsRef, (records) => new Map(records).set(record.id, record));
         yield* Ref.update(statesRef, (states) => new Map(states).set(record.id, "idle"));
         return record;
@@ -198,7 +194,7 @@ export const ThreadRegistryLive = Layer.effect(
           next.delete(threadId);
           return next;
         });
-        yield* recordsStore.delete(`${threadId}/thread.json`);
+        yield* recordsStore.delete(WorkerRecordKey.create(threadId));
         // Best-effort removal of the thread's directory (sessions included);
         // the registry entry is gone either way.
         yield* fs
@@ -254,7 +250,7 @@ export const ThreadRegistryLive = Layer.effect(
           return Option.none();
         }
         const next: ThreadRecord = { ...record, archivedAt: null };
-        yield* recordsStore.put(`${threadId}/thread.json`, next);
+        yield* recordsStore.put(WorkerRecordKey.create(threadId), next);
         yield* Ref.update(recordsRef, (records) => new Map(records).set(threadId, next));
         return Option.some(next);
       }),
@@ -266,7 +262,7 @@ export const ThreadRegistryLive = Layer.effect(
           return Option.none();
         }
         const next: ThreadRecord = { ...record, ...patch };
-        yield* recordsStore.put(`${threadId}/thread.json`, next);
+        yield* recordsStore.put(WorkerRecordKey.create(threadId), next);
         yield* Ref.update(recordsRef, (records) => new Map(records).set(threadId, next));
         return Option.some(next);
       }),

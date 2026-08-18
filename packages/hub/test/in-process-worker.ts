@@ -19,7 +19,7 @@
 import type { FileSystem } from "effect";
 import { Effect, Match, Option, Ref } from "effect";
 import type { ExecutionEnv, StreamFn } from "@earendil-works/pi-agent-core";
-import { RegistryError, SessionHost } from "@saku/worker";
+import { SessionHost } from "@saku/worker";
 import type {
   ModelCatalogApi,
   PathsLayout,
@@ -125,10 +125,9 @@ export const inProcessWorker = Effect.fn("inProcessWorker")(function* (
 
   /** The host's registry view: reports every visible change to the hub. */
   const registry: ThreadRegistryApi = {
-    create: () =>
-      Effect.fail(
-        new RegistryError({ message: "in-process worker: the hub owns thread creation" }),
-      ),
+    // The hub owns thread creation; a host-side create is a wiring bug
+    // (the seam's error channel is `never`, so the guard dies loudly).
+    create: () => Effect.die(new Error("in-process worker: the hub owns thread creation")),
     delete: () => Effect.succeed(false),
     get: (threadId) =>
       Ref.get(recordsRef).pipe(

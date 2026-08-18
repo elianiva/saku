@@ -12,7 +12,7 @@
  * schema-typed here and decoded at the boundary; decode failures answer
  * the envelope's error response. Tagged errors keep their discriminator
  * across the seam: the error envelope carries `{ kind, message }` (a
- * SessionHostError's kind, a RegistryError's op, a HubError's kind, or
+ * SessionHostError's kind, a HubError's kind, or
  * "malformed"), so the caller never matches on message text.
  */
 
@@ -20,7 +20,7 @@ import { Schema } from "effect";
 import { SessionCommand, ThreadState } from "@saku/wire";
 import { EnvHandle } from "@saku/env/remote";
 import { HubError } from "@saku/hub/core";
-import { RegistryError, SessionHostError, ThreadRecordSchema } from "@saku/worker/isolate";
+import { SessionHostError, ThreadRecordSchema } from "@saku/worker/isolate";
 
 /** A JSON response from a DO endpoint (what the caller parses). */
 export interface RpcEnvelope {
@@ -38,9 +38,6 @@ export const jsonError = (kind: string, message: string) =>
 const errorKindOf = (cause: unknown) => {
   if (cause instanceof SessionHostError) {
     return cause.kind;
-  }
-  if (cause instanceof RegistryError) {
-    return cause.op ?? "registry";
   }
   if (cause instanceof HubError) {
     return cause.kind;

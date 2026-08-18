@@ -104,8 +104,6 @@ interface Client {
   readonly authed: Ref.Ref<boolean>;
 }
 
-const DECODE_COMMAND = Schema.decodeUnknownSync(Schema.Union([Hello, WireCommand]));
-
 /** Whether a decoded command is thread-scoped (session vocabulary vs. hub-level). */
 const isSessionCommand = (
   c: SessionCommand | ThreadCommand | SkillCommand | PiSessionCommand | ProjectCommand,
@@ -237,7 +235,9 @@ export class WireServer extends Context.Service<WireServer, WireServerApi>()("Wi
           void Effect.runFork(send(client, ErrorEvent.make({ message: "malformed JSON frame" })));
           return;
         }
-        const decoded = Result.try(() => DECODE_COMMAND(value.success));
+        const decoded = Schema.decodeUnknownResult(Schema.Union([Hello, WireCommand]))(
+          value.success,
+        );
         if (Result.isFailure(decoded)) {
           void Effect.runFork(send(client, ErrorEvent.make({ message: "undecodable message" })));
           return;

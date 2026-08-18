@@ -118,6 +118,7 @@ export type {
   SessionStats,
   ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
+export { opaque } from "./opaque.ts";
 export {
   DeleteSkillCommand,
   DeleteSkillResponse,

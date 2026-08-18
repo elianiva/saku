@@ -64,12 +64,12 @@ export class StubEnv implements ExecutionEnv {
   }
 
   async absolutePath(filePath: string) {
-    return await Promise.resolve(okResult(norm(filePath, this.cwd)));
+    return okResult(norm(filePath, this.cwd));
   }
 
   async joinPath(parts: string[]) {
     void this.cwd;
-    return await Promise.resolve(okResult(path.join(...parts)));
+    return okResult(path.join(...parts));
   }
 
   async readTextFile(filePath: string) {
@@ -77,7 +77,7 @@ export class StubEnv implements ExecutionEnv {
     if (info === undefined) {
       return errResult(notFound(filePath));
     }
-    return await Promise.resolve(okResult(new TextDecoder().decode(this.files.get(info.path))));
+    return okResult(new TextDecoder().decode(this.files.get(info.path)));
   }
 
   async readTextLines(
@@ -89,9 +89,7 @@ export class StubEnv implements ExecutionEnv {
       return content;
     }
     const lines = content.value.split("\n");
-    return await Promise.resolve(
-      okResult(options?.maxLines === undefined ? lines : lines.slice(0, options.maxLines)),
-    );
+    return okResult(options?.maxLines === undefined ? lines : lines.slice(0, options.maxLines));
   }
 
   async readBinaryFile(filePath: string) {
@@ -99,12 +97,12 @@ export class StubEnv implements ExecutionEnv {
     if (info === undefined) {
       return errResult(notFound(filePath));
     }
-    return await Promise.resolve(okResult(this.files.get(info.path) ?? new Uint8Array()));
+    return okResult(this.files.get(info.path) ?? new Uint8Array());
   }
 
   async writeFile(filePath: string, content: string | Uint8Array) {
     this.writeFileSync(filePath, content);
-    return await Promise.resolve(okVoid());
+    return okVoid();
   }
 
   async appendFile(filePath: string, content: string | Uint8Array) {
@@ -113,7 +111,7 @@ export class StubEnv implements ExecutionEnv {
     const bytes = isText(content) ? new TextEncoder().encode(content) : content;
     const next = existing === undefined ? bytes : new Uint8Array([...existing, ...bytes]);
     this.files.set(target, next);
-    return await Promise.resolve(okVoid());
+    return okVoid();
   }
 
   async renameFile(sourcePath: string, destinationPath: string) {
@@ -124,14 +122,12 @@ export class StubEnv implements ExecutionEnv {
     }
     this.files.delete(source);
     this.files.set(norm(destinationPath, this.cwd), value);
-    return await Promise.resolve(okVoid());
+    return okVoid();
   }
 
   async fileInfo(filePath: string) {
     const info = this.fileInfoFor(filePath);
-    return await Promise.resolve(
-      info === undefined ? errResult(notFound(filePath)) : okResult(info),
-    );
+    return info === undefined ? errResult(notFound(filePath)) : okResult(info);
   }
 
   async listDir(filePath: string) {
@@ -156,16 +152,16 @@ export class StubEnv implements ExecutionEnv {
         }
       }
     }
-    return await Promise.resolve(okResult(entries));
+    return okResult(entries);
   }
 
   async canonicalPath(filePath: string) {
-    return await Promise.resolve(okResult(norm(filePath, this.cwd)));
+    return okResult(norm(filePath, this.cwd));
   }
 
   async exists(filePath: string) {
     const target = norm(filePath, this.cwd);
-    return await Promise.resolve(okResult(this.files.has(target) || this.dirs.has(target)));
+    return okResult(this.files.has(target) || this.dirs.has(target));
   }
 
   async createDir(filePath: string, options?: { recursive?: boolean }) {
@@ -178,7 +174,7 @@ export class StubEnv implements ExecutionEnv {
         current = path.dirname(current);
       }
     }
-    return await Promise.resolve(okVoid());
+    return okVoid();
   }
 
   async remove(filePath: string, options?: { recursive?: boolean; force?: boolean }) {
@@ -200,36 +196,31 @@ export class StubEnv implements ExecutionEnv {
     } else if (this.dirs.delete(target)) {
       removed = true;
     }
-    return await Promise.resolve(
-      removed || options?.force === true ? okVoid() : errResult(notFound(filePath)),
-    );
+    return removed || options?.force === true ? okVoid() : errResult(notFound(filePath));
   }
 
   async createTempDir(prefix?: string) {
     const filePath = `${this.cwd}/${prefix ?? "tmp-"}`;
     this.dirs.add(filePath);
-    return await Promise.resolve(okResult(filePath));
+    return okResult(filePath);
   }
 
   async createTempFile(options?: { prefix?: string; suffix?: string }) {
     const filePath = `${this.cwd}/${options?.prefix ?? ""}${Math.random().toString(36).slice(2)}${options?.suffix ?? ""}`;
     this.files.set(filePath, new Uint8Array());
-    return await Promise.resolve(okResult(filePath));
+    return okResult(filePath);
   }
 
   async cleanup() {
     void this.cwd;
-    await Promise.resolve();
   }
 
   async exec(command: string, options?: ShellExecOptions) {
     this.commands.push({ command, cwd: options?.cwd ?? this.cwd });
-    return await Promise.resolve(
-      ok<{ exitCode: number; stderr: string; stdout: string }, ExecutionError>({
-        exitCode: 0,
-        stderr: "",
-        stdout: this.bashStdout,
-      }),
-    );
+    return ok<{ exitCode: number; stderr: string; stdout: string }, ExecutionError>({
+      exitCode: 0,
+      stderr: "",
+      stdout: this.bashStdout,
+    });
   }
 }

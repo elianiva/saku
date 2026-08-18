@@ -10,25 +10,26 @@
 
 import { Schema } from "effect";
 
-/** Alias of `Schema.TaggedError` so oxlint's Error-name call heuristic
- * doesn't demand `new` on the factory call (which would break typecheck). */
-const taggedError = Schema.TaggedError;
+/** The session-host error kinds (`SessionHostError.kind`) — single source of truth. */
+export const SessionHostErrorKinds = Schema.Literals([
+  "unknown_model",
+  "no_auth",
+  "no_model",
+  "compact_prepare",
+  "pi_seam",
+  "command_failed",
+  "branch_busy",
+  "unknown_entry",
+  "unknown_thread",
+  "no_env",
+] as const);
+
+export type SessionHostErrorKind = typeof SessionHostErrorKinds.Type;
 
 /** A session-host failure: a pi-boundary, storage, or rejected command. */
-export class SessionHostError extends taggedError<SessionHostError>()("SessionHostError", {
+export class SessionHostError extends Schema.TaggedError<SessionHostError>()("SessionHostError", {
   cause: Schema.optional(Schema.Unknown),
-  kind: Schema.Literals([
-    "unknown_model",
-    "no_auth",
-    "no_model",
-    "compact_prepare",
-    "pi_seam",
-    "command_failed",
-    "branch_busy",
-    "unknown_entry",
-    "unknown_thread",
-    "no_env",
-  ]),
+  kind: SessionHostErrorKinds,
   message: Schema.String,
 }) {}
 

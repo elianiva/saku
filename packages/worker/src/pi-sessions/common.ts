@@ -15,14 +15,15 @@ import type { ImageContent, TextContent, ThinkingContent, ToolCall } from "@eare
 import type { PathsLayout } from "../paths.ts";
 import type { SessionMutation } from "../session-state.ts";
 
-/** Alias of `Schema.TaggedError` so oxlint's Error-name call heuristic
- * doesn't demand `new` on the factory call (which would break typecheck). */
-const taggedError = Schema.TaggedError;
+/** The pi-sessions error kinds (`PiSessionsError.kind`) — single source of truth. */
+export const PiSessionsErrorKinds = Schema.Literals(["scan", "not_found", "invalid"] as const);
+
+export type PiSessionsErrorKind = typeof PiSessionsErrorKinds.Type;
 
 /** The failures of the pi-sessions window. */
-export class PiSessionsError extends taggedError<PiSessionsError>()("PiSessionsError", {
+export class PiSessionsError extends Schema.TaggedError<PiSessionsError>()("PiSessionsError", {
   cause: Schema.optional(Schema.Unknown),
-  kind: Schema.Literals(["scan", "not_found", "invalid"]),
+  kind: PiSessionsErrorKinds,
   message: Schema.String,
 }) {}
 
