@@ -111,13 +111,7 @@ export {
   WireModelInfo,
 } from "./session.ts";
 export type { SessionEventFromSaku, SessionResponse, SessionWireEvent } from "./session.ts";
-export type {
-  AgentEvent,
-  CompactResult,
-  Entry,
-  SessionStats,
-  ThinkingLevel,
-} from "@earendil-works/pi-agent-core";
+export type { AgentEvent, Entry, SessionStats, ThinkingLevel } from "@earendil-works/pi-agent-core";
 export { opaque } from "./opaque.ts";
 export {
   DeleteSkillCommand,

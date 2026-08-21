@@ -21,10 +21,11 @@
 import type { Scope } from "effect";
 import { Context, Effect, Ref, Result, Schema } from "effect";
 
-import { ErrorEvent, ResponseError, ResponseOk, WireCommand } from "./envelope.ts";
+import { ErrorEvent, Pong, ResponseError, ResponseOk, WireCommand } from "./envelope.ts";
 import type { WireEvent } from "./envelope.ts";
 import { Hello, HelloOk } from "./hello.ts";
 import { decodeFrame, isSocketMessage, parseFrame, serializeFrame } from "./transport.ts";
+import type { JsonValue } from "./transport.ts";
 import type { SocketMessage } from "./transport.ts";
 import type { PiSessionCommand } from "./pi-sessions.ts";
 import type { ProjectCommand } from "./projects.ts";
@@ -115,6 +116,10 @@ const hasProcess = (value: typeof process | undefined): value is typeof process 
 
 /** The connection's close carries no payload. */
 const NO_PAYLOAD = undefined;
+
+/** Whether a parsed frame is a JSON object carrying a `_tag` (the ping check). */
+const isTaggedFrame = (value: JsonValue | undefined): value is { readonly _tag?: string } =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** The wire's server core: the shared transport-free connection discipline. */
 export class WireServer extends Context.Service<WireServer, WireServerApi>()("WireServer", {
@@ -233,6 +238,13 @@ export class WireServer extends Context.Service<WireServer, WireServerApi>()("Wi
         const value = Result.try(() => parseFrame(decodeFrame(data)));
         if (Result.isFailure(value)) {
           void Effect.runFork(send(client, ErrorEvent.make({ message: "malformed JSON frame" })));
+          return;
+        }
+        // The heartbeat needs no auth and no decode: answer before anything
+        // else so a console's keepalive survives even a pre-hello socket.
+        const first = value.success;
+        if (isTaggedFrame(first) && first._tag === "ping") {
+          void Effect.runFork(send(client, Pong.make({})));
           return;
         }
         const decoded = Schema.decodeUnknownResult(Schema.Union([Hello, WireCommand]))(

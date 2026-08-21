@@ -14,7 +14,7 @@
  */
 
 import { Schema as S } from "effect";
-import type { AgentEvent, CompactResult, Entry, SessionStats } from "@earendil-works/pi-agent-core";
+import type { AgentEvent, Entry, SessionStats } from "@earendil-works/pi-agent-core";
 
 import { opaque } from "./opaque.ts";
 import { SkillResponse } from "./skills.ts";
@@ -124,7 +124,7 @@ export const FollowUpResponse = S.TaggedStruct("follow_up", {});
 export const AbortResponse = S.TaggedStruct("abort", {});
 export const SetSteeringModeResponse = S.TaggedStruct("set_steering_mode", {});
 export const SetFollowUpModeResponse = S.TaggedStruct("set_follow_up_mode", {});
-export const CompactResponse = S.TaggedStruct("compact", { result: opaque<CompactResult>() });
+export const CompactResponse = S.TaggedStruct("compact", {});
 export const SetAutoCompactionResponse = S.TaggedStruct("set_auto_compaction", {});
 export const GetAvailableModelsResponse = S.TaggedStruct("get_available_models", {
   models: S.Array(WireModelInfo),
@@ -244,10 +244,4 @@ export const SakuSessionEvent = S.Union([
 export type SessionEventFromSaku = S.Codec.Encoded<typeof SakuSessionEvent>;
 
 // Re-exported pi types so consoles never import pi directly for the session vocabulary.
-export type {
-  AgentEvent,
-  CompactResult,
-  Entry,
-  SessionStats,
-  ThinkingLevel,
-} from "@earendil-works/pi-agent-core";
+export type { AgentEvent, Entry, SessionStats, ThinkingLevel } from "@earendil-works/pi-agent-core";

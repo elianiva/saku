@@ -20,10 +20,12 @@ import { Match, Stream, Schema as S } from "effect";
 import { Subscription } from "foldkit";
 
 import { decodeSessionEvent } from "../thread/projection.ts";
+import { NoticeDismissed } from "../thread/message.ts";
 import { Wire } from "../wire.ts";
 import type { BridgeEvent } from "../wire.ts";
 import {
   ConnectionClosed,
+  GotThreadMessage,
   RetryRequested,
   ServerErrorNotice,
   ThreadChanged,
@@ -34,6 +36,8 @@ import type { Model } from "./model.ts";
 
 /** The pause between automatic reconnect attempts while offline. */
 const RETRY_INTERVAL = "2 seconds";
+/** How long a failure notice lives without interaction (then it dismisses itself). */
+const NOTICE_TTL = "8 seconds";
 
 /** One bridged wire event, projected into the root's message vocabulary. */
 const bridgeToMessage = (event: BridgeEvent) =>
@@ -67,6 +71,22 @@ export const subscriptions = Subscription.make<Model, RootMessage, Wire>()((entr
             )
           : Stream.empty,
       modelToDependencies: (model) => ({ offline: model.conn._tag === "Offline" }),
+    },
+  ),
+  // A failure notice expires: after NOTICE_TTL it dismisses itself, so a
+  // stale error never outlives its moment (route changes clear it too;
+  // this covers the thread that just... sits there).
+  noticeExpiry: entry(
+    { hasNotice: S.Boolean },
+    {
+      dependenciesToStream: ({ hasNotice }) =>
+        hasNotice
+          ? Stream.tick(NOTICE_TTL).pipe(
+              Stream.drop(1),
+              Stream.map(() => GotThreadMessage({ message: NoticeDismissed() })),
+            )
+          : Stream.empty,
+      modelToDependencies: (model) => ({ hasNotice: model.thread.notice !== null }),
     },
   ),
   wire: Subscription.persistent(

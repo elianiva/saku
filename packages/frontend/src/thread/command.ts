@@ -13,6 +13,7 @@ import type { WireError } from "@saku/wire";
 import { Wire } from "../wire.ts";
 import {
   AbortDone,
+  AbortFailed,
   CompactionFailed,
   CompactionFinished,
   CreateFailed,
@@ -34,7 +35,8 @@ import { decodeEntry } from "./projection.ts";
  *  command bodies below catch `WireError` with these). */
 const onLoadTrailError = (error: WireError) =>
   Effect.succeed(TrailFailed({ error: error.message }));
-const onLoadStateError = () => Effect.succeed(StateFailed());
+const onLoadStateError = (error: WireError) =>
+  Effect.succeed(StateFailed({ error: error.message }));
 const onListModelsError = (error: WireError) => Effect.succeed(ModelsListFailed({ error }));
 const onSetModelError = (error: WireError) =>
   Effect.succeed(ModelSetFailed({ message: error.message }));
@@ -43,14 +45,18 @@ const onCompactError = (error: WireError) =>
   Effect.succeed(CompactionFailed({ message: error.message }));
 const onCreateError = (error: WireError) =>
   Effect.succeed(CreateFailed({ message: error.message }));
-const onAbortError = () => Effect.succeed(AbortDone());
-/** Load a thread's entry trail (reads never start a session, ADR 0004). */
+/** A failed abort is surfaced, not swallowed — the user pressed stop for a
+ *  reason, and a run that keeps streaming after a silent failure is worse
+ *  than no stop button. */
+const onAbortError = (error: WireError) => Effect.succeed(AbortFailed({ message: error.message }));
+/** Load a thread's entry trail (reads never start a session, ADR 0004).
+ *  `sinceSeq` fetches only what streamed after it — the reconnect catch-up. */
 export const LoadTrailCmd = Command.define("LoadTrail", {
-  args: { id: S.String },
-  execute: ({ id }) =>
+  args: { id: S.String, sinceSeq: S.optional(S.Number) },
+  execute: ({ id, sinceSeq }) =>
     Effect.gen(function* () {
       const { client } = yield* Wire;
-      const result = yield* client.getEntries(id, 0);
+      const result = yield* client.getEntries(id, sinceSeq);
       const decoded = yield* Effect.all(result.entries.map(decodeEntry));
       const entries = decoded.flatMap(Option.toArray);
       return TrailLoaded({ entries, tailSeq: result.tailSeq });
@@ -148,5 +154,5 @@ export const AbortCmd = Command.define("Abort", {
       yield* client.abort(id);
       return AbortDone();
     }).pipe(Effect.catchTag("WireError", onAbortError)),
-  messages: [AbortDone],
+  messages: [AbortDone, AbortFailed],
 });

@@ -17,6 +17,7 @@
 
 import { describe, expect, it } from "vitest";
 import { Schema as S } from "effect";
+import { AsyncData } from "foldkit";
 import type { Arbitrary, JsonValue } from "fast-check";
 import {
   array,
@@ -34,12 +35,12 @@ import {
   string,
   uniqueArray,
 } from "fast-check";
-import { emptyLiveRegion, foldLive, Trail } from "./live.ts";
+import { emptyLiveRegion, foldLive, foldTrailLoaded, Trail } from "./live.ts";
 import type { Live } from "./live.ts";
 import type { EntryProjection, SessionEventProjection } from "./projection.ts";
 
-/** The fold's initial state: trail idle, nothing streamed. */
-const initial = () => ({ live: emptyLiveRegion(), trail: Trail.Idle() });
+/** The fold's initial state: trail idle, nothing streamed or buffered. */
+const initial = () => ({ live: emptyLiveRegion(), pending: [], trail: Trail.Idle() });
 
 /** The single tool row of the captured-args test, failing when absent. */
 const toolRow = (state: Live) => {
@@ -133,7 +134,11 @@ const liveArb: Arbitrary<Live["live"]> = record({
   ),
 });
 
-const stateArb: Arbitrary<Live> = record({ live: liveArb, trail: trailArb });
+const stateArb: Arbitrary<Live> = record({
+  live: liveArb,
+  pending: array(entryArb, { maxLength: 3 }),
+  trail: trailArb,
+});
 
 const blockArb = record({
   text: option(string({ maxLength: 24 }), { nil: undefined }),
@@ -394,10 +399,13 @@ describe("entry_appended", () => {
         liveArb,
         entryArb,
         (data, live, incoming) => {
-          const state: Live = { live, trail: Trail.Success({ data }) };
+          const state: Live = { live, pending: [], trail: Trail.Success({ data }) };
           const next = foldLive(state, entryAppended(incoming));
           const last = data.entries.at(-1);
-          const same = last !== undefined && idOf(last.id) === idOf(incoming.id);
+          // A replayed seq (the catch-up read already delivered it) dedupes
+          // just like an identical last id does.
+          const replayed = incoming.seq !== undefined && incoming.seq <= data.tailSeq;
+          const same = (last !== undefined && idOf(last.id) === idOf(incoming.id)) || replayed;
           if (same) {
             expect(next).toEqual(state);
           } else {
@@ -424,15 +432,30 @@ describe("entry_appended", () => {
     );
   });
 
-  it("is a no-op while the trail is not loaded", () => {
+  it("buffers appends while the trail is not loaded, then merges at load", () => {
     assert(
       property(
         oneof(constant(Trail.Idle()), constant(Trail.Failure({ error: "boom" }))),
-        entryArb,
+        array(entryArb, { maxLength: 4 }),
         (trail, incoming) => {
-          const state: Live = { live: emptyLiveRegion(), trail };
-          const next = foldLive(state, entryAppended(incoming));
-          expect(next).toEqual(state);
+          // Nothing is lost while loading: every append lands in the buffer.
+          let state: Live = { live: emptyLiveRegion(), pending: [], trail };
+          for (const entry of incoming) {
+            state = foldLive(state, entryAppended(entry));
+          }
+          expect(state.pending).toEqual(incoming);
+          expect(state.trail).toEqual(trail);
+
+          // The read lands (empty from the server): the buffer merges in,
+          // deduped by id and ordered by seq, tailSeq never lowering.
+          const loaded = foldTrailLoaded(state, [], 0);
+          expect(loaded.pending).toEqual([]);
+          if (!AsyncData.isSuccess(loaded.trail)) {
+            throw new Error("expected the merged trail to be Success");
+          }
+          expect(loaded.trail.data.entries).toHaveLength(
+            new Set(incoming.map((entry) => idOf(entry.id))).size,
+          );
         },
       ),
     );
@@ -443,6 +466,7 @@ describe("entry_appended", () => {
       property(array(entryArb, { maxLength: 10 }), integer(), (entries, startSeq) => {
         let state: Live = {
           live: emptyLiveRegion(),
+          pending: [],
           trail: Trail.Success({ data: { entries: [], tailSeq: startSeq } }),
         };
         let previous = startSeq;
@@ -491,6 +515,40 @@ describe("settled, compaction, and unknown events", () => {
         const next = foldLive(state, unhandled);
         expect(next).toEqual(state);
       }),
+    );
+  });
+
+  it("trail load merges server entries and the buffer without loss", () => {
+    assert(
+      property(
+        array(entryArb, { maxLength: 4 }),
+        array(entryArb, { maxLength: 4 }),
+        integer(),
+        (serverEntries, buffered, tailSeq) => {
+          const state: Live = {
+            live: emptyLiveRegion(),
+            pending: buffered,
+            trail: Trail.Idle(),
+          };
+          const loaded = foldTrailLoaded(state, serverEntries, tailSeq);
+          expect(loaded.pending).toEqual([]);
+          if (!AsyncData.isSuccess(loaded.trail)) {
+            throw new Error("expected Success");
+          }
+          const merged = loaded.trail.data.entries;
+          // No loss, server's copy wins collisions: the distinct id set is
+          // exactly the union of both sides' ids.
+          const ids = new Set(merged.map((entry) => idOf(entry.id)));
+          const expectedDistinct = new Set(
+            [...serverEntries, ...buffered].map((entry) => idOf(entry.id)),
+          ).size;
+          expect(ids.size).toBe(expectedDistinct);
+          // Ordered by seq (unknown seqs last), and tailSeq never lowers.
+          const seqs = merged.map((entry) => entry.seq ?? Number.MAX_SAFE_INTEGER);
+          expect(seqs).toEqual([...seqs].sort((a, b) => a - b));
+          expect(loaded.trail.data.tailSeq).toBeGreaterThanOrEqual(tailSeq);
+        },
+      ),
     );
   });
 });

@@ -78,7 +78,7 @@ export const runSessionCommand = <E>(
       compact: (command) =>
         deps.hostFor(threadId).pipe(
           Effect.flatMap((host) => host.compact(command.customInstructions)),
-          Effect.map((result) => CompactResponse.make({ result })),
+          Effect.as(CompactResponse.make({})),
         ),
       follow_up: (command) =>
         deps.hostFor(threadId).pipe(

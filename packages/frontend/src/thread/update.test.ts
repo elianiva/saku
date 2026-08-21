@@ -39,10 +39,12 @@ import { filterModels } from "../presentation.ts";
 import { informRouteChanged, update } from "./update.ts";
 import { ModelPicker } from "./model.ts";
 import type { Model } from "./model.ts";
+import type { EntryProjection } from "./projection.ts";
 import { Trail } from "./live.ts";
 import type { Live } from "./live.ts";
 import {
   AbortDone,
+  AbortFailed,
   AbortRequested,
   ComposerBlurred,
   ComposerFocused,
@@ -55,6 +57,7 @@ import {
   ModelsListed,
   ModelsListFailed,
   NewThreadRequested,
+  NoticeDismissed,
   PickerMove,
   PickerQueryChanged,
   PromptAcked,
@@ -133,6 +136,12 @@ const modelPickerArb: Arbitrary<Model["modelPicker"]> = oneof(
   wireErrorArb.map((error) => ModelPicker.Failure({ error })),
 );
 
+const entryArb: Arbitrary<EntryProjection> = record({
+  id: option(string({ maxLength: 12 }), { nil: undefined }),
+  seq: option(integer(), { nil: undefined }),
+  type: option(constantFrom("message", "toolResult", "user_message"), { nil: undefined }),
+});
+
 /** Any pane model the update loop could hold. */
 const modelArb: Arbitrary<Model> = record({
   composer: string({ maxLength: 24 }),
@@ -151,6 +160,7 @@ const modelArb: Arbitrary<Model> = record({
   thinkingOpen: array(string({ maxLength: 12 }), { maxLength: 4 }),
   toolsOpen: array(string({ maxLength: 12 }), { maxLength: 4 }),
   trail: trailArb,
+  pendingEntries: array(entryArb, { maxLength: 3 }),
   usageOpen: boolean(),
 });
 
@@ -190,6 +200,7 @@ describe("thread update", () => {
           composer: "",
           composerMenu: null,
           focused: false,
+          notice: null,
           starting: false,
         });
         expect(commands).toHaveLength(1);
@@ -245,7 +256,25 @@ describe("thread update", () => {
         string({ maxLength: 24 }),
         (model, entries, tailSeq, error) => {
           const [loaded] = update(model, TrailLoaded({ entries, tailSeq }));
-          expect(loaded.trail).toEqual(Trail.Success({ data: { entries, tailSeq } }));
+          // The load merges the server's entries with anything buffered
+          // while it was in flight: deduped by id (first copy wins),
+          // ordered by seq, tailSeq never lowering.
+          const seen = new Set<string>();
+          const merged = [...entries, ...model.pendingEntries]
+            .filter((entry) => {
+              const id = entry.id ?? "";
+              if (seen.has(id)) {
+                return false;
+              }
+              seen.add(id);
+              return true;
+            })
+            .toSorted(
+              (a, b) => (a.seq ?? Number.MAX_SAFE_INTEGER) - (b.seq ?? Number.MAX_SAFE_INTEGER),
+            );
+          const nextTail = merged.reduce((max, entry) => Math.max(max, entry.seq ?? 0), tailSeq);
+          expect(loaded.trail).toEqual(Trail.Success({ data: { entries: merged, tailSeq: nextTail } }));
+          expect(loaded.pendingEntries).toEqual([]);
           const [failed] = update(model, TrailFailed({ error }));
           expect(failed.trail).toEqual(Trail.Failure({ error }));
         },
@@ -258,7 +287,9 @@ describe("thread update", () => {
       property(modelArb, string({ maxLength: 24 }), (model, message) => {
         expect(update(model, ComposerFocused())[0]).toEqual({ ...model, focused: true });
         expect(update(model, ComposerBlurred())[0]).toEqual({ ...model, focused: false });
-        expect(update(model, PromptAcked())[0]).toEqual({ ...model, composer: "" });
+        // The ack is a success of the gesture that could have failed: it
+        // clears the draft AND a stale failure notice.
+        expect(update(model, PromptAcked())[0]).toEqual({ ...model, composer: "", notice: null });
         expect(update(model, SendFailed({ message }))[0]).toEqual({ ...model, notice: message });
       }),
     );
@@ -268,9 +299,9 @@ describe("thread update", () => {
     assert(
       property(modelArb, wireModelArb, threadArb, (model, next, info) => {
         const [loaded] = update(model, StateLoaded({ info, model: next }));
-        expect(loaded).toEqual({ ...model, info, model: next });
-        const [failed] = update(model, StateFailed());
-        expect(failed).toEqual(model);
+        expect(loaded).toEqual({ ...model, info, model: next, notice: null });
+        const [failed] = update(model, StateFailed({ error: "offline" }));
+        expect(failed).toEqual({ ...model, notice: "offline" });
       }),
     );
   });
@@ -370,6 +401,7 @@ describe("thread update", () => {
           model: next,
           modelBusy: false,
           modelPicker: ModelPicker.Idle(),
+          notice: null,
         });
         const [unresolved] = update(model, ModelSet({ model: null }));
         expect(unresolved).toEqual({
@@ -474,13 +506,15 @@ describe("thread update", () => {
     );
   });
 
-  it("AbortDone is a pure no-op (state, commands, and out are unchanged)", () => {
+  it("AbortDone clears a stale notice; AbortFailed lands one; dismiss and expiry clear both", () => {
     assert(
-      property(modelArb, (model) => {
-        const [next, commands, out] = update(model, AbortDone());
-        expect(next).toEqual(model);
-        expect(commands).toHaveLength(0);
-        expect(out).toEqual(Option.none());
+      property(modelArb, string({ maxLength: 24 }), (model, message) => {
+        const [done] = update(model, AbortDone());
+        expect(done).toEqual({ ...model, notice: null });
+        const [failed] = update(model, AbortFailed({ message }));
+        expect(failed).toEqual({ ...model, notice: message });
+        const [dismissed] = update(failed, NoticeDismissed());
+        expect(dismissed).toEqual({ ...model, notice: null });
       }),
     );
   });
@@ -496,17 +530,19 @@ describe("thread update", () => {
           model: null,
           modelBusy: false,
           modelPicker: ModelPicker.Idle(),
+          notice: null,
           pickerActive: 0,
           pickerQuery: "",
           thinkingOpen: [],
           toolsOpen: [],
           trail: Trail.Idle(),
+          pendingEntries: [],
           usageOpen: false,
         };
-        const [pinned, pinnedCommands] = informRouteChanged(model, ThreadRoute({ id }));
+        const [pinned, pinnedCommands] = informRouteChanged(model, ThreadRoute({ id }), true);
         expect(pinned).toEqual({ ...model, id, ...reset });
         expect(pinnedCommands).toHaveLength(2);
-        const [unpinned, unpinnedCommands] = informRouteChanged(model, ThreadsRoute());
+        const [unpinned, unpinnedCommands] = informRouteChanged(model, ThreadsRoute(), true);
         expect(unpinned).toEqual({ ...model, id: null, ...reset });
         expect(unpinnedCommands).toHaveLength(0);
       }),

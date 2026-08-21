@@ -18,6 +18,7 @@ import { AsyncData } from "foldkit";
 import { ThreadInfo, WireError, WireModelInfo } from "@saku/wire";
 
 import { emptyLiveRegion, LiveRegion, Trail } from "./live.ts";
+import { EntryProjection } from "./projection.ts";
 
 /** The switchable models `getAvailableModels()` returns, held as AsyncData. */
 export const ModelPicker = AsyncData.Schema(S.Array(WireModelInfo), WireError);
@@ -67,6 +68,9 @@ export const Model = S.Struct({
   toolsOpen: S.Array(S.String),
   /** The entry trail: idle → success/failure (live.ts). */
   trail: Trail.schema,
+  /** Session events buffered while the trail loads; merged in at load time
+   *  (live.ts `foldTrailLoaded` — the reconnect catch-up's losslessness). */
+  pendingEntries: S.Array(EntryProjection),
   /** The floating usage panel (the context badge's breakdown); false =
    *  closed. */
   usageOpen: S.Boolean,
@@ -90,5 +94,6 @@ export const initialModel = () => ({
   thinkingOpen: [],
   toolsOpen: [],
   trail: Trail.Idle(),
+  pendingEntries: [],
   usageOpen: false,
 });

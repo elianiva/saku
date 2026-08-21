@@ -30,11 +30,9 @@ import { evo } from "foldkit/struct";
 
 import type { AppRoute } from "../route.ts";
 import { OpenedThread } from "../root/message.ts";
-import { filterModels } from "../presentation.ts";
 import type { Wire } from "../wire.ts";
 import {
   AbortCmd,
-  CompactCmd,
   ListModelsCmd,
   LoadStateCmd,
   LoadTrailCmd,
@@ -42,15 +40,10 @@ import {
   QuickStartCmd,
   SetModelCmd,
 } from "./command.ts";
-import {
-  ClearComposerCmd,
-  InsertComposerSuggestionCmd,
-  RemoveComposerTriggerCmd,
-  SetComposerEditableCmd,
-} from "./composer.ts";
-import { composerSuggestions } from "./composer/options.ts";
-import type { ComposerSuggestion, ComposerTrigger } from "./composer/options.ts";
-import { emptyLiveRegion, foldLive, Trail } from "./live.ts";
+import { ClearComposerCmd, SetComposerEditableCmd } from "./composer.ts";
+import { reduceComposerMenu } from "./composer-menu.ts";
+import { emptyLiveRegion, foldLive, foldTrailLoaded, Trail } from "./live.ts";
+import { reduceModelPicker } from "./model-picker.ts";
 import { NewThreadRequested } from "./message.ts";
 import type { ThreadMessage, ThreadOutMessage } from "./message.ts";
 import type { Model } from "./model.ts";
@@ -70,6 +63,7 @@ const resetViewFields = {
   model: (_: Model["model"]) => null,
   modelBusy: (_: boolean) => false,
   modelPicker: (_: Model["modelPicker"]) => ModelPicker.Idle(),
+  notice: (_: Model["notice"]) => null,
   pickerActive: (_: number) => 0,
   pickerQuery: (_: string) => "",
   thinkingOpen: (_: readonly string[]) => [],
@@ -77,81 +71,10 @@ const resetViewFields = {
   // The composer element is fresh on the other surface; its focus state
   // must not leak across routes (the welcome re-focuses via OnMount).
   trail: (_: Model["trail"]) => Trail.Idle(),
+  pendingEntries: (_: Model["pendingEntries"]) => [],
   // The floating usage panel is thread-owned too — a fresh selection
   // starts closed.
   usageOpen: (_: boolean) => false,
-};
-
-const composerKind = (model: Model) => (model.id === null ? "welcome" : "thread");
-
-const composerOptions = (model: Model, trigger: ComposerTrigger, query: string) =>
-  composerSuggestions(trigger, query, model.id !== null);
-
-const updateResult = (model: Model, commands: Commands, out: Option.Option<ThreadOutMessage>) =>
-  [model, commands, out] as const;
-
-/** Close the composer menu on a picked suggestion. */
-const closeComposerMenu = (next: Model) => evo(next, { composerMenu: (_) => null });
-
-const applyComposerSuggestion = (
-  model: Model,
-  trigger: ComposerTrigger,
-  suggestion: ComposerSuggestion,
-) => {
-  const kind = composerKind(model);
-  switch (suggestion.action) {
-    case "mention": {
-      return updateResult(
-        closeComposerMenu(model),
-        [InsertComposerSuggestionCmd({ kind, trigger, value: suggestion.value })],
-        Option.none(),
-      );
-    }
-    case "clear": {
-      return updateResult(closeComposerMenu(model), [ClearComposerCmd({ kind })], Option.none());
-    }
-    case "model": {
-      if (model.id === null) {
-        return updateResult(model, none, Option.none());
-      }
-      return updateResult(
-        evo(model, {
-          composerMenu: (_) => null,
-          modelPicker: (_) => ModelPicker.Loading(),
-          pickerActive: (_) => 0,
-          pickerQuery: (_) => "",
-          usageOpen: (_) => false,
-        }),
-        [RemoveComposerTriggerCmd({ kind, trigger }), ListModelsCmd({ id: model.id })],
-        Option.none(),
-      );
-    }
-    case "compact": {
-      if (model.id === null) {
-        return updateResult(model, none, Option.none());
-      }
-      return updateResult(
-        closeComposerMenu(model),
-        [RemoveComposerTriggerCmd({ kind, trigger }), CompactCmd({ id: model.id })],
-        Option.none(),
-      );
-    }
-    case "abort": {
-      if (model.id === null) {
-        return updateResult(model, none, Option.none());
-      }
-      return updateResult(
-        closeComposerMenu(model),
-        [RemoveComposerTriggerCmd({ kind, trigger }), AbortCmd({ id: model.id })],
-        Option.none(),
-      );
-    }
-    default: {
-      // Every action above is handled; the default keeps the switch
-      // exhaustive-safe (a new action without an arm is a no-op).
-      return updateResult(model, none, Option.none());
-    }
-  }
 };
 
 /** The expanded-id set fold shared by the thinking/tool toggles: add on
@@ -167,7 +90,9 @@ export const update = (model: Model, message: ThreadMessage) =>
   M.value(message).pipe(
     M.withReturnType<UpdateReturn>(),
     M.tagsExhaustive({
-      AbortDone: () => [model, none, Option.none()],
+      AbortDone: () => [evo(model, { notice: (_) => null }), none, Option.none()],
+
+      AbortFailed: ({ message }) => [evo(model, { notice: (_) => message }), none, Option.none()],
 
       AbortRequested: () =>
         model.id === null
@@ -180,7 +105,7 @@ export const update = (model: Model, message: ThreadMessage) =>
         Option.none(),
       ],
 
-      CompactionFinished: () => [model, none, Option.none()],
+      CompactionFinished: () => [evo(model, { notice: (_) => null }), none, Option.none()],
 
       ComposerBlurred: () => [evo(model, { focused: (_) => false }), none, Option.none()],
 
@@ -192,58 +117,19 @@ export const update = (model: Model, message: ThreadMessage) =>
 
       ComposerFocused: () => [evo(model, { focused: (_) => true }), none, Option.none()],
 
-      ComposerMenuClosed: () => [evo(model, { composerMenu: (_) => null }), none, Option.none()],
+      // The @// palette: its own slice (composer-menu.ts) owns trigger
+      // tracking, navigation, and what a picked suggestion does.
+      ComposerMenuClosed: (message) => reduceComposerMenu(model, message),
 
-      ComposerMenuMoved: ({ delta }) => {
-        if (model.composerMenu === null) {
-          return [model, none, Option.none()];
-        }
-        const { trigger, query, active } = model.composerMenu;
-        const options = composerOptions(model, trigger, query);
-        if (options.length === 0) {
-          return [model, none, Option.none()];
-        }
-        const next = Math.min(Math.max(active + delta, 0), options.length - 1);
-        return [
-          evo(model, { composerMenu: (_) => ({ active: next, query, trigger }) }),
-          none,
-          Option.none(),
-        ];
-      },
+      ComposerMenuMoved: (message) => reduceComposerMenu(model, message),
 
-      ComposerSuggestionAccepted: () => {
-        if (model.composerMenu === null) {
-          return [model, none, Option.none()];
-        }
-        const { trigger, query, active } = model.composerMenu;
-        const options = composerOptions(model, trigger, query);
-        const suggestion = options[Math.min(Math.max(active, 0), options.length - 1)];
-        if (suggestion === undefined) {
-          return [model, none, Option.none()];
-        }
-        return applyComposerSuggestion(model, trigger, suggestion);
-      },
+      ComposerSuggestionAccepted: (message) => reduceComposerMenu(model, message),
 
       ComposerSuggestionInserted: () => [model, none, Option.none()],
 
-      ComposerSuggestionPicked: ({ trigger, value }) => {
-        if (model.composerMenu === null || model.composerMenu.trigger !== trigger) {
-          return [model, none, Option.none()];
-        }
-        const suggestion = composerOptions(model, trigger, model.composerMenu.query).find(
-          (candidate) => candidate.value === value,
-        );
-        if (suggestion === undefined) {
-          return [model, none, Option.none()];
-        }
-        return applyComposerSuggestion(model, trigger, suggestion);
-      },
+      ComposerSuggestionPicked: (message) => reduceComposerMenu(model, message),
 
-      ComposerTriggerChanged: ({ trigger, query }) => [
-        evo(model, { composerMenu: (_) => ({ active: 0, query, trigger }) }),
-        none,
-        Option.none(),
-      ],
+      ComposerTriggerChanged: (message) => reduceComposerMenu(model, message),
 
       ComposerTriggerRemoved: () => [model, none, Option.none()],
 
@@ -293,43 +179,15 @@ export const update = (model: Model, message: ThreadMessage) =>
               Option.none(),
             ],
 
-      // The switch landed: adopt the resolved model and close the picker.
-      // A null resolution (the model did not resolve) keeps the picker open
-      // and says why.
-      ModelSet: ({ model: next }) =>
-        next === null
-          ? [
-              evo(model, { modelBusy: (_) => false, notice: (_) => "model unavailable" }),
-              none,
-              Option.none(),
-            ]
-          : [
-              evo(model, {
-                model: (_) => next,
-                modelBusy: (_) => false,
-                modelPicker: (_) => ModelPicker.Idle(),
-              }),
-              none,
-              Option.none(),
-            ],
+      // The switch landed: adopt the resolved model and close; an
+      // unresolvable one keeps the picker open and says why.
+      ModelSet: (message) => reduceModelPicker(model, message),
 
-      ModelSetFailed: ({ message: text }) => [
-        evo(model, { modelBusy: (_) => false, notice: (_) => text }),
-        none,
-        Option.none(),
-      ],
+      ModelSetFailed: (message) => reduceModelPicker(model, message),
 
-      ModelsListFailed: ({ error }) => [
-        evo(model, { modelPicker: (_) => ModelPicker.Failure({ error }) }),
-        none,
-        Option.none(),
-      ],
+      ModelsListFailed: (message) => reduceModelPicker(model, message),
 
-      ModelsListed: ({ models }) => [
-        evo(model, { modelPicker: (_) => ModelPicker.Success({ data: models }) }),
-        none,
-        Option.none(),
-      ],
+      ModelsListed: (message) => reduceModelPicker(model, message),
 
       // The header's new-thread button: surface the fact only on a pinned
       // thread (the welcome needs no button — it is the new thread
@@ -339,30 +197,15 @@ export const update = (model: Model, message: ThreadMessage) =>
           ? [model, none, Option.none()]
           : [model, none, Option.some(NewThreadRequested())],
 
-      // ArrowUp/ArrowDown: the highlight walks the filtered list, clamped
-      // at both ends; nothing to walk when the list is empty or unknown.
-      PickerMove: ({ delta }) => {
-        if (model.modelPicker._tag !== "Success") {
-          return [model, none, Option.none()];
-        }
-        const filtered = filterModels(model.modelPicker.data, model.pickerQuery);
-        if (filtered.length === 0) {
-          return [model, none, Option.none()];
-        }
-        const next = Math.min(Math.max(model.pickerActive + delta, 0), filtered.length - 1);
-        return [evo(model, { pickerActive: (_) => next }), none, Option.none()];
-      },
+      // ArrowUp/ArrowDown and the search input live in model-picker.ts.
+      PickerMove: (message) => reduceModelPicker(model, message),
 
-      // The search input: the filter narrows the list, and the highlight
-      // restarts at the top (the list can only shrink from here).
-      PickerQueryChanged: ({ text }) => [
-        evo(model, { pickerActive: (_) => 0, pickerQuery: (_) => text }),
-        none,
-        Option.none(),
-      ],
+      PickerQueryChanged: (message) => reduceModelPicker(model, message),
+
+      NoticeDismissed: () => [evo(model, { notice: (_) => null }), none, Option.none()],
 
       PromptAcked: () => [
-        evo(model, { composer: (_) => "", composerMenu: (_) => null }),
+        evo(model, { composer: (_) => "", composerMenu: (_) => null, notice: (_) => null }),
         [ClearComposerCmd({ kind: "thread" })],
         Option.none(),
       ],
@@ -404,21 +247,28 @@ export const update = (model: Model, message: ThreadMessage) =>
       // fold it through the live state machine; the trail's chat scroller
       // observes the growth on the DOM side.
       SessionEvent: ({ event }) => {
-        const next = foldLive({ live: model.live, trail: model.trail }, event);
+        const next = foldLive(
+          { live: model.live, pending: model.pendingEntries, trail: model.trail },
+          event,
+        );
         return [
-          evo(model, { live: (_) => next.live, trail: (_) => next.trail }),
+          evo(model, {
+            live: (_) => next.live,
+            pendingEntries: (_) => [...next.pending],
+            trail: (_) => next.trail,
+          }),
           none,
           Option.none(),
         ];
       },
 
-      StateFailed: () => [model, none, Option.none()],
+      StateFailed: ({ error }) => [evo(model, { notice: (_) => error }), none, Option.none()],
 
       // The badge's model read (and the header's info) landed: adopt the
-      // model, and adopt the info so a thread opened mid-run shows its
-      // state and the stop control immediately.
+      // model, adopt the info so a thread opened mid-run shows its state
+      // and the stop control immediately, and clear a stale read failure.
       StateLoaded: ({ model: next, info }) => [
-        evo(model, { info: (_) => info, model: (_) => next }),
+        evo(model, { info: (_) => info, model: (_) => next, notice: (_) => null }),
         [SetComposerEditableCmd({ editable: info.state !== "working", kind: "thread" })],
         Option.none(),
       ],
@@ -453,6 +303,7 @@ export const update = (model: Model, message: ThreadMessage) =>
           composer: (_) => "",
           composerMenu: (_) => null,
           focused: (_) => false,
+          notice: (_) => null,
           starting: (_) => false,
         }),
         [ClearComposerCmd({ kind: "welcome" })],
@@ -473,11 +324,22 @@ export const update = (model: Model, message: ThreadMessage) =>
         Option.none(),
       ],
 
-      TrailLoaded: ({ entries, tailSeq }) => [
-        evo(model, { trail: (_) => Trail.Success({ data: { entries, tailSeq } }) }),
-        none,
-        Option.none(),
-      ],
+      TrailLoaded: ({ entries, tailSeq }) => {
+        const next = foldTrailLoaded(
+          { live: model.live, pending: model.pendingEntries, trail: model.trail },
+          entries,
+          tailSeq,
+        );
+        return [
+          evo(model, {
+            live: (_) => next.live,
+            pendingEntries: (_) => [...next.pending],
+            trail: (_) => next.trail,
+          }),
+          none,
+          Option.none(),
+        ];
+      },
 
       UsagePanelClosed: () => [evo(model, { usageOpen: (_) => false }), none, Option.none()],
 
@@ -491,16 +353,28 @@ export const update = (model: Model, message: ThreadMessage) =>
     }),
   );
 
-/** The root's hook for a route change (the informing convention). */
-export const informRouteChanged = (model: Model, route: AppRoute): RouteChangedReturn =>
-  route._tag === "Thread"
+/** The root's hook for a route change (the informing convention).
+ *
+ * `connected` gates the pane's reads: issued only when the wire is online —
+ * a read fired while connecting races the handshake and fails (the boot
+ * double-fetch, the TrailFailed flash). When offline or still connecting,
+ * no commands ride along; the conn machine's Online transition re-issues
+ * them, incrementally.
+ */
+export const informRouteChanged = (
+  model: Model,
+  route: AppRoute,
+  connected: boolean,
+): RouteChangedReturn => {
+  const loads = (id: string) => [LoadTrailCmd({ id }), LoadStateCmd({ id })];
+  return route._tag === "Thread"
     ? [
         evo(model, {
           id: (_) => route.id,
           info: (_) => null,
           ...resetViewFields,
         }),
-        [LoadTrailCmd({ id: route.id }), LoadStateCmd({ id: route.id })],
+        connected ? loads(route.id) : none,
       ]
     : [
         evo(model, {
@@ -510,3 +384,4 @@ export const informRouteChanged = (model: Model, route: AppRoute): RouteChangedR
         }),
         none,
       ];
+};

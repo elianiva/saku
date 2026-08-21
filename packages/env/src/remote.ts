@@ -174,7 +174,13 @@ const base64ToBytes = (encoded: string) => {
 
 /**
  * The worker side of the env protocol. One instance per env connection
- * (one per thread per worker); `connect()` must succeed before ops.
+ * (one per thread per worker).
+ *
+ * The connection is this module's implementation detail: a dropped socket
+ * (daemon restart, relay drop, laptop sleep) is internal state, not a
+ * condition callers detect and recover from — the next op reconnects on
+ * demand, and `connect()` is idempotent. Callers rebuild the instance only
+ * when the env handle itself changes.
  */
 export class RemoteEnv implements ExecutionEnv {
   private readonly url: string;
@@ -193,6 +199,10 @@ export class RemoteEnv implements ExecutionEnv {
     | { resolve: (hello: EnvHelloOk) => void; reject: (error: EnvConnectionError) => void }
     | undefined;
   private onceHelloTimer: NodeJS.Timeout | undefined;
+  /** The hello reply; set once connected, cleared on close (idempotent connect). */
+  private hello: EnvHelloOk | null = null;
+  /** The in-flight handshake; connect/reconnects dedupe through it. */
+  private connecting: Promise<EnvHelloOk> | null = null;
 
   constructor(options: RemoteEnvOptions) {
     this.url = options.url;
@@ -204,16 +214,33 @@ export class RemoteEnv implements ExecutionEnv {
     this.log = options.log ?? (() => Effect.void);
   }
 
-  /** Open the connection, attach through the relay if configured, hello. */
+  /**
+   * Open the connection, attach through the relay if configured, hello.
+   *
+   * Idempotent: a connected instance answers with its cached hello and
+   * concurrent callers share one handshake — which is what makes the
+   * ops' on-demand reconnect safe without caller coordination.
+   */
   async connect(): Promise<EnvHelloOk> {
+    if (this.connected && this.hello !== null) {
+      return this.hello;
+    }
+    if (this.connecting !== null) {
+      return await this.connecting;
+    }
+    this.connecting = this.connectOnce();
+    try {
+      return await this.connecting;
+    } finally {
+      this.connecting = null;
+    }
+  }
+
+  /** One dial + hello attempt; only `connect` calls this. */
+  private async connectOnce(): Promise<EnvHelloOk> {
     const self = this;
     return await Effect.runPromise(
       Effect.gen(function* () {
-        if (self.socket !== null) {
-          return yield* Effect.fail(
-            new EnvConnectionError({ kind: "already_connected", message: "already connected" }),
-          );
-        }
         return yield* Effect.callback<EnvHelloOk, EnvConnectionError>((resume) => {
           let settled = false;
           const fail = (error: EnvConnectionError) => {
@@ -221,9 +248,7 @@ export class RemoteEnv implements ExecutionEnv {
               return;
             }
             settled = true;
-            if (self.onceHelloTimer !== undefined) {
-              clearTimeout(self.onceHelloTimer);
-            }
+            clearTimeout(self.onceHelloTimer);
             self.onceHello = undefined;
             self.socket = null;
             resume(Effect.fail(error));
@@ -269,6 +294,8 @@ export class RemoteEnv implements ExecutionEnv {
           socket.on("close", () => {
             const wasConnected = self.connected;
             self.socket = null;
+            self.connected = false;
+            self.hello = null;
             self.failAll(CONNECTION_LOST);
             if (!wasConnected) {
               fail(
@@ -289,11 +316,10 @@ export class RemoteEnv implements ExecutionEnv {
                 return;
               }
               settled = true;
-              if (self.onceHelloTimer !== undefined) {
-                clearTimeout(self.onceHelloTimer);
-              }
+              clearTimeout(self.onceHelloTimer);
               self.onceHello = undefined;
               self.connected = true;
+              self.hello = hello;
               resume(Effect.succeed(hello));
             },
           };
@@ -347,9 +373,7 @@ export class RemoteEnv implements ExecutionEnv {
         return;
       }
       this.pending.delete(response.value.id);
-      if (pending.timer !== undefined) {
-        clearTimeout(pending.timer);
-      }
+      clearTimeout(pending.timer);
       if (response.value.ok) {
         pending.resolve({ ok: true, payload: response.value.payload });
       } else {
@@ -361,9 +385,7 @@ export class RemoteEnv implements ExecutionEnv {
   /** Reject every in-flight request; used on close. */
   private failAll(error: Error) {
     for (const pending of this.pending.values()) {
-      if (pending.timer !== undefined) {
-        clearTimeout(pending.timer);
-      }
+      clearTimeout(pending.timer);
       pending.resolve({ error: { kind: "unknown", message: error.message }, ok: false });
     }
     this.pending = new Map();
@@ -374,8 +396,15 @@ export class RemoteEnv implements ExecutionEnv {
    * daemon-side process (exec) with an `env_abort` frame.
    */
   private async request(op: EnvOpType, options: RequestOptions = {}): Promise<RequestOutcome> {
-    if (this.socket === null || !this.connected) {
-      return { error: { kind: "unknown", message: "env not connected" }, ok: false };
+    // The connection is internal state: a dropped socket reconnects here,
+    // on demand, before the op runs.
+    if (!this.connected || this.socket === null) {
+      try {
+        await this.connect();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return { error: { kind: "unknown", message: `env connection failed: ${message}` }, ok: false };
+      }
     }
     this.seq += 1;
     const id = `${this.seq}:${crypto.randomUUID().slice(0, 8)}`;
@@ -438,6 +467,7 @@ export class RemoteEnv implements ExecutionEnv {
     this.socket?.close();
     this.socket = null;
     this.connected = false;
+    this.hello = null;
   }
 
   /**

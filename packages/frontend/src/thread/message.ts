@@ -70,7 +70,7 @@ export const StateLoaded = Message.m("StateLoaded", {
   info: ThreadInfo,
   model: S.NullOr(WireModelInfo),
 });
-export const StateFailed = Message.m("StateFailed");
+export const StateFailed = Message.m("StateFailed", { error: S.String });
 
 /** The composer's model badge was clicked: open the picker. */
 export const ModelPickerRequested = Message.m("ModelPickerRequested");
@@ -104,6 +104,11 @@ export const CreateFailed = Message.m("CreateFailed", { message: S.String });
 
 export const AbortRequested = Message.m("AbortRequested");
 export const AbortDone = Message.m("AbortDone");
+/** A failed abort is NOT already-done: auth failures, deleted threads, and
+ *  hub errors land here, or the user stares at a run that never stops. */
+export const AbortFailed = Message.m("AbortFailed", { message: S.String });
+/** The notice's dismiss button (or its expiry tick). */
+export const NoticeDismissed = Message.m("NoticeDismissed");
 
 /** The header's new-thread button: leave the pinned thread for the
  *  welcome — the root pushes "/" (the quick-start composer is the new
@@ -161,6 +166,8 @@ export const ThreadMessage = S.Union([
   CreateFailed,
   AbortRequested,
   AbortDone,
+  AbortFailed,
+  NoticeDismissed,
   NewThreadRequested,
   ThinkingToggled,
   ToolToggled,

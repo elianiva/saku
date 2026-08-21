@@ -42,7 +42,9 @@ class TestError extends tagged<TestError>()("TestError", {
   message: Schema.String,
 }) {}
 
-/** Prompts containing this text take 300ms on the fixture (timeout tests). */
+/** Prompts containing this text take 300ms to SETTLE on the fixture (the
+ *  run outlives the ack — the run commands' contract); threads named after
+ *  it delay their reads (the client-timeout vehicle). */
 const SLOW_PROMPT = "slow";
 
 /** The callback payload for events that carry none. */
@@ -62,6 +64,17 @@ const until = (predicate: () => boolean, tries = 50, delay = "20 millis") =>
   Effect.gen(function* () {
     for (let i = 0; i < tries; i += 1) {
       if (predicate()) {
+        return;
+      }
+      yield* Effect.sleep(delay);
+    }
+  });
+
+/** `until` over an async probe (a read that itself rides the wire). */
+const untilAsync = (probe: () => Promise<boolean>, tries = 50, delay = "20 millis") =>
+  Effect.gen(function* () {
+    for (let i = 0; i < tries; i += 1) {
+      if (yield* Effect.tryPromise(probe)) {
         return;
       }
       yield* Effect.sleep(delay);
@@ -264,8 +277,9 @@ describe("session commands", () => {
     });
 
     await Effect.runPromise(client.prompt(id, "hello"));
+    // The settle lands after the ack (run commands reply at acceptance).
+    await Effect.runPromise(until(() => events.length === 2));
     expect(events).toEqual(["entry_appended", "settled"]);
-
     const { entries, tailSeq, leafId } = await Effect.runPromise(client.getEntries(id));
     expect(entries).toHaveLength(1);
     expect(tailSeq).toBe(1);
@@ -342,6 +356,9 @@ describe("session commands", () => {
     await Effect.runPromise(client.connect());
     const id = await newThread(client);
     await Effect.runPromise(client.prompt(id, "first"));
+    await Effect.runPromise(
+      untilAsync(async () => (await Effect.runPromise(client.getEntries(id))).entries.length >= 1),
+    );
     const { entries } = await Effect.runPromise(client.getEntries(id));
     const leaf = await Effect.runPromise(client.branch(id, entries[0].id));
     expect(leaf).toBe(entries[0].id);
@@ -360,9 +377,7 @@ describe("session commands", () => {
     await Effect.runPromise(client.followUp(id, "and then?"));
     await Effect.runPromise(client.setSteeringMode(id, "one-at-a-time"));
     await Effect.runPromise(client.setFollowUpMode(id, "one-at-a-time"));
-    const compact = await Effect.runPromise(client.compact(id, "keep it short"));
-    expect(compact.summary).toBe("mock");
-    expect(compact.tokensBefore).toBe(0);
+    await Effect.runPromise(client.compact(id, "keep it short"));
     await Effect.runPromise(client.setAutoCompaction(id, true));
     await Effect.runPromise(client.setSessionName(id, "my session"));
     const named = await Effect.runPromise(client.getState(id));
@@ -488,6 +503,8 @@ describe("fan-out", () => {
     });
 
     await Effect.runPromise(a.prompt(id, "hello"));
+    // a's delivery is async on its own actor; the settle lands after the ack.
+    await Effect.runPromise(until(() => seenA.length === 2));
     expect(seenA).toEqual(["entry_appended", "settled"]);
     // b's delivery is async on its own actor; wait for both events.
     await Effect.runPromise(until(() => seenB.length === 2));
@@ -533,12 +550,11 @@ describe("request/response correlation", () => {
       }
     });
 
-    // B's run settles well before A's slow run; both responses must still
-    // resolve to their own requests.
-    const slow = Effect.runPromise(client.prompt(a, SLOW_PROMPT));
-    const quick = Effect.runPromise(client.prompt(b, "hi"));
-    await quick;
-    await slow;
+    // B's run settles well before A's slow run; each response and each
+    // event stream must land on its own thread and request.
+    await Effect.runPromise(client.prompt(a, SLOW_PROMPT));
+    await Effect.runPromise(client.prompt(b, "hi"));
+    await Effect.runPromise(until(() => seenA.length === 2 && seenB.length === 2));
     expect(seenB).toEqual(["entry_appended", "settled"]);
     expect(seenA).toEqual(["entry_appended", "settled"]);
     await Effect.runPromise(client.disconnect());
@@ -563,8 +579,10 @@ describe("client behavior", () => {
   it("times out slow commands", async () => {
     const client = await connect({ requestTimeoutMs: 100 });
     await Effect.runPromise(client.connect());
-    const id = await newThread(client);
-    await expect(Effect.runPromise(client.prompt(id, SLOW_PROMPT))).rejects.toMatchObject({
+    // The slow marker rides the thread NAME: reads for that thread are
+    // delayed by the fixture (run commands ack too fast to time out).
+    const id = await newThread(client, "slow thread");
+    await expect(Effect.runPromise(client.getState(id))).rejects.toMatchObject({
       code: "timeout",
     });
     await Effect.runPromise(client.disconnect());
@@ -573,9 +591,9 @@ describe("client behavior", () => {
   it("fails pending requests when the connection drops", async () => {
     const client = await connect({ requestTimeoutMs: 5000 });
     await Effect.runPromise(client.connect());
-    const id = await newThread(client);
+    const id = await newThread(client, "slow drop");
 
-    const pending = Effect.runPromise(client.prompt(id, SLOW_PROMPT));
+    const pending = Effect.runPromise(client.getState(id));
     await wait(50);
     await Effect.runPromise(hub.dropAll());
     await expect(pending).rejects.toMatchObject({ code: "disconnected" });
@@ -585,9 +603,9 @@ describe("client behavior", () => {
   it("fails pending requests and closes clients when the server closes", async () => {
     const client = await connect({ requestTimeoutMs: 5000 });
     await Effect.runPromise(client.connect());
-    const id = await newThread(client);
+    const id = await newThread(client, "slow close");
 
-    const pending = Effect.runPromise(client.prompt(id, SLOW_PROMPT));
+    const pending = Effect.runPromise(client.getState(id));
     await wait(50);
     await Effect.runPromise(hub.close());
     await expect(pending).rejects.toMatchObject({ code: "disconnected" });
@@ -669,6 +687,16 @@ describe("server robustness", () => {
     socket.send(serializeFrame({ _tag: "bogus" }));
     await wait();
     expect(frames).toContainEqual({ _tag: "error", message: "undecodable message" });
+    socket.close();
+  });
+
+  it("answers pings with pongs (the keepalive)", async () => {
+    const socket = await rawClient();
+    const frames = collectFrames(socket);
+
+    socket.send(serializeFrame({ _tag: "ping" }));
+    await wait();
+    expect(frames).toContainEqual({ _tag: "pong" });
     socket.close();
   });
 

@@ -60,23 +60,58 @@ export const LiveRegion = S.Struct({
 });
 export type LiveRegion = S.Schema.Type<typeof LiveRegion>;
 
-/** The active thread's wire-derived view: the trail plus the run in flight. */
+/** The active thread's wire-derived view: the trail plus the run in flight.
+ *
+ * `pending` is the losslessness guarantee: events that land while the trail
+ * is still loading (or after a failed load) are buffered here and merged
+ * into the trail when it lands — never dropped. Without it, a reconnect's
+ * live stream raced its own catch-up read and the conversation grew gaps.
+ */
 export interface Live {
+  readonly pending: readonly EntryProjection[];
   readonly trail: TrailState;
   readonly live: LiveRegion;
 }
 
+/** The live state before anything streamed or loaded. */
+export const emptyLive = (): Live => ({
+  live: emptyLiveRegion(),
+  pending: [],
+  trail: Trail.Idle(),
+});
+
 /** The live region before anything streamed. */
 export const emptyLiveRegion = () => ({ tools: [] });
 
-/** `entry_appended` on the active thread: grow the trail, dedupe by id. */
+const entryId = (entry: EntryProjection) => asString(entry.id);
+const entrySeq = (entry: EntryProjection) => entry.seq ?? Number.MAX_SAFE_INTEGER;
+
+/** Dedupe by id keeping the FIRST occurrence (the server's copy wins). */
+const dedupeById = (entries: readonly EntryProjection[]) => {
+  const seen = new Set<string>();
+  return entries.filter((entry) => {
+    const id = entryId(entry);
+    if (seen.has(id)) {
+      return false;
+    }
+    seen.add(id);
+    return true;
+  });
+};
+
+/** `entry_appended` on the active thread: grow the trail, dedupe by id.
+ *  While the trail loads, appends buffer (they merge at load time). */
 const foldEntryAppended = (state: Live, entry: EntryProjection): Live => {
   if (!AsyncData.isSuccess(state.trail)) {
-    return state;
+    // Buffering, not dropping: this event merges into the trail at load.
+    return { ...state, pending: [...state.pending, entry] };
   }
   const last = state.trail.data.entries.at(-1);
-  const id = asString(entry.id);
-  if (last !== undefined && asString(last.id) === id) {
+  const id = entryId(entry);
+  const replayed =
+    (last !== undefined && entryId(last) === id) ||
+    (entry.seq !== undefined && entry.seq <= state.trail.data.tailSeq);
+  if (replayed) {
     return state;
   }
   // A message entry lands complete — the live region's copy of it is stale.
@@ -166,3 +201,31 @@ export const foldLive = (state: Live, event: SessionEventProjection): Live =>
       unhandled: () => state,
     }),
   );
+
+/**
+ * The trail read landed: the server's entries are authoritative, and the
+ * events buffered while it loaded merge in behind them — deduped by id
+ * (the server's copy wins), ordered by seq, tailSeq never lowering. This
+ * is the reconnect catch-up: sinceSeq fetched the gap, buffering covered
+ * the race, and this fold reconciles both into one trail.
+ */
+export const foldTrailLoaded = (
+  state: Live,
+  entries: readonly EntryProjection[],
+  tailSeq: number,
+): Live => {
+  const merged = dedupeById([...entries, ...state.pending]).toSorted(
+    (a, b) => entrySeq(a) - entrySeq(b),
+  );
+  const mergedTail = merged.reduce((max, entry) => Math.max(max, entry.seq ?? 0), tailSeq);
+  // A complete message arriving with the load clears the streaming copy.
+  const live = merged.some((entry) => entry.type === "message")
+    ? { ...state.live, message: undefined, thinking: undefined }
+    : state.live;
+  return {
+    ...state,
+    live,
+    pending: [],
+    trail: Trail.Success({ data: { entries: merged, tailSeq: mergedTail } }),
+  };
+};

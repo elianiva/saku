@@ -5,17 +5,15 @@
  * wire only ever sees `ThreadState`, ADR 0001).
  *
  * Commands are OTP-style calls: reply-bearing events (`Event.reply` +
- * `actor.ask`), so a prompt's reply is deferred by the transition and
- * settled by the run's state-scoped effect when the run settles — the wire
- * keeps its blocking-prompt semantics. Validation failures are replies,
- * never actor defects; only storage/agent defects fail the handler, and
- * those surface as command failures too (`safeReply`).
- *
- * The machine's replies are the `HostReply` union (`reply_ok`/`reply_failed`
- * tagged structs), the dependencies live in `HostDeps`, and the durable
- * values (model, thinking level, name) live in the entry trail — this
- * module's helpers (run, compaction, auto-title) only read/write the trail
- * and the shared refs, never the wire.
+ * `actor.ask`). Run commands (prompt/steer/follow-up) and manual compaction
+ * ack at acceptance — the caller learns "started", and the outcome rides
+ * the events (`settled`, the appended entries, `compaction_end`), never a
+ * long-held reply; validation failures (busy, no model, nothing to compact)
+ * still fail the command itself. Only storage/agent defects land after the
+ * ack, and those surface as the settled event plus the Crashed state.
+ * The machine and the host share one failure type (`session-host-error.ts`),
+ * and pi's agent events are made durable and projected onto the wire by
+ * `agent-events.ts`.
  */
 
 import { Effect, Match, Option, Ref, Result, Schema } from "effect";
@@ -32,7 +30,6 @@ import type {
   Agent,
   CompactionEntry,
   CompactionSettings,
-  CompactResult,
   LogItem,
   ProvisionedEntry,
   ThinkingLevel,
@@ -45,7 +42,7 @@ import type {
   Model,
   UserMessage,
 } from "@earendil-works/pi-ai";
-import { opaque, THINKING_LEVELS, ThinkingLevelSchema, WireModelInfo } from "@saku/wire";
+import { THINKING_LEVELS, ThinkingLevelSchema, WireModelInfo } from "@saku/wire";
 import type { SessionWireEvent, ThreadState } from "@saku/wire";
 
 import type { ModelCatalogApi } from "./model-catalog.ts";
@@ -53,7 +50,7 @@ import type { HostRegistryApi, ThreadRecord } from "./registry.ts";
 import { SessionHostError, messageOf, toSessionHostError } from "./session-host-error.ts";
 import type { TrailSession } from "./trail-session.ts";
 
-/** The session's mutation lane (the wire's blocking-prompt semantics live on it). */
+/** The session's mutation lane. */
 export const LANE = "main";
 
 /** Push a wire-visible session event (the daemon/hub fans these out). */
@@ -77,14 +74,11 @@ const HostState = State({
 export type HostStateV = Schema.Schema.Type<typeof HostState>;
 
 /** The reply every command carries: the command's value, or the failure. */
-// The compact result is pi's own type, carried opaque (ADR 0005): the
-// guard checks nothing, the declared type is the contract.
-const CompactResultOpaque = opaque<CompactResult>();
+// Model/thinking replies carry their resolved value; run commands reply
+// `reply_ok` at acceptance (the outcome rides the events).
 const ReplyOk = Schema.TaggedStruct("reply_ok", {
   level: Schema.optional(ThinkingLevelSchema),
   model: Schema.optional(Schema.Union([Schema.Null, WireModelInfo])),
-  // The compact result (undefined for aborted compactions).
-  result: Schema.optional(CompactResultOpaque),
 });
 type ReplyOk = Schema.Schema.Type<typeof ReplyOk>;
 const ReplyFailed = Schema.TaggedStruct("reply_failed", { message: Schema.String });
@@ -448,7 +442,13 @@ const busyReply = (
     ),
   });
 
-/** Start a run from idle/interrupted: model check, then defer the reply to the run. */
+/** Start a run from idle/interrupted: model check, then ack and start.
+ *
+ * The reply settles at acceptance — the run's outcome rides the events
+ * (`settled`, the appended entries), never this reply. Holding the reply
+ * until the run settles made every real coding run outlive the wire
+ * client's per-command timeout and "fail" while still running.
+ */
 const startRun = Effect.fn("startRun")(function* startRun<S extends HostStateV>(
   deps: HostDeps,
   state: S,
@@ -462,7 +462,7 @@ const startRun = Effect.fn("startRun")(function* startRun<S extends HostStateV>(
     );
   }
   yield* deps.pushState("working");
-  return Machine.deferReply(working);
+  return Machine.reply(working, ReplyOk.make({}));
 });
 
 /** Run IO and always answer the call with a reply — handlers never fail the actor. */
@@ -551,8 +551,30 @@ const HostMachine: HostMachineApi = {
         HostEvent.AbortRequested,
         ({ state }) => Machine.reply(state, ReplyOk.make({})),
       )
-      .on([HostState.Idle, HostState.Interrupted], HostEvent.CompactRequested, ({ event }) =>
-        Machine.deferReply(HostState.Compacting({ customInstructions: event.customInstructions })),
+      // Manual compaction: validated here (an empty trail refuses at
+      // acceptance), acked at acceptance, and the progress/end ride the
+      // compaction_start/compaction_end events.
+      .on([HostState.Idle, HostState.Interrupted], HostEvent.CompactRequested, ({ event, state }) =>
+        Effect.gen(function* () {
+          // Validated at acceptance: an empty (or unreadable) trail refuses
+          // here, so a refused compact never enters Compacting at all.
+          const settings = yield* Ref.get(deps.compactionSettingsRef);
+          const log = yield* deps.trail.getLog().pipe(Effect.result);
+          if (Result.isFailure(log)) {
+            return Machine.reply(
+              state,
+              ReplyFailed.make({ message: messageOf(log.failure) }),
+            );
+          }
+          const preparation = prepareCompaction(entriesOf(log.success), settings);
+          if (!preparation.ok || preparation.value === undefined) {
+            return Machine.reply(state, ReplyFailed.make({ message: "nothing to compact" }));
+          }
+          return Machine.reply(
+            HostState.Compacting({ customInstructions: event.customInstructions }),
+            ReplyOk.make({}),
+          );
+        }),
       )
       .on(HostState.Working, HostEvent.CompactRequested, ({ state }) =>
         Machine.reply(
@@ -661,12 +683,14 @@ const HostMachine: HostMachineApi = {
       .spawn(HostState.Working, ({ self, state }) =>
         Effect.gen(function* () {
           yield* runCommand(deps, state);
-          yield* self.reply(ReplyOk.make({}));
           yield* self.send(HostEvent.RunFinished);
         }).pipe(
           Effect.catchEager((failure) =>
             Effect.gen(function* () {
-              yield* self.reply(ReplyFailed.make({ message: messageOf(failure) }));
+              // The caller was acked at acceptance; the failure surfaces as
+              // the settled event (consoles clear the live region) and the
+              // Crashed state (the next command rebuilds from the trail).
+              deps.sink({ type: "settled" });
               yield* self.send(HostEvent.RunFailed({ message: messageOf(failure) }));
             }),
           ),
@@ -675,14 +699,13 @@ const HostMachine: HostMachineApi = {
       .spawn(HostState.Compacting, ({ self, state }) =>
         Effect.gen(function* () {
           const result = yield* runCompaction(deps, "manual", state.customInstructions);
-          yield* self.reply(ReplyOk.make({ result }));
           yield* self.send(HostEvent.CompactFinished({ result }));
         }).pipe(
+          // A compaction failure already emitted its compaction_end (with
+          // the error message) inside runCompaction; the console sees it
+          // and the state goes idle through CompactFailed below.
           Effect.catchEager((failure) =>
-            Effect.gen(function* () {
-              yield* self.reply(ReplyFailed.make({ message: messageOf(failure) }));
-              yield* self.send(HostEvent.CompactFailed({ message: messageOf(failure) }));
-            }),
+            self.send(HostEvent.CompactFailed({ message: messageOf(failure) })),
           ),
         ),
       );

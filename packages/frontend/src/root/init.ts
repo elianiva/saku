@@ -25,7 +25,9 @@ export type InitReturn = readonly [Model, Commands];
 
 export const init = (url: Url.Url): InitReturn => {
   const route = parseRoute(url);
-  const [thread, threadCommands] = informRouteChanged(initialThreadModel(), route);
+  // Not connected at boot: the pane's reads are suppressed here and issued
+  // once by the Online transition — no handshake race, no double fetch.
+  const [thread, threadCommands] = informRouteChanged(initialThreadModel(), route, false);
   return [
     {
       banner: null,

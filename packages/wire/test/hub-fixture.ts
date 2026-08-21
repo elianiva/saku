@@ -446,9 +446,9 @@ export const startHubFixture = Effect.fn("startHubFixture")(function* () {
               }),
             );
           }
-          return CompactResponse.make({
-            result: { retainedTail: [], summary: "mock", tokensBefore: 0 },
-          });
+          // Acked at acceptance (the real host's contract); the result is
+          // the compaction_end event's business.
+          return CompactResponse.make({});
         }),
         follow_up: Effect.fn("follow_up")(function* ({
           text,
@@ -458,7 +458,7 @@ export const startHubFixture = Effect.fn("startHubFixture")(function* () {
           }
           thread.state = "working";
           yield* threadChanged(core, thread);
-          yield* settleRun(core, thread, text);
+          yield* Effect.forkDetach(settleRun(core, thread, text));
           return FollowUpResponse.make({});
         }),
         get_available_models: () =>
@@ -475,32 +475,40 @@ export const startHubFixture = Effect.fn("startHubFixture")(function* () {
           ),
         get_session_stats: () =>
           Effect.succeed(GetSessionStatsResponse.make({ stats: { totalPromptTokens: 0 } })),
-        get_state: () =>
-          Effect.succeed(
-            GetStateResponse.make({
-              state: {
-                model: MOCK_MODEL,
-                sessionId: thread.sessionId,
-                state: thread.state,
-                tailSeq: thread.nextSeq - 1,
-                thinkingLevel: thread.thinkingLevel,
-                ...sessionName(thread.nameSet),
-              },
-            }),
-          ),
+        get_state: Effect.fn("get_state")(function* () {
+          // A thread named after the slow marker delays its reads — the
+          // client-timeout tests' vehicle now that run commands ack fast.
+          if (thread.name.startsWith(SLOW_MARKER)) {
+            yield* Effect.sleep("300 millis");
+          }
+          return GetStateResponse.make({
+            state: {
+              model: MOCK_MODEL,
+              sessionId: thread.sessionId,
+              state: thread.state,
+              tailSeq: thread.nextSeq - 1,
+              thinkingLevel: thread.thinkingLevel,
+              ...sessionName(thread.nameSet),
+            },
+          });
+        }),
         prompt: Effect.fn("prompt")(function* ({ text }: S.Schema.Type<typeof PromptCommand>) {
           if (thread.state === "working") {
             return yield* Effect.fail(
               new FixtureError({ kind: "busy", message: "agent is already processing" }),
             );
           }
-          // A run is in flight from the moment the prompt is accepted.
+          // Acked at acceptance: the run starts now, and the settle lands
+          // after the response — the real host's contract.
           thread.state = "working";
           yield* threadChanged(core, thread);
-          if (text.includes(SLOW_MARKER)) {
-            yield* Effect.sleep("300 millis");
-          }
-          yield* settleRun(core, thread, text);
+          const settle =
+            text.includes(SLOW_MARKER)
+              ? Effect.sleep("300 millis").pipe(
+                  Effect.flatMap(() => settleRun(core, thread, text)),
+                )
+              : settleRun(core, thread, text);
+          yield* Effect.forkDetach(settle);
           return PromptResponse.make({});
         }),
         set_auto_compaction: () => Effect.succeed(SetAutoCompactionResponse.make({})),
@@ -536,7 +544,7 @@ export const startHubFixture = Effect.fn("startHubFixture")(function* () {
           }
           thread.state = "working";
           yield* threadChanged(core, thread);
-          yield* settleRun(core, thread, text);
+          yield* Effect.forkDetach(settleRun(core, thread, text));
           return SteerResponse.make({});
         }),
       }),

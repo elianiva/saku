@@ -219,8 +219,15 @@ describe("hub + real SessionHost over the wire", () => {
     const thread = await Effect.runPromise(client.createThread("boxed", { mode: "sandbox" }));
     expect(thread.env).toBe("stopped");
     // The scripted provisioner succeeds; the real SessionHost runs the run
-    // with its stub stream fn, then the thread settles back to idle.
+    // with its stub stream fn, then the thread settles back to idle. The
+    // prompt acks at acceptance, so both the env flip and the settle poll.
     await Effect.runPromise(client.prompt(thread.id, "hi"));
+    await Effect.runPromise(
+      waitFor(async () => {
+        const info = await Effect.runPromise(client.getThread(thread.id));
+        return info.env === "ready" && info.state === "idle";
+      }),
+    );
     const info = await Effect.runPromise(client.getThread(thread.id));
     expect(info.env).toBe("ready");
     expect(info.state).toBe("idle");

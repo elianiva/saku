@@ -77,9 +77,15 @@ const delegateToThread = (model: Model, threadMessage: ThreadMsg.ThreadMessage):
 };
 
 /** The route changed (back/forward, a pushed URL): the route is the single
- *  source of truth; both submodels derive their route-owned fields. */
+ *  source of truth; both submodels derive their route-owned fields. The
+ *  pane's reads ride only on an online connection (they re-issue from the
+ *  Online transition otherwise — the boot race's fix). */
 const applyRoute = (model: Model, route: AppRoute): UpdateReturn => {
-  const [nextThread, threadCmds] = Thread.informRouteChanged(model.thread, route);
+  const [nextThread, threadCmds] = Thread.informRouteChanged(
+    model.thread,
+    route,
+    model.conn._tag === "Online",
+  );
   return [
     evo(model, {
       rail: (_) => Rail.informRouteChanged(model.rail, route),
@@ -107,29 +113,29 @@ export const update = (model: Model, message: RootMessage) =>
       ChangedRoute: ({ route }) => applyRoute(model, route),
       ConnectFailed: (m) => stepConn(model, m),
 
-      // A successful connect also clears the wire-error banner. The pane's
-      // reads are re-issued on the transition: at boot they race the
-      // handshake (a pinned thread's trail read can land on a
-      // not-yet-connected client and fail without a retry), and after a
-      // reconnect the trail is stale (events streamed while offline were
-      // missed). The state read doubles as the header's info — a thread
-      // opened mid-run must show its state and the stop control.
+      // A successful connect also clears the wire-error banner. When it is
+      // the Online transition, the pane's reads re-issue here — that is the
+      // ONE catch-up site: boot (the init read was suppressed while
+      // connecting), a fresh selection made offline, and a reconnect. The
+      // trail read is incremental when a trail is already loaded (sinceSeq
+      // = tailSeq), so a reconnect fetches only the gap.
       Connected: (m) => {
         const result = connMachine.step(model.conn, m);
-        // The pane's reads ride the transition to Online: at boot they race
-        // the handshake (a pinned thread's trail read can land on a
-        // not-yet-connected client and fail without a retry), and after a
-        // reconnect the trail is stale (events streamed while offline were
-        // missed). The state read doubles as the header's info — a thread
-        // opened mid-run must show its state and the stop control.
+        const becameOnline = result._tag === "Transitioned";
         const reload =
-          result._tag === "Transitioned" && model.route._tag === "Thread"
+          becameOnline && model.route._tag === "Thread"
             ? Command.mapMessages(
                 // SAFETY: both commands are thread-scoped (TrailLoaded /
                 // StateLoaded); the annotation widens the literal so
                 // mapMessages types the callback over the union.
                 [
-                  LoadTrailCmd({ id: model.route.id }),
+                  LoadTrailCmd({
+                    id: model.route.id,
+                    sinceSeq:
+                      model.thread.trail._tag === "Success"
+                        ? model.thread.trail.data.tailSeq
+                        : undefined,
+                  }),
                   LoadStateCmd({ id: model.route.id }),
                 ] as readonly Command.Command<ThreadMsg.ThreadMessage, never, Wire>[],
                 (threadMessage) => GotThreadMessage({ message: threadMessage }),
@@ -137,7 +143,7 @@ export const update = (model: Model, message: RootMessage) =>
             : none;
         return [
           evo(model, { banner: (_) => null, conn: (_) => result.state }),
-          [...(result._tag === "Transitioned" ? result.commands : none), ...reload],
+          [...(becameOnline ? result.commands : none), ...reload],
         ];
       },
       ConnectionClosed: (m) => stepConn(model, m),

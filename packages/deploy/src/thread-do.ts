@@ -47,8 +47,14 @@ import {
   jsonOk,
   rpcErrorOf,
 } from "./do-protocol.ts";
-import { pushToHub } from "./rpc.ts";
+import { pushToHub, pushToHubAcked } from "./rpc.ts";
 import { IDLE_STOP_DEFAULT_MS } from "./hub-do.ts";
+
+/** Between idle-stop redelivery attempts (the alarm re-arms itself on a lost ack). */
+const IDLE_STOP_RETRY_MS = 60_000;
+/** Redelivery attempts before giving up (the hub is permanently unreachable). */
+const IDLE_STOP_MAX_RETRIES = 10;
+const RETRIES_KEY = "idle-stop-retries";
 
 const RECORD_KEY = "record";
 const THREAD_ID_KEY = "thread-id";
@@ -176,13 +182,38 @@ export class SakuThreadDO {
     );
   }
 
-  /** The durable alarm: idle-stop fired — the hub pulls the trigger. */
+  /**
+   * The durable alarm: idle-stop fired — the hub pulls the trigger.
+   *
+   * The firing is delivered durably: the alarm that carried it is consumed
+   * by this call, so an unacknowledged push re-arms the alarm and retries
+   * with backoff. A lost delivery would otherwise leave the remote machine
+   * running (billing) until the next prompt — possibly forever.
+   */
   async alarm() {
     const threadId = await this.loadThreadId();
     if (threadId === undefined) {
       return;
     }
-    pushToHub(this.deployment, { threadId, type: "idleStopFired" });
+    const acked = await Effect.runPromise(
+      pushToHubAcked(this.deployment, { threadId, type: "idleStopFired" }),
+    );
+    if (acked) {
+      await this.state.storage.delete(RETRIES_KEY);
+      return;
+    }
+    const retries = ((await this.state.storage.get<number>(RETRIES_KEY)) ?? 0) + 1;
+    if (retries > IDLE_STOP_MAX_RETRIES) {
+      await Effect.runPromise(
+        Effect.logError(
+          `[thread-do] idle-stop firing for ${threadId} undelivered after ${IDLE_STOP_MAX_RETRIES} retries; giving up`,
+        ),
+      );
+      await this.state.storage.delete(RETRIES_KEY);
+      return;
+    }
+    await this.state.storage.put(RETRIES_KEY, retries);
+    await this.state.storage.setAlarm(Date.now() + IDLE_STOP_RETRY_MS);
   }
 
   private async handleCreate(request: Request) {
@@ -387,7 +418,12 @@ export class SakuThreadDO {
     })();
   }
 
-  /** The live env connection for a handle; reconnects when needed. */
+  /** The live env connection for a handle; reconnects when needed.
+   *
+   * The RemoteEnv owns its connection state: a dropped socket is healed by
+   * its next op (or the connect below), so this only rebuilds the instance
+   * when the handle — the endpoint/token/relay identity — changes.
+   */
   private envFor(handle: EnvHandle) {
     const key = envKeyOf(handle);
     if (this.envConnection !== undefined && key === this.envKey) {

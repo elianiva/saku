@@ -190,6 +190,17 @@ export const ensure = Effect.fn("ensure")(function* (config: DaemonLifecycleConf
         }),
     ),
   );
+  // The poll predicate proved the probe answered; narrow the connection
+  // info explicitly (the predicate rides a plain boolean, so the type needs
+  // one guard here).
+  if (!isConnected(now)) {
+    return yield* Effect.fail(
+      new CliError({
+        code: config.timeoutCode,
+        message: `${config.label === "worker" ? "daemon" : "env daemon"} came up without connection info`,
+      }),
+    );
+  }
   return { pid: now.pid, token: now.token, url: now.url };
 });
 

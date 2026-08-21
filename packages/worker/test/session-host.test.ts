@@ -65,6 +65,23 @@ const waitForState = async (host: SessionHost, state: HostState, timeoutMs = 300
   await poll();
 };
 
+/** Wait for one sink event (acked commands settle their work asynchronously;
+ *  `compacting` is wire-idle, so the event — not the state — says "done"). */
+const waitForEvent = async (events: { type: string }[], type: string, timeoutMs = 3000) => {
+  const deadline = Date.now() + timeoutMs;
+  const poll = async (): Promise<void> => {
+    if (events.some((event) => event.type === type)) {
+      return;
+    }
+    if (Date.now() >= deadline) {
+      throw new TestError({ message: `event ${type} not emitted; got: ${JSON.stringify(events)}` });
+    }
+    await sleep(5);
+    await poll();
+  };
+  await poll();
+};
+
 /** A scripted stream that emits one assistant message immediately. */
 const oneShotStream = (text: string, stopReason: AssistantMessage["stopReason"] = "stop") => {
   const message = assistantMessage(text, stopReason);
@@ -205,6 +222,21 @@ describe("SessionHost", () => {
       // The lane leaf points at the last appended entry.
       expect(leafId).toBe(expectPresent(entries[1], "the second initial entry").id);
     });
+  });
+
+  it("acks a prompt at acceptance; the settle lands after", async () => {
+    const gate = gated();
+    await scoped(
+      async ({ host }) => {
+        // The reply resolves while the run is still in flight — the run
+        // commands' contract (the outcome rides the events).
+        await Effect.runPromise(host.prompt("first"));
+        expect(host.threadState).toBe("working");
+        gate.release();
+        await waitForState(host, "idle");
+      },
+      { streamFn: gate.streamFn },
+    );
   });
 
   it("prompt runs end to end: entries appended, settled emitted, back to idle", async () => {
@@ -350,6 +382,8 @@ describe("SessionHost", () => {
     await scoped(
       async ({ host }) => {
         await Effect.runPromise(host.prompt("first"));
+        // The prompt acked at acceptance; the entries land at the settle.
+        await waitForState(host, "idle");
         const { entries, leafId } = await Effect.runPromise(host.getEntries());
         const firstId = expectPresent(entries[0], "the first entry").id;
         expect(leafId).not.toBe(firstId);
@@ -386,13 +420,18 @@ describe("SessionHost", () => {
         // A trail with messages, so there is something to compact.
         await Effect.runPromise(host.prompt("first"));
         await waitForState(host, "idle");
-        const result = await Effect.runPromise(host.compact("summarize it"));
-        await waitForState(host, "idle");
-        expect(result.summary).toBe("a canned completion");
-        expect(events.some((event) => event.type === "compaction_start")).toBe(true);
-        expect(events.some((event) => event.type === "compaction_end")).toBe(true);
+        // Acked at acceptance; `compacting` is wire-idle, so the events —
+        // not the state — say when the compaction is done.
+        await Effect.runPromise(host.compact("summarize it"));
+        await waitForEvent(events, "compaction_start");
+        await waitForEvent(events, "compaction_end");
         const { entries } = await Effect.runPromise(host.getEntries());
-        expect(entries.some((entry) => entry.type === "compaction")).toBe(true);
+        const compaction = entries.find(
+          (entry): entry is Extract<Entry, { readonly type: "compaction" }> =>
+            entry.type === "compaction",
+        );
+        const persisted = expectPresent(compaction, "the compaction entry");
+        expect(persisted.summary).toBe("a canned completion");
       },
       { completions: ["a canned completion"], streamFn: oneShotStream("hi") },
     );
@@ -402,13 +441,13 @@ describe("SessionHost", () => {
     const gate = gated();
     await scoped(
       async ({ host }) => {
-        const running = Effect.runPromise(host.prompt("first"));
+        await Effect.runPromise(host.prompt("first"));
         await waitForState(host, "working");
         await expect(Effect.runPromise(host.compact())).rejects.toThrow(
           "cannot compact while the agent is working",
         );
         gate.release();
-        await running;
+        await waitForState(host, "idle");
       },
       { streamFn: gate.streamFn },
     );

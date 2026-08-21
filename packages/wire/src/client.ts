@@ -13,6 +13,11 @@
  * - optional reconnect with exponential backoff; on reconnect the console
  *   catches up via `get_entries(since tailSeq)` (no server-side replay)
  *
+ * Run commands (`prompt`/`steer`/`follow_up`) and `compact` ack at
+ * acceptance — the run's progress and outcome arrive as streamed events,
+ * never as a long-held reply, so a real coding run cannot outlive the
+ * per-command timeout.
+ *
  * The client speaks the WHATWG `WebSocket` (global in browsers and Node ≥ 22)
  * — the same code runs in the frontend and the CLI.
  *
@@ -26,7 +31,9 @@ import {
   Cause,
   Context,
   Deferred,
+  Duration,
   Effect,
+  Fiber,
   Match,
   Option,
   Ref,
@@ -35,17 +42,12 @@ import {
   Schema,
 } from "effect";
 import { Event, Machine, State } from "effect-machine";
-import type {
-  CompactResult,
-  Entry,
-  SessionStats,
-  ThinkingLevel,
-} from "@earendil-works/pi-agent-core";
+import type { Entry, SessionStats, ThinkingLevel } from "@earendil-works/pi-agent-core";
 
 import type { ConsoleRole, HelloOk } from "./hello.ts";
 import { Hello } from "./hello.ts";
 import type { WireCommand } from "./envelope.ts";
-import { WireEvent } from "./envelope.ts";
+import { Ping, WireEvent } from "./envelope.ts";
 import { decodeFrame, isSocketMessage, parseFrame, serializeFrame } from "./transport.ts";
 import type { ThreadCommand, ThreadInfo, ThreadMode } from "./thread.ts";
 import {
@@ -153,6 +155,8 @@ const ClientEvent = Event({
   Frame: { line: Schema.String },
   /** The socket opened; carries the socket into the handshake. */
   Opened: { socket: Schema.instanceOf(WebSocket) },
+  /** The keepalive tick: send one ping (the heartbeat loop's only output). */
+  PingRequested: {},
 });
 
 /** Correlate a request id with the deferred that awaits its response. */
@@ -177,6 +181,8 @@ interface ClientDeps {
   readonly pendingRef: Ref.Ref<Pending>;
   readonly connectRef: Ref.Ref<Option.Option<ConnectDeferred>>;
   readonly listeners: ListenerRegistry;
+  /** The last pong's wall clock (the heartbeat's liveness signal). */
+  readonly lastPongAt: { value: number };
 }
 
 /** Whether a decoded response payload is the variant its command carries. */
@@ -267,6 +273,11 @@ const handleFrame = Effect.fn("handleFrame")(function* (deps: ClientDeps, frame:
           threadId: eventFrame.threadId,
         }),
       hello_ok: (helloFrame) => emit(deps, "hello_ok", helloFrame),
+      pong: () => {
+        // The keepalive answered: the connection is alive.
+        deps.lastPongAt.value = Date.now();
+        return Effect.void;
+      },
       response: (responseFrame) =>
         responseFrame.ok
           ? resolveResponse(deps, responseFrame.id, Result.succeed(responseFrame.payload))
@@ -456,6 +467,16 @@ const makeMachine = (deps: ClientDeps) =>
         return state;
       }),
     )
+    .on(ClientState.Connected, ClientEvent.PingRequested, ({ state }) =>
+      Effect.sync(() => {
+        // A failed send is a no-op here: the close handler cleans the
+        // connection up, and a dead socket's close arrives on its own.
+        Result.try(() => {
+          state.socket.send(serializeFrame(Ping.make({})));
+        });
+        return state;
+      }),
+    )
     .onAny(ClientEvent.DisconnectRequested, ({ state }) =>
       Effect.gen(function* () {
         yield* settleConnect(
@@ -523,7 +544,7 @@ const COMMANDS = {
   archiveThread: command(false, "archive_thread", ArchiveThreadCommand, (p) => p.thread),
   branch: command(true, "branch", BranchCommand, (p) => p.leafId),
   browseProjectDirs: command(false, "browse_project_dirs", BrowseProjectDirsCommand, (p) => p),
-  compact: command(true, "compact", CompactCommand, (p) => p.result),
+  compact: command(true, "compact", CompactCommand, noResult),
   createThread: command(false, "create_thread", CreateThreadCommand, (p) => p.thread),
   deleteSkill: command(false, "delete_skill", DeleteSkillCommand, noResult),
   deleteThread: command(false, "delete_thread", DeleteThreadCommand, noResult),
@@ -615,7 +636,7 @@ export interface WireClientApi {
   readonly compact: (
     threadId: string,
     customInstructions?: string,
-  ) => Effect.Effect<CompactResult, WireError>;
+  ) => Effect.Effect<void, WireError>;
   readonly setAutoCompaction: (
     threadId: string,
     enabled: boolean,
@@ -661,8 +682,15 @@ export class WireClient extends Context.Service<WireClient, WireClientApi>()("Wi
     };
     const reconnectEnabled = options.reconnect ?? false;
     const requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
+    // The keepalive: while connected, one ping every interval; a pong older
+    // than the deadline means half-open death — the socket is closed so the
+    // close event (and any reconnect machinery) takes over.
+    const HEARTBEAT_INTERVAL_MS = 10_000;
+    const DEAD_AFTER_MS = 45_000;
+    const lastPongAt = { value: Date.now() };
     const deps: ClientDeps = {
       connectRef,
+      lastPongAt,
       listeners,
       pendingRef,
       role: options.role,
@@ -673,9 +701,28 @@ export class WireClient extends Context.Service<WireClient, WireClientApi>()("Wi
     const actor = yield* Machine.spawn(makeMachine(deps));
     yield* actor.start;
 
+    const heartbeat = Effect.gen(function* () {
+      while (true) {
+        yield* Effect.sleep(Duration.millis(HEARTBEAT_INTERVAL_MS));
+        const state = yield* actor.snapshot;
+        if (!ClientState.$is("Connected")(state)) {
+          continue;
+        }
+        if (Date.now() - lastPongAt.value > DEAD_AFTER_MS) {
+          yield* Effect.sync(() => {
+            state.socket.close();
+          });
+          continue;
+        }
+        yield* actor.send(ClientEvent.PingRequested);
+      }
+    }).pipe(Effect.ignore);
+    const heartbeatFiber = yield* Effect.forkDetach(heartbeat);
+
     const connect = Effect.fn("connect")(function* () {
       const deferred = yield* Deferred.make<HelloOk, WireError>();
       yield* Ref.set(connectRef, Option.some(deferred));
+      lastPongAt.value = Date.now();
       yield* actor.send(ClientEvent.ConnectRequested);
       const hello = yield* Deferred.await(deferred).pipe(
         Effect.ensuring(Ref.set(connectRef, Option.none())),
@@ -709,6 +756,7 @@ export class WireClient extends Context.Service<WireClient, WireClientApi>()("Wi
     };
 
     const disconnect = Effect.fn("disconnect")(function* () {
+      yield* Fiber.interrupt(heartbeatFiber).pipe(Effect.ignore);
       yield* failAllPending(
         deps,
         new WireError({ code: "disconnected", message: "client disconnected" }),

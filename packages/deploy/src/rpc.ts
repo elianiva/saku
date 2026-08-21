@@ -231,7 +231,7 @@ export const threadIdleStop = (env: DeploymentEnv) => ({
     ),
 });
 
-/** Push a report/event/idle-stop firing to the hub (best-effort). */
+/** Push a report/event to the hub (best-effort; advisory content). */
 export const pushToHub = (env: DeploymentEnv, push: HubPush) => {
   void Effect.runPromise(
     hubRpc(env, "/push", push).pipe(
@@ -239,3 +239,15 @@ export const pushToHub = (env: DeploymentEnv, push: HubPush) => {
     ),
   );
 };
+
+/**
+ * Push and wait for the hub's ack. Reports and session events are advisory
+ * (a lost one costs a console a catch-up read); the idle-stop firing is not
+ * — it is the only message that suspends the remote machine, and its alarm
+ * has already been consumed when it sends. Callers re-arm on `false`.
+ */
+export const pushToHubAcked = (env: DeploymentEnv, push: HubPush) =>
+  hubRpc(env, "/push", push).pipe(
+    Effect.as(true),
+    Effect.catch(() => Effect.succeed(false)),
+  );

@@ -20,6 +20,7 @@
 import { Context, Effect, Ref, Result, Schema } from "effect";
 
 import { decodeFrame, isSocketMessage, parseFrame, serializeFrame } from "@saku/wire";
+import type { JsonValue } from "@saku/wire";
 import { ENV_VERSION, EnvErrorFrame, RelayAttach, RelayHello } from "@saku/env";
 
 import type { SocketLike } from "./socket.ts";
@@ -43,7 +44,7 @@ export interface HubRelayApi {
 }
 
 /** The relay's first frame is any JSON object; only `_tag` discriminates it here. */
-const isFrameObject = (value: ReturnType<typeof parseFrame>): value is { readonly _tag?: string } =>
+const isFrameObject = (value: JsonValue | undefined): value is { readonly _tag?: string } =>
   typeof value === "object" && value !== null;
 
 /** Send an error frame best-effort, then drop the socket. */
@@ -101,6 +102,8 @@ export class HubRelayCore extends Context.Service<HubRelayCore, HubRelayCoreApi>
     const log = options.log ?? (() => Effect.void);
     const envsRef = yield* Ref.make<Map<string, SocketLike>>(new Map());
     const waitingRef = yield* Ref.make<Map<string, Set<SocketLike>>>(new Map());
+    /** The envId → piped worker socket (one daemon serves exactly one worker). */
+    const workersRef = yield* Ref.make<Map<string, SocketLike>>(new Map());
     const closedRef = yield* Ref.make(false);
 
     /** Remove the env's registration (its socket closed). */
@@ -134,7 +137,12 @@ export class HubRelayCore extends Context.Service<HubRelayCore, HubRelayCoreApi>
       );
     };
 
-    /** Pipe worker ⇄ daemon; either side dropping closes the other. */
+    /** Pipe worker ⇄ daemon; either side dropping closes the other.
+     *
+     * One daemon per envId serves exactly ONE worker pipe: a second attach
+     * (a worker retrying while its old socket is half-dead) replaces the
+     * old pipe instead of fanning the daemon's responses out to two pipes.
+     */
     const pipeBoth = (envId: string, worker: SocketLike, daemon: SocketLike) => {
       // Flush anything the worker sent while it was waiting for this daemon.
       const buffered = buffers.get(worker);
@@ -146,11 +154,33 @@ export class HubRelayCore extends Context.Service<HubRelayCore, HubRelayCoreApi>
           });
         }
       }
+      // A stale pipe for this env (the previous worker's socket, still in
+      // the map because its close never arrived) dies now; its own cleanup
+      // runs from the close event.
+      const previous = Effect.runSync(Ref.get(workersRef)).get(envId);
+      if (previous !== undefined && previous !== worker) {
+        Result.try(() => {
+          previous.close();
+        });
+      }
+      void Effect.runFork(
+        Ref.update(workersRef, (workers) => new Map(workers).set(envId, worker)),
+      );
       pipeSockets(worker, daemon, () => {
         Result.try(() => {
           daemon.close();
         });
         detachFromWorker(envId, worker);
+        void Effect.runFork(
+          Ref.update(workersRef, (workers) => {
+            if (workers.get(envId) !== worker) {
+              return workers;
+            }
+            const next = new Map(workers);
+            next.delete(envId);
+            return next;
+          }),
+        );
       });
       pipeSockets(daemon, worker, () => {
         Result.try(() => {
@@ -228,12 +258,20 @@ export class HubRelayCore extends Context.Service<HubRelayCore, HubRelayCoreApi>
           return new Map(envs).set(envId, socket);
         }),
       );
-      // Pair any workers that attached before this registration.
+      // Pair any workers that attached before this registration. One daemon
+      // serves one worker pipe: the first waiter wins, the rest are refused
+      // (their env is already piping to another worker).
       const waiting = Effect.runSync(Ref.get(waitingRef));
       const pending = waiting.get(envId);
       if (pending !== undefined) {
+        let paired = false;
         for (const worker of pending) {
-          pipeBoth(envId, worker, socket);
+          if (!paired) {
+            pipeBoth(envId, worker, socket);
+            paired = true;
+          } else {
+            failSocket(worker, `env ${envId.slice(0, 8)} is already attached`);
+          }
         }
         void Effect.runFork(
           Ref.update(waitingRef, (current) => new Map(current).set(envId, new Set())),
@@ -337,6 +375,18 @@ export class HubRelayCore extends Context.Service<HubRelayCore, HubRelayCoreApi>
         },
       );
       yield* Ref.set(waitingRef, new Map());
+      const activeWorkers = yield* Ref.get(workersRef);
+      yield* Effect.forEach(
+        [...activeWorkers.values()],
+        (socket) =>
+          Effect.sync(() => {
+            socket.close();
+          }),
+        {
+          discard: true,
+        },
+      );
+      yield* Ref.set(workersRef, new Map());
     });
 
     return {

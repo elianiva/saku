@@ -50,6 +50,19 @@ export type EventFrame = S.Schema.Type<typeof EventFrame>;
 export const ErrorEvent = S.TaggedStruct("error", { message: S.String });
 export type ErrorEvent = S.Schema.Type<typeof ErrorEvent>;
 
+/**
+ * The heartbeat (C2's keepalive): the client pings while connected and the
+ * server answers — a half-open socket (laptop sleep, NAT timeout) is
+ * detected by the missing pong, not by the next failed send. Carries no
+ * payload; the pong echoes nothing.
+ */
+export const Ping = S.TaggedStruct("ping", {});
+export type Ping = S.Schema.Type<typeof Ping>;
+
+/** The server's heartbeat answer. */
+export const Pong = S.TaggedStruct("pong", {});
+export type Pong = S.Schema.Type<typeof Pong>;
+
 /** One JSON frame from server to console. */
 export const WireEvent = S.Union([
   HelloOk,
@@ -58,5 +71,6 @@ export const WireEvent = S.Union([
   EventFrame,
   ThreadChanged,
   ErrorEvent,
+  Pong,
 ]);
 export type WireEvent = S.Schema.Type<typeof WireEvent>;

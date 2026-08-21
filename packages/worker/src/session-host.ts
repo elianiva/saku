@@ -8,10 +8,12 @@
  * DO session, recovers the durable values (model, thinking level, name)
  * from the entry trail, builds the agent, and spawns the run machine
  * (`session-machine.ts`) over the shared refs. Commands are OTP-style
- * calls into the machine (reply-bearing events, `actor.ask`); the machine
- * and the host share one failure type (`session-host-error.ts`), and pi's
- * agent events are made durable and projected onto the wire by
- * `agent-events.ts`.
+ * calls into the machine (reply-bearing events, `actor.ask`); run commands
+ * (prompt/steer/follow-up) and compaction ack at acceptance — their outcome
+ * rides the session events — while config commands answer with their
+ * resolved value. The machine and the host share one failure type
+ * (`session-host-error.ts`), and pi's agent events are made durable and
+ * projected onto the wire by `agent-events.ts`.
  *
  * The host is an effect-machine actor:
  *
@@ -40,7 +42,6 @@ import type {
   AgentEvent,
   AgentState,
   CompactionSettings,
-  CompactResult,
   Entry,
   ExecutionEnv,
   SessionStats,
@@ -119,7 +120,8 @@ export interface SessionHost {
   readonly steer: (text: string) => Effect.Effect<void, SessionHostError>;
   readonly followUp: (text: string) => Effect.Effect<void, SessionHostError>;
   readonly abort: () => Effect.Effect<void, SessionHostError>;
-  readonly compact: (customInstructions?: string) => Effect.Effect<CompactResult, SessionHostError>;
+  /** Acked at acceptance; progress and the result ride `compaction_start`/`compaction_end`. */
+  readonly compact: (customInstructions?: string) => Effect.Effect<void, SessionHostError>;
   readonly setAutoCompaction: (enabled: boolean) => Effect.Effect<void, SessionHostError>;
   readonly setModel: (
     provider: string,
@@ -389,18 +391,7 @@ export const SessionHost = {
           return entryId;
         }),
         compact: (customInstructions) =>
-          command(HostEvent.CompactRequested({ customInstructions })).pipe(
-            Effect.flatMap((reply) =>
-              reply.result === undefined
-                ? Effect.fail(
-                    new SessionHostError({
-                      kind: "compact_prepare",
-                      message: "nothing to compact",
-                    }),
-                  )
-                : Effect.succeed(reply.result),
-            ),
-          ),
+          command(HostEvent.CompactRequested({ customInstructions })).pipe(Effect.asVoid),
         dispose,
         followUp: (text) => command(HostEvent.FollowUpRequested({ text })).pipe(Effect.asVoid),
         getAvailableThinkingLevels: () =>
